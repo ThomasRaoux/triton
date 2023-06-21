@@ -85,9 +85,9 @@ public:
   isBlockedToDotOperand(mlir::Operation *op,
                         triton::gpu::DotOperandEncodingAttr &retEncoding,
                         triton::gpu::BlockedEncodingAttr &srcEncoding) {
-    if (!op)
+    auto cvt = dyn_cast_or_null<triton::gpu::ConvertLayoutOp>(op);
+    if (!cvt)
       return failure();
-    auto cvt = cast<triton::gpu::ConvertLayoutOp>(op);
     auto srcTy = cvt.getOperand().getType().cast<RankedTensorType>();
     auto retTy = cvt.getResult().getType().dyn_cast<RankedTensorType>();
     retEncoding =
@@ -146,8 +146,8 @@ public:
     auto dotOp = dyn_cast_or_null<DotOp>(*users.begin());
     if (!dotOp)
       return failure();
-    if (!isDotNT(dotOp))
-      return failure();
+    //if (!isDotNT(dotOp))
+    //  return failure();
 
     // don't move things around when cvt operand is a block arg
     Operation *argOp = cvt.getOperand().getDefiningOp();

@@ -1494,7 +1494,7 @@ void init_triton_ir(py::module &&m) {
                    return ::triton::tools::getBoolEnv("MLIR_ENABLE_DUMP");
                  },
                  /*printModuleScope=*/false,
-                 /*printAfterOnlyOnChange=*/true,
+                 /*printAfterOnlyOnChange=*/false,
                  /*printAfterOnlyOnFailure*/ false, llvm::dbgs(),
                  printingFlags);
            })

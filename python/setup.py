@@ -21,6 +21,7 @@ def check_env_flag(name: str, default: str = "") -> bool:
 
 
 def get_build_type():
+    return "Debug"
     if check_env_flag("DEBUG"):
         return "Debug"
     elif check_env_flag("REL_WITH_DEB_INFO"):

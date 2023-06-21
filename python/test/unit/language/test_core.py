@@ -1851,6 +1851,7 @@ def test_permute(dtype_str, shape, perm, device='cuda'):
                                            [32, 128, 64, 2],
                                            [64, 64, 32, 4],
                                            [32, 32, 128, 16],
+                                           [16, 16, 16, 4],
                                            [128, 128, 64, 2],
                                            [64, 128, 128, 2]]
                           for allow_tf32 in [True]
@@ -1900,6 +1901,8 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, allow_tf32, in_dtype, o
         Zs = Z + off_m[:, None] * stride_zm + off_n[None, :] * stride_zn
         x = tl.load(Xs)
         y = tl.load(Ys)
+        x = x.to(tl.float32)
+        y = y.to(tl.float32)
         z = tl.dot(x, y, allow_tf32=ALLOW_TF32, out_dtype=out_dtype)
         if ADD_MATRIX:
             z += tl.load(Zs)

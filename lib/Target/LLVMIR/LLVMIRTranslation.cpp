@@ -336,7 +336,7 @@ translateTritonGPUToLLVMIR(llvm::LLVMContext *llvmContext,
         return ::triton::tools::getBoolEnv("MLIR_ENABLE_DUMP");
       },
       /*printModuleScope=*/false,
-      /*printAfterOnlyOnChange=*/true,
+      /*printAfterOnlyOnChange=*/false,
       /*printAfterOnlyOnFailure*/ false, llvm::dbgs(), printingFlags);
 
   pm.addPass(mlir::createConvertSCFToCFPass());
