@@ -948,7 +948,6 @@ scf::ForOp LoopPipeliner::createNewForOp() {
   return newForOp;
 }
 
-
 // ref: mlir/lib/Dialect/SCF/Transforms/LoopPipelining.cpp
 struct PipelinePass : public TritonGPUPipelineBase<PipelinePass> {
   PipelinePass() = default;

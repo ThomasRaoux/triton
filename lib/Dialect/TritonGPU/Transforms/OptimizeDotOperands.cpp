@@ -333,9 +333,7 @@ public:
 
     // Change the layout of dotOperand layout to use the kWidth from the
     // smallest loaded type.
-    m->walk([](triton::FuncOp func) {
-      optimizeKWidth(func);
-    });
+    m->walk([](triton::FuncOp func) { optimizeKWidth(func); });
   }
 };
 
