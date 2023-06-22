@@ -111,9 +111,6 @@ class LoopPipeliner {
 
   /// Loads to be pipelined
   SetVector<Value> validLoads;
-  /// Smallest data-type for each load (used to optimize swizzle and
-  /// (create DotOpEncoding layout)
-  DenseMap<Value, Type> loadsSmallestType;
   /// The value that each load will be mapped to (after layout conversion)
   DenseMap<Value, Value> loadsMapping;
   /// load => buffer
@@ -485,24 +482,10 @@ Value LoopPipeliner::lookupOrDefault(Value origin, int stage) {
 }
 
 void LoopPipeliner::createBufferTypes() {
-  // We need to find the smallest common dtype since this determines the layout
-  // of `mma.sync` operands in mixed-precision mode
-  Type smallestType;
-  for (auto loadCvt : loadsMapping) {
-    auto loadOp = loadCvt.first;
-    auto ty = loadOp.getType().cast<RankedTensorType>();
-    Type eltTy = ty.getElementType();
-    if (!smallestType ||
-        (eltTy.getIntOrFloatBitWidth() < smallestType.getIntOrFloatBitWidth()))
-      smallestType = eltTy;
-  }
-
-  for (auto loadCvt : loadsMapping)
-    loadsSmallestType[loadCvt.first] = smallestType;
-
   for (auto loadCvt : loadsMapping) {
     auto loadOp = loadCvt.first;
     Value cvt = loadCvt.second;
+    cvt.dump();
     auto dotOpEnc = cvt.getType()
                         .cast<RankedTensorType>()
                         .getEncoding()
@@ -511,9 +494,12 @@ void LoopPipeliner::createBufferTypes() {
     SmallVector<int64_t> bufferShape(ty.getShape().begin(),
                                      ty.getShape().end());
     bufferShape.insert(bufferShape.begin(), numStages);
-    auto sharedEnc = ttg::SharedEncodingAttr::get(
-        ty.getContext(), dotOpEnc, ty.getShape(),
-        ttg::getOrder(ty.getEncoding()), loadsSmallestType[loadOp]);
+    unsigned bitWidth = dotOpEnc.getMMAv2kWidth()
+                            ? 32 / dotOpEnc.getMMAv2kWidth()
+                            : ty.getElementType().getIntOrFloatBitWidth();
+    auto sharedEnc =
+        ttg::SharedEncodingAttr::get(ty.getContext(), dotOpEnc, ty.getShape(),
+                                     ttg::getOrder(ty.getEncoding()), bitWidth);
     loadsBufferType[loadOp] =
         RankedTensorType::get(bufferShape, ty.getElementType(), sharedEnc);
   }
@@ -789,23 +775,15 @@ scf::ForOp LoopPipeliner::cloneForOp(ArrayRef<Value> newLoopArgs,
     // we replace the use new load use with a convert layout
     size_t i = std::distance(validLoads.begin(), it);
     auto cvtDstTy = op.getResult(0).getType().cast<RankedTensorType>();
-    auto cvtDstEnc =
-        cvtDstTy.getEncoding().dyn_cast<ttg::DotOperandEncodingAttr>();
-    if (!cvtDstEnc) {
+    if (!cvtDstTy.getEncoding().isa<ttg::DotOperandEncodingAttr>()) {
       builder.clone(op, mapping);
       continue;
     }
-    auto newDstTy = RankedTensorType::get(
-        cvtDstTy.getShape(), cvtDstTy.getElementType(),
-        ttg::DotOperandEncodingAttr::get(
-            cvtDstEnc.getContext(), cvtDstEnc.getOpIdx(), cvtDstEnc.getParent(),
-            loadsSmallestType[op.getOperand(0)]));
     auto cvt = builder.create<ttg::ConvertLayoutOp>(
-        op.getResult(0).getLoc(), newDstTy,
+        op.getResult(0).getLoc(), cvtDstTy,
         newForOp.getRegionIterArgs()[loadIdx + i]);
     mapping.map(op.getResult(0), cvt.getResult());
   }
-
   return newForOp;
 }
 
@@ -971,6 +949,114 @@ scf::ForOp LoopPipeliner::createNewForOp() {
   return newForOp;
 }
 
+static bool isConvertToDotEncoding(Operation *op) {
+  auto convertLayout = llvm::dyn_cast<ttg::ConvertLayoutOp>(op);
+  if (!convertLayout)
+    return false;
+  auto tensorType =
+      convertLayout.getResult().getType().cast<RankedTensorType>();
+  return tensorType.getEncoding().isa<ttg::DotOperandEncodingAttr>();
+}
+
+static ttg::ConvertLayoutOp updateConvert(OpBuilder &builder,
+                                          ttg::ConvertLayoutOp cvt,
+                                          IRMapping& mapping, Type smallestType) {
+  auto cvtDstTy = cvt.getResult().getType().cast<RankedTensorType>();
+  auto cvtDstEnc = cvtDstTy.getEncoding().cast<ttg::DotOperandEncodingAttr>();
+  Value operand = cvt.getOperand();
+  if(mapping.contains(operand))
+    operand = mapping.lookup(operand);
+  auto newDstTy =
+      RankedTensorType::get(cvtDstTy.getShape(), cvtDstTy.getElementType(),
+                            ttg::DotOperandEncodingAttr::get(
+                                cvtDstEnc.getContext(), cvtDstEnc.getOpIdx(),
+                                cvtDstEnc.getParent(), smallestType));
+  auto newCvt = builder.create<ttg::ConvertLayoutOp>(cvt.getLoc(), newDstTy, operand);
+  mapping.map(cvt.getResult(), newCvt.getResult());
+  return newCvt;
+}
+
+static void updateDotEncodingLayout(
+    SmallVector<ttg::ConvertLayoutOp> &convertsToDotEncoding,
+    Type smallestType) {
+  IRMapping mapping;
+  OpBuilder builder(smallestType.getContext());
+  SetVector<Operation *> slices(convertsToDotEncoding.begin(), convertsToDotEncoding.end());
+  for (auto cvt : convertsToDotEncoding) {
+    auto filter = [&](Operation *op) {
+      for (Value operand : op->getOperands()) {
+        auto tensorType = operand.getType().dyn_cast<RankedTensorType>();
+        if (tensorType &&
+            tensorType.getEncoding().isa<ttg::DotOperandEncodingAttr>())
+          return true;
+      }
+      return false;
+    };
+    mlir::getForwardSlice(cvt.getResult(), &slices, {filter});
+  }
+  slices = mlir::topologicalSort(slices);
+  for (Operation *op : slices) {
+    builder.setInsertionPoint(op);
+    if (isConvertToDotEncoding(op)) {
+      auto cvt = cast<ttg::ConvertLayoutOp>(op);
+      ttg::ConvertLayoutOp newCvt = updateConvert(
+          builder, cvt, mapping, smallestType);
+      continue;
+    }
+    auto *newOp = cloneWithInferType(builder, op, mapping);
+    for (auto [result, newResult] :
+         llvm::zip(op->getResults(), newOp->getResults())) {
+      result.replaceUsesWithIf(newResult, [&](OpOperand &operand) {
+        return slices.count(operand.getOwner()) == 0;
+      });
+    }
+  }
+  for (Operation *op : llvm::reverse(slices))
+    op->erase();
+}
+
+static void preProcessLayout(mlir::ModuleOp mod) {
+  SmallVector<ttg::ConvertLayoutOp> convertsToDotEncoding;
+  Type smallestType;
+  mod->walk([&](triton::LoadOp loadOp) {
+    if (!loadOp.getResult().hasOneUse())
+      return;
+    Operation *use = *loadOp.getResult().getUsers().begin();
+
+    // Advance to the first conversion as long as the use resides in shared
+    // memory and it has a single use itself
+    while (use) {
+      if (use->getNumResults() != 1 || !use->getResult(0).hasOneUse())
+        break;
+      auto tensorType =
+          use->getResult(0).getType().dyn_cast<RankedTensorType>();
+      if (!tensorType ||
+          !tensorType.getEncoding().isa<ttg::SharedEncodingAttr>())
+        break;
+      use = *use->getResult(0).getUsers().begin();
+    }
+
+    auto convertLayout = llvm::dyn_cast<ttg::ConvertLayoutOp>(use);
+    if (!convertLayout)
+      return;
+    auto tensorType =
+        convertLayout.getResult().getType().cast<RankedTensorType>();
+    if (!tensorType.getEncoding().isa<ttg::DotOperandEncodingAttr>())
+      return;
+    convertsToDotEncoding.push_back(convertLayout);
+
+    // Update the smallest type.
+    auto ty = loadOp.getType().cast<RankedTensorType>();
+    Type eltTy = ty.getElementType();
+    if (!smallestType ||
+        (eltTy.getIntOrFloatBitWidth() < smallestType.getIntOrFloatBitWidth()))
+      smallestType = eltTy;
+  });
+  if (!smallestType)
+    return;
+  updateDotEncodingLayout(convertsToDotEncoding, smallestType);
+}
+
 // ref: mlir/lib/Dialect/SCF/Transforms/LoopPipelining.cpp
 struct PipelinePass : public TritonGPUPipelineBase<PipelinePass> {
   PipelinePass() = default;
@@ -978,6 +1064,8 @@ struct PipelinePass : public TritonGPUPipelineBase<PipelinePass> {
 
   void runOnOperation() override {
     int numStages = this->numStages;
+    mlir::ModuleOp mod = getOperation();
+    preProcessLayout(mod);
 
     if (numStages <= 1)
       return;
