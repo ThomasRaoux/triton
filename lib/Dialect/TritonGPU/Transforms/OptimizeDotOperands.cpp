@@ -265,10 +265,10 @@ updateDotEncodingLayout(SmallVector<ConvertLayoutOp> &convertsToDotEncoding,
 
 // Change the layout of dotOperand layout to use the kWidth from the smallest
 // loaded type. This allows better code generation for mixed-mode matmul.
-static void optimizeKWidth(mlir::ModuleOp mod) {
+static void optimizeKWidth(triton::FuncOp func) {
   SmallVector<ConvertLayoutOp> convertsToDotEncoding;
   Type smallestType;
-  mod->walk([&](triton::LoadOp loadOp) {
+  func->walk([&](triton::LoadOp loadOp) {
     if (!loadOp.getResult().hasOneUse())
       return;
     Operation *use = *loadOp.getResult().getUsers().begin();
@@ -323,8 +323,6 @@ public:
     pm.addPass(mlir::createCanonicalizerPass());
     auto ret = pm.run(m);
 
-    optimizeKWidth(m);
-
     mlir::RewritePatternSet patterns(context);
     patterns.add<ConvertTransConvert>(context);
     patterns.add<MoveOpAfterLayoutConversion>(context);
@@ -332,6 +330,12 @@ public:
       signalPassFailure();
     if (fixupLoops(m).failed())
       signalPassFailure();
+
+    // Change the layout of dotOperand layout to use the kWidth from the
+    // smallest loaded type.
+    m->walk([](triton::FuncOp func) {
+      optimizeKWidth(func);
+    });
   }
 };
 

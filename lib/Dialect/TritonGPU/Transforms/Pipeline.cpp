@@ -485,7 +485,6 @@ void LoopPipeliner::createBufferTypes() {
   for (auto loadCvt : loadsMapping) {
     auto loadOp = loadCvt.first;
     Value cvt = loadCvt.second;
-    cvt.dump();
     auto dotOpEnc = cvt.getType()
                         .cast<RankedTensorType>()
                         .getEncoding()
