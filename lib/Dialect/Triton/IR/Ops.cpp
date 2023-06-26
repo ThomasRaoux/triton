@@ -559,6 +559,24 @@ llvm::SmallVector<Type> ReduceOp::getElementTypes() {
 
 unsigned ReduceOp::getNumOperands() { return this->getOperands().size(); }
 
+//-- ScanOp --
+void ScanOp::build(mlir::OpBuilder &builder, mlir::OperationState &state,
+                     mlir::ValueRange operands, int axis) {
+  SmallVector<Type> inferredReturnTypes;
+  for (auto arg : operands)
+    inferredReturnTypes.push_back(arg.getType());
+  ReduceOp::build(builder, state, inferredReturnTypes, operands, axis);
+}
+
+mlir::LogicalResult mlir::triton::ScanOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  for (auto arg : operands)
+    inferredReturnTypes.push_back(arg.getType());
+  return success();
+}
+
 //-- SplatOp --
 OpFoldResult SplatOp::fold(FoldAdaptor adaptor) {
   auto value = adaptor.getSrc();

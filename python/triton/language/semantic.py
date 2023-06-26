@@ -1319,6 +1319,40 @@ def reduction(
     )
 
 
+# ===----------------------------------------------------------------------===//
+#                               Associative Scan
+# ===----------------------------------------------------------------------===
+
+
+def associative_scan(
+    inputs: Sequence[tl.tensor], axis: int, region_builder_fn, builder: ir.builder
+) -> Tuple[tl.tensor, ...]:
+    if axis is None:
+        new_inputs = []
+        for i in range(len(inputs)):
+            new_shape = [inputs[i].numel.value]
+            new_inputs.append(view(inputs[i], new_shape, builder))
+        inputs = tuple(new_inputs)
+        axis = 0
+    # get result shape
+    shape = inputs[0].type.shape
+    for t in inputs:
+        assert t.type.shape == shape
+
+    def wrap_tensor(x, scalar_ty):
+        res_ty = tl.block_type(scalar_ty, shape)
+        return tl.tensor(x, res_ty)
+
+    scan_op = builder.create_scan([t.handle for t in inputs], axis)
+    region_builder_fn(scan_op)
+    scan_op.verify()
+
+    return tuple(
+        wrap_tensor(scan_op.get_result(i), inputs[i].type.scalar)
+        for i in range(len(inputs))
+    )
+
+
 # ===----------------------------------------------------------------------===
 #                               Math
 # ===----------------------------------------------------------------------===
