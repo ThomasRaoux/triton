@@ -277,6 +277,8 @@ protected:
   SmallVector<FunctionOpInterface> roots;
 };
 
+unsigned getScanSharedMemorySize(triton::ScanOp op);
+
 } // namespace mlir
 
 #endif // TRITON_ANALYSIS_UTILITY_H
