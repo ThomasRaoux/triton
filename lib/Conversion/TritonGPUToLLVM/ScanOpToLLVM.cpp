@@ -1,6 +1,6 @@
 #include "ScanOpToLLVM.h"
-#include "triton/Analysis/Utility.h"
 #include "TritonGPUToLLVMBase.h"
+#include "triton/Analysis/Utility.h"
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -8,6 +8,8 @@ using namespace mlir::triton;
 using ::mlir::LLVM::shflUpSync;
 using ::mlir::LLVM::storeShared;
 
+// Apply the region of the scan op to the acc and cur values and update acc
+// inplace with the result.
 static void accumulate(ConversionPatternRewriter &rewriter, Region &combineOp,
                        Value &acc, Value cur) {
   if (!acc) {
@@ -35,11 +37,12 @@ static void scanThreadContiguousElements(SmallVector<Value> &srcValues,
                                          triton::ScanOp op,
                                          BlockedEncodingAttr blockLayout,
                                          unsigned axis) {
-
+  // TODO: this assumes that axis is the fastest moving dimension. We should relax that.
   unsigned contiguousElementsPerThreads = blockLayout.getSizePerThread()[axis];
   // Loop through the chunks of contiguous elements.
   for (unsigned j = 0; j < srcValues.size();
        j += contiguousElementsPerThreads) {
+    // Reset the accumulator at the beginning of a chunk of contiguous elements.
     Value acc;
     // Loop through the contiguous elements.
     for (unsigned i = 0; i < contiguousElementsPerThreads; ++i) {
@@ -49,15 +52,16 @@ static void scanThreadContiguousElements(SmallVector<Value> &srcValues,
   }
 }
 
+// Return the size of the scan dimension within a warp.
 static unsigned getScanDimSizePerWarp(triton::ScanOp op) {
   unsigned axis = op.getAxis();
   auto type = op.getOperand(0).getType().cast<RankedTensorType>();
   auto srcEncoding = type.getEncoding();
-  return triton::gpu::getThreadsPerWarpWithUniqueData(
-                      srcEncoding, type.getShape())[axis];
+  return triton::gpu::getThreadsPerWarpWithUniqueData(srcEncoding,
+                                                      type.getShape())[axis];
 }
 
-// Apply a scan acorss threads of the warp for the last element of each
+// Apply a scan across threads of the warp for the last element of each
 // contiguous group of elements.
 static void warpScan(SmallVector<Value> &srcValues,
                      ConversionPatternRewriter &rewriter, triton::ScanOp op,
@@ -81,12 +85,18 @@ static void warpScan(SmallVector<Value> &srcValues,
   }
 }
 
+// Shared memory will contain the partial reduction value for each parallel
+// scans and for each warp for each contiguous elements within a thread.
+//          -----------------------------------------------------------------
+// chunk 0: | scan 0 warp 0 | scan 1 warp 0 | scan 0 warp 1 | scan 1 warp 1 |
+// chunk 1: | scan 0 warp 0 | scan 1 warp 0 | scan 0 warp 1 | scan 1 warp 1 |
 static void storeWarpAccumulator(SmallVector<Value> &srcValues,
                                  ConversionPatternRewriter &rewriter,
                                  triton::ScanOp op,
                                  BlockedEncodingAttr blockLayout, unsigned axis,
                                  Value laneId, Value warpId, unsigned numWarps,
-                                 Value baseSharedMemPtr) {
+                                 Value baseSharedMemPtr, Value parallelLaneId,
+                                 unsigned numParallelLane) {
   Location loc = op.getLoc();
   unsigned contiguousElementsPerThreads = blockLayout.getSizePerThread()[axis];
   unsigned scanDim = getScanDimSizePerWarp(op);
@@ -95,18 +105,21 @@ static void storeWarpAccumulator(SmallVector<Value> &srcValues,
        j += contiguousElementsPerThreads, ++chunkId) {
     Value lastElement = srcValues[j];
     Value mask = icmp_eq(laneId, i32_val(scanDim - 1));
-    Value index = add(warpId, i32_val(chunkId * numWarps));
+    Value index =
+        add(parallelLaneId,
+            mul(warpId, i32_val(numParallelLane)));
+    index = add(index, i32_val(chunkId * numParallelLane * numWarps));
     Value writePtr = gep(baseSharedMemPtr.getType(), baseSharedMemPtr, index);
     storeShared(rewriter, loc, writePtr, lastElement, mask);
   }
 }
 
 static void AddPartialReduce(SmallVector<Value> &srcValues,
-                                           ConversionPatternRewriter &rewriter,
-                                           triton::ScanOp op,
-                                           BlockedEncodingAttr blockLayout,
-                                           unsigned axis, Value sharedMemoryPtr,
-                                           Value warpId, unsigned numWarps, Value laneId) {
+                             ConversionPatternRewriter &rewriter,
+                             triton::ScanOp op, BlockedEncodingAttr blockLayout,
+                             unsigned axis, Value sharedMemoryPtr, Value warpId,
+                             unsigned numWarps, Value laneId,
+                             Value parallelLaneId, unsigned numParallelLane, unsigned numChunks) {
   Location loc = op.getLoc();
   Value acc;
   Value maskedAcc;
@@ -115,11 +128,13 @@ static void AddPartialReduce(SmallVector<Value> &srcValues,
   Value maskFirstLane = icmp_eq(laneId, i32_val(0));
   Value maskFirstThread = and_(maskFirstWarp, maskFirstLane);
   unsigned chunkId = 0;
+  bool firstChunk = true;
   for (unsigned j = contiguousElementsPerThreads - 1; j < srcValues.size();
        j += contiguousElementsPerThreads, ++chunkId) {
     for (unsigned i = 0; i < numWarps; ++i) {
-      Value ptr = gep(sharedMemoryPtr.getType(), sharedMemoryPtr,
-                      i32_val(i + chunkId * numWarps));
+      Value index = add(parallelLaneId,
+                        i32_val(numParallelLane * (i + chunkId * numWarps)));
+      Value ptr = gep(sharedMemoryPtr.getType(), sharedMemoryPtr, index);
       Value partialReduce = load(ptr);
       if (!acc) {
         acc = partialReduce;
@@ -127,12 +142,12 @@ static void AddPartialReduce(SmallVector<Value> &srcValues,
         continue;
       }
       accumulate(rewriter, op.getCombineOp(), acc, partialReduce);
-      Value mask = icmp_slt(warpId, i32_val(i+1));
+      Value mask = icmp_slt(warpId, i32_val(i + 1));
       maskedAcc = select(mask, maskedAcc, acc);
     }
     Value temp = srcValues[j];
     accumulate(rewriter, op.getCombineOp(), temp, maskedAcc);
-    if (chunkId == 0) {
+    if (firstChunk) {
       // For the first warp and first chunk we don't have anything to
       // accumulate.
       temp = select(maskFirstWarp, srcValues[j], temp);
@@ -142,38 +157,26 @@ static void AddPartialReduce(SmallVector<Value> &srcValues,
     // Update the rest of the contiguous elements.
     Value lastElement = shflUpSync(loc, rewriter, srcValues[j], 1);
     lastElement = select(maskFirstLane, maskedAcc, lastElement);
-    for(unsigned i = 1; i < contiguousElementsPerThreads; ++i) {
+    for (unsigned i = 1; i < contiguousElementsPerThreads; ++i) {
       Value laneValue = srcValues[j - i];
       accumulate(rewriter, op.getCombineOp(), laneValue, lastElement);
-      if (chunkId == 0) {
-      // For the first warp and first chunk we don't have anything to
-      // accumulate.
+      if (firstChunk) {
+        // For the first warp and first chunk we don't have anything to
+        // accumulate.
         laneValue = select(maskFirstThread, srcValues[j - i], laneValue);
       }
       srcValues[j - i] = laneValue;
     }
+    firstChunk = false;
+    // reset the accumulator.
+    if((chunkId + 1) % numChunks == 0) {
+      firstChunk = true;
+      acc = nullptr;
+    }
     // For the next chunk start back from the value containing the accumulated
     // value of all the warps.
     maskedAcc = acc;
-  }
-}
 
-static void UpdateWithLastContiguousElement(SmallVector<Value> &srcValues,
-                                            ConversionPatternRewriter &rewriter,
-                                            triton::ScanOp op,
-                                            BlockedEncodingAttr blockLayout,
-                                            unsigned axis, Value laneId) {
-  Location loc = op.getLoc();
-  unsigned contiguousElementsPerThreads = blockLayout.getSizePerThread()[axis];
-  for (unsigned j = contiguousElementsPerThreads - 1; j < srcValues.size();
-       j += contiguousElementsPerThreads) {
-    Value tmp = shflUpSync(loc, rewriter, srcValues[j], 1);
-    for (unsigned i = 1; i < contiguousElementsPerThreads; ++i) {
-      Value acc = srcValues[j - i];
-      accumulate(rewriter, op.getCombineOp(), acc, tmp);
-      Value mask = icmp_eq(laneId, i32_val(0));
-      srcValues[j - i] = select(mask, srcValues[j - i], acc);
-    }
   }
 }
 
@@ -191,10 +194,10 @@ public:
       return success();
     return failure();
   }
+
 private:
-  LogicalResult emitFastScan(triton::ScanOp op,
-                                  triton::ScanOpAdaptor adaptor,
-                                  ConversionPatternRewriter &rewriter) const;
+  LogicalResult emitFastScan(triton::ScanOp op, triton::ScanOpAdaptor adaptor,
+                             ConversionPatternRewriter &rewriter) const;
 };
 
 // Naive lowering of the scan op as a fallback for cases that we don't know
@@ -208,6 +211,7 @@ ScanOpConversion::emitFastScan(triton::ScanOp op, triton::ScanOpAdaptor adaptor,
   auto type = op.getOperand(0).getType().cast<RankedTensorType>();
   auto llvmType = input.getType();
   auto srcEncoding = type.getEncoding();
+
   auto blockLayout = srcEncoding.dyn_cast<BlockedEncodingAttr>();
   if (axis != triton::gpu::getOrder(srcEncoding)[0] || !blockLayout)
     return failure();
@@ -217,8 +221,13 @@ ScanOpConversion::emitFastScan(triton::ScanOp op, triton::ScanOpAdaptor adaptor,
   Value warpId = udiv(threadId, warpSize);
   Value laneId = urem(threadId, warpSize);
 
+  auto sizePerThreads = triton::gpu::getSizePerThread(srcEncoding);
   auto threadsPerWarp = triton::gpu::getThreadsPerWarp(srcEncoding);
   auto warpsPerCTA = triton::gpu::getWarpsPerCTA(srcEncoding);
+  unsigned numChunksToScan =
+      type.getShape()[axis] / (sizePerThreads[axis] *
+                               threadsPerWarp[axis] *
+                               warpsPerCTA[axis]);  
   auto order = triton::gpu::getOrder(srcEncoding);
   SmallVector<Value> multiDimLaneId =
       delinearize(rewriter, loc, laneId, threadsPerWarp, order);
@@ -228,6 +237,12 @@ ScanOpConversion::emitFastScan(triton::ScanOp op, triton::ScanOpAdaptor adaptor,
   Value laneIdAxis = multiDimLaneId[axis];
   Value warpIdAxis = multiDimWarpId[axis];
 
+  multiDimLaneId[axis] = i32_val(0);
+  Value laneIdParallel =
+      linearize(rewriter, loc, multiDimLaneId, threadsPerWarp, order);
+  threadsPerWarp[axis] = 1;
+  unsigned numParallelThreads = product<unsigned>(threadsPerWarp);
+
   Value result = input;
 
   SmallVector<Value> srcValues =
@@ -235,18 +250,26 @@ ScanOpConversion::emitFastScan(triton::ScanOp op, triton::ScanOpAdaptor adaptor,
 
   // Scan contigous elements in a thread and update `srcValues`.
   scanThreadContiguousElements(srcValues, rewriter, op, blockLayout, axis);
+  // Apply warp level scan to the last element of each chunk of contiguous
+  // elements.
   warpScan(srcValues, rewriter, op, blockLayout, axis, laneIdAxis);
+  // Store the partial reducing for each warp into shared memory.
   Type elemPtrTys = LLVM::LLVMPointerType::get(srcValues[0].getType(), 3);
   Value baseSharedMemPtr = bitcast(
       getSharedMemoryBase(loc, rewriter, op.getOperation()), elemPtrTys);
   storeWarpAccumulator(srcValues, rewriter, op, blockLayout, axis, laneIdAxis,
-                       warpIdAxis, warpsPerCTA[axis], baseSharedMemPtr);
+                       warpIdAxis, warpsPerCTA[axis], baseSharedMemPtr,
+                       laneIdParallel, numParallelThreads);
   barrier();
-  AddPartialReduce(srcValues,
-      rewriter, op, blockLayout, axis, baseSharedMemPtr, warpIdAxis, warpsPerCTA[axis], laneIdAxis);
-  //UpdateWithLastContiguousElement(srcValues, rewriter, op, blockLayout, axis, laneIdAxis);
+  // Read back the partial reduction of each warp and accumulate them based on
+  // warpId. Then update each chunk of contiguous elements by adding the
+  // accumulated value from the previous lane.  
+  AddPartialReduce(srcValues, rewriter, op, blockLayout, axis, baseSharedMemPtr,
+                   warpIdAxis, warpsPerCTA[axis], laneIdAxis, laneIdParallel,
+                   numParallelThreads, numChunksToScan);
 
-  Value results = getTypeConverter()->packLLElements(loc, srcValues, rewriter, llvmType);
+  Value results =
+      getTypeConverter()->packLLElements(loc, srcValues, rewriter, llvmType);
   rewriter.replaceOp(op, results);
   return success();
 }

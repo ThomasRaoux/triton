@@ -398,7 +398,7 @@ std::unique_ptr<DataFlowSolver> createDataFlowSolver() {
 
 unsigned getScanSharedMemorySize(triton::ScanOp op) {
   // TODO: implement this
-  return 8*32;
+  return 32*32;
 }
 
 } // namespace mlir

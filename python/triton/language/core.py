@@ -1549,8 +1549,7 @@ def associative_scan(input, axis, combine_fn, _builder=None, _generator=None):
             else:
                 handles = [r.handle for r in results]
             _builder.create_scan_ret(*handles)
-    if axis is not None:
-        axis = _constexpr_to_value(axis)
+    axis = _constexpr_to_value(axis)
     return semantic.associative_scan(input, axis, make_combine_region, _builder)
 
 # cumsum

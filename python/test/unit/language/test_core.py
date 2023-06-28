@@ -1526,10 +1526,11 @@ def test_reduce2d(op, dtype_str, shape, axis, device):
             np.testing.assert_equal(z_ref, z_tri)
 
 
-
+scan2d_shapes = [(16, 32), (32, 16), (2, 1024), (1024, 2), (32, 32)]
 
 scan_configs = [
-    (op, 'int32', [16, 32], 1)
+    (op, 'int32', shape, 1)
+    for shape in scan2d_shapes
     for op in ['cumsum']
 ]
 
@@ -1551,7 +1552,7 @@ def test_scan2d(op, dtype_str, shape, axis, device):
     # input
     rs = RandomState(17)
     # limit the range of integers so that the sum does not overflow
-    x = numpy_random(shape, dtype_str=dtype_str, rs=rs)
+    x = numpy_random(shape, dtype_str=dtype_str, rs=rs, low=-100, high=100)
     z = np.empty_like(x)
     x_tri = to_triton(x, device=device)
     numpy_op = {'cumsum': np.cumsum}[op]
