@@ -1556,7 +1556,7 @@ def associative_scan(input, axis, combine_fn, _builder=None, _generator=None):
 # cumsum
 @jit
 @_add_scan_docstr("cumsum")
-def cumsum(input, axis=None):
+def cumsum(input, axis=0):
     # todo rename this to a generic function name
     input = _promote_reduction_input(input)
     return associative_scan(input, axis, _sum_combine)
