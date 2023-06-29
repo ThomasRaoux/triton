@@ -131,6 +131,7 @@ static void AddPartialReduce(SmallVector<Value> &srcValues,
   unsigned scanElementsPerThreads = helper.getAxisNumElementsPerThreads();
   unsigned parallelElementsPerThread = helper.getNumParallelElementsPerThread();
   unsigned elementStride = helper.getAxisElementStride();
+  unsigned threadStride = helper.getAxisThreadStride();
   Value maskFirstWarp = icmp_eq(warpId, i32_val(0));
   Value maskFirstLane = icmp_eq(laneId, i32_val(0));
   Value maskFirstThread = and_(maskFirstWarp, maskFirstLane);
@@ -186,7 +187,7 @@ static void AddPartialReduce(SmallVector<Value> &srcValues,
     srcValues[srcIndex] = temp;
     // Update the rest of the contiguous elements.
     Value lastElement =
-        shflUpSync(loc, rewriter, srcValues[srcIndex], elementStride);
+        shflUpSync(loc, rewriter, srcValues[srcIndex], threadStride);
     lastElement = select(maskFirstLane, accumulator.maskedAcc, lastElement);
     for (unsigned i = 1; i < scanElementsPerThreads; ++i) {
       Value laneValue = srcValues[srcIndex - i * elementStride];
