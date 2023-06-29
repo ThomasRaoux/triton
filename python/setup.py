@@ -22,15 +22,7 @@ def check_env_flag(name: str, default: str = "") -> bool:
 
 
 def get_build_type():
-    if check_env_flag("DEBUG"):
-        return "Debug"
-    elif check_env_flag("REL_WITH_DEB_INFO"):
-        return "RelWithDebInfo"
-    elif check_env_flag("TRITON_REL_BUILD_WITH_ASSERTS"):
-        return "TritonRelBuildWithAsserts"
-    else:
-        # TODO: change to release when stable enough
-        return "TritonRelBuildWithAsserts"
+    return "Debug"
 
 
 def get_codegen_backends():

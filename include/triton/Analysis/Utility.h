@@ -90,6 +90,13 @@ public:
   // Return the size of the scratch space needed for scan lowering.
   unsigned getScratchSizeInBytes();
 
+  // Stride between contiguous element along axis dim.
+  unsigned getAxisElementStride();
+  // Stride between contiguous threads along axis dim.
+  unsigned getAxisThreadStride();
+  // Stride between contiguous blocks along axis dim.
+  unsigned getAxisBlockStride();
+
   Location getLoc() { return scanOp.getLoc(); }
   unsigned getAxis() { return scanOp.getAxis(); }
   triton::gpu::BlockedEncodingAttr getEncoding();
