@@ -8,95 +8,6 @@ using namespace mlir::triton;
 using ::mlir::LLVM::shflUpSync;
 using ::mlir::LLVM::storeShared;
 
-namespace {
-class ScanLoweringHelper {
-public:
-  explicit ScanLoweringHelper(triton::ScanOp op) : scanOp(op) {}
-  Location getLoc() { return scanOp.getLoc(); }
-  unsigned getAxis() { return scanOp.getAxis(); }
-  unsigned scanElementsPerThreads() {
-    return getEncoding().getSizePerThread()[getAxis()];
-  }
-  unsigned parallelElementsPerThread() {
-    SmallVector<unsigned> sizePerThreads(getEncoding().getSizePerThread().begin(),
-                                         getEncoding().getSizePerThread().end());
-    sizePerThreads[getAxis()] = 1;
-    return product<unsigned>(sizePerThreads);
-  }
-  Region &getCombineOp() { return scanOp.getCombineOp(); }
-  unsigned getScanDimSizePerWarp() {
-    auto type = scanOp.getOperand(0).getType().cast<RankedTensorType>();
-    return triton::gpu::getThreadsPerWarpWithUniqueData(
-        getEncoding(), type.getShape())[getAxis()];
-  }
-
-  unsigned getNumParrallelThreadsPerWarp() {
-    auto threadsPerWarp = triton::gpu::getThreadsPerWarp(getEncoding());
-    threadsPerWarp[getAxis()] = 1;
-    return product<unsigned>(threadsPerWarp);
-  }
-
-  // Return the flat numbers of threads computing independent scan results.
-  unsigned getNumParrallelThreadsPerCTA() {
-    unsigned numParallelThreadsPerWarp = getNumParrallelThreadsPerWarp();
-    auto warpsPerCTA = triton::gpu::getWarpsPerCTA(getEncoding());
-    warpsPerCTA[getAxis()] = 1;
-    unsigned numParallelWarpsPerCTA = product<unsigned>(warpsPerCTA);
-    return numParallelThreadsPerWarp * numParallelWarpsPerCTA;
-  }
-  unsigned getScanNumWarps() {
-    auto type = scanOp.getOperand(0).getType().cast<RankedTensorType>();
-    auto srcEncoding = type.getEncoding();
-    auto warpsPerCTA = triton::gpu::getWarpsPerCTA(srcEncoding);
-    return warpsPerCTA[getAxis()];
-  }
-
-  unsigned getNumScanBlocks() {
-    auto type = scanOp.getOperand(0).getType().cast<RankedTensorType>();
-    auto srcEncoding = type.getEncoding();
-    auto sizePerThreads = triton::gpu::getSizePerThread(srcEncoding);
-    auto threadsPerWarp = triton::gpu::getThreadsPerWarp(srcEncoding);
-    auto warpsPerCTA = triton::gpu::getWarpsPerCTA(srcEncoding);
-    unsigned axis = getAxis();
-    return type.getShape()[axis] /
-           (sizePerThreads[axis] * threadsPerWarp[axis] * warpsPerCTA[axis]);
-  }
-
-  unsigned getNumParallelBlocks() {
-    auto type = scanOp.getOperand(0).getType().cast<RankedTensorType>();
-    auto srcEncoding = type.getEncoding();
-    auto sizePerThreads = triton::gpu::getSizePerThread(srcEncoding);
-    auto threadsPerWarp = triton::gpu::getThreadsPerWarp(srcEncoding);
-    auto warpsPerCTA = triton::gpu::getWarpsPerCTA(srcEncoding);
-    unsigned axis = getAxis();
-    unsigned numBlocks = 1;
-    for(unsigned i =0; i < sizePerThreads.size(); i++) {
-      if(i == axis) continue;
-      numBlocks *= type.getShape()[i] /
-           (sizePerThreads[i] * threadsPerWarp[i] * warpsPerCTA[i]);
-    }
-    return numBlocks;
-  }
-
-  bool isSupported() {
-    auto type = scanOp.getOperand(0).getType().cast<RankedTensorType>();
-    auto srcEncoding = type.getEncoding();
-    if (getAxis() != triton::gpu::getOrder(srcEncoding)[0] ||
-        !isa<BlockedEncodingAttr>(srcEncoding))
-      return false;
-    return true;
-  }
-
-private:
-  BlockedEncodingAttr getEncoding() {
-    auto type = scanOp.getOperand(0).getType().cast<RankedTensorType>();
-    auto srcEncoding = type.getEncoding();
-    return srcEncoding.cast<BlockedEncodingAttr>();
-  }
-  triton::ScanOp scanOp;
-};
-} // namespace
-
 // Apply the region of the scan op to the acc and cur values and update acc
 // inplace with the result.
 static void accumulate(ConversionPatternRewriter &rewriter, Region &combineOp,
@@ -163,8 +74,9 @@ static void warpScan(SmallVector<Value> &srcValues,
   }
 }
 
-// Shared memory will contain the partial reduction value for each parallel
-// scans and for each warp for each contiguous elements within a thread.
+// For each set of contiguous elements within a thread we store the partial
+// reduction into shared memory. Each parallel scan and each warp will store its
+// own partial reductions. The shared memory is organized as follow:
 //          -----------------------------------------------------------------
 // chunk 0: | scan 0 warp 0 | scan 1 warp 0 | scan 0 warp 1 | scan 1 warp 1 |
 // chunk 1: | scan 0 warp 0 | scan 1 warp 0 | scan 0 warp 1 | scan 1 warp 1 |
@@ -177,7 +89,6 @@ static void storeWarpAccumulator(SmallVector<Value> &srcValues,
   unsigned scanElementsPerThreads = helper.scanElementsPerThreads();
   unsigned scanDim = helper.getScanDimSizePerWarp();
   unsigned numParallelLane = helper.getNumParrallelThreadsPerCTA();
-  llvm::dbgs() << "numParallelLane: " << numParallelLane << "\n";
   unsigned numWarps = helper.getScanNumWarps();
   unsigned chunkId = 0;
   for (unsigned j = scanElementsPerThreads - 1; j < srcValues.size();
@@ -191,8 +102,11 @@ static void storeWarpAccumulator(SmallVector<Value> &srcValues,
   }
 }
 
-// Read the partial reductions from shared memory from each warp and chunks and
-// combine them with the right elements.
+// Read the partial reductions from shared memory from each chunk of contiguous
+// for each warp and parallel scan. Then combine the partial reduction with the
+// right elements. Within coniguous element we update all the elements by
+// accumulating the value from the last element of the reduced value from the
+// previous lane.
 static void AddPartialReduce(SmallVector<Value> &srcValues,
                              ConversionPatternRewriter &rewriter,
                              ScanLoweringHelper &helper, Value sharedMemoryPtr,
@@ -211,13 +125,19 @@ static void AddPartialReduce(SmallVector<Value> &srcValues,
   };
   unsigned numScanBlocks = helper.getNumScanBlocks();
   unsigned numParallelBlocks = helper.getNumParallelBlocks();
-  assert(numScanBlocks * numParallelBlocks * parallelElementsPerThread * scanElementsPerThreads == srcValues.size());
-  SmallVector<Accumulator> accumulators(numParallelBlocks * parallelElementsPerThread);
+  assert(numScanBlocks * numParallelBlocks * parallelElementsPerThread *
+             scanElementsPerThreads ==
+         srcValues.size());
+  SmallVector<Accumulator> accumulators(numParallelBlocks *
+                                        parallelElementsPerThread);
   unsigned chunkId = 0;
-  for(unsigned parallelBlockId = 0; parallelBlockId < numParallelBlocks; ++parallelBlockId ) {
-    for(unsigned scanBlockId = 0; scanBlockId < numScanBlocks; ++scanBlockId) {
-      for(unsigned parallelElementId = 0; parallelElementId < parallelElementsPerThread; ++parallelElementId) {
-        unsigned accumulatorIndex = parallelElementId + parallelBlockId * parallelElementsPerThread;
+  for (unsigned parallelBlockId = 0; parallelBlockId < numParallelBlocks;
+       ++parallelBlockId) {
+    for (unsigned scanBlockId = 0; scanBlockId < numScanBlocks; ++scanBlockId) {
+      for (unsigned parallelElementId = 0;
+           parallelElementId < parallelElementsPerThread; ++parallelElementId) {
+        unsigned accumulatorIndex =
+            parallelElementId + parallelBlockId * parallelElementsPerThread;
         Accumulator &accumulator = accumulators[accumulatorIndex];
         for (unsigned i = 0; i < numWarps; ++i) {
           Value index = add(parallelLaneId, i32_val(numParallelLane *
@@ -287,24 +207,21 @@ public:
   }
 
 private:
+  std::tuple<Value, Value, Value>
+  getDelinearizedIds(ConversionPatternRewriter &rewriter,
+                     ScanLoweringHelper &helper) const;
   LogicalResult emitFastScan(triton::ScanOp op, triton::ScanOpAdaptor adaptor,
                              ConversionPatternRewriter &rewriter) const;
 };
 
-// Naive lowering of the scan op as a fallback for cases that we don't know
-// how to generate with warp shuffle ops.
-LogicalResult
-ScanOpConversion::emitFastScan(triton::ScanOp op, triton::ScanOpAdaptor adaptor,
-                               ConversionPatternRewriter &rewriter) const {
-  ScanLoweringHelper helper(op);
-  auto loc = op.getLoc();
-  auto input = adaptor.getOperands()[0];
-  unsigned axis = op.getAxis();
-  auto type = op.getOperand(0).getType().cast<RankedTensorType>();
-  auto srcEncoding = type.getEncoding();
-
-  if (!helper.isSupported())
-    return failure();
+// Break up the threadId into lane and warp id along the scan dimension and
+// compute a flat id for the parallel dimensions.
+std::tuple<Value, Value, Value>
+ScanOpConversion::getDelinearizedIds(ConversionPatternRewriter &rewriter,
+                                     ScanLoweringHelper &helper) const {
+  auto loc = helper.getLoc();
+  unsigned axis = helper.getAxis();
+  auto srcEncoding = helper.getEncoding();
 
   Value threadId = getThreadId(rewriter, loc);
   Value warpSize = i32_val(32);
@@ -333,7 +250,23 @@ ScanOpConversion::emitFastScan(triton::ScanOp op, triton::ScanOpAdaptor adaptor,
   Value flatIdParallel =
       add(laneIdParallel,
           mul(warpIdParallel, i32_val(helper.getNumParrallelThreadsPerWarp())));
+  return std::make_tuple(laneIdAxis, warpIdAxis, flatIdParallel);
+}
 
+// Naive lowering of the scan op as a fallback for cases that we don't know
+// how to generate with warp shuffle ops.
+LogicalResult
+ScanOpConversion::emitFastScan(triton::ScanOp op, triton::ScanOpAdaptor adaptor,
+                               ConversionPatternRewriter &rewriter) const {
+  ScanLoweringHelper helper(op);
+  auto loc = helper.getLoc();
+  if (!helper.isSupported())
+    return failure();
+
+  auto [laneIdAxis, warpIdAxis, flatIdParallel] =
+      getDelinearizedIds(rewriter, helper);
+  auto input = adaptor.getOperands()[0];
+  auto type = op.getOperand(0).getType().cast<RankedTensorType>();
   SmallVector<Value> srcValues =
       getTypeConverter()->unpackLLElements(loc, input, rewriter, type);
 
@@ -356,8 +289,8 @@ ScanOpConversion::emitFastScan(triton::ScanOp op, triton::ScanOpAdaptor adaptor,
   AddPartialReduce(srcValues, rewriter, helper, baseSharedMemPtr, warpIdAxis,
                    laneIdAxis, flatIdParallel);
 
-  Value results =
-      getTypeConverter()->packLLElements(loc, srcValues, rewriter, input.getType());
+  Value results = getTypeConverter()->packLLElements(loc, srcValues, rewriter,
+                                                     input.getType());
   rewriter.replaceOp(op, results);
   return success();
 }

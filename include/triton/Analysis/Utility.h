@@ -61,6 +61,33 @@ private:
   int axis;
 };
 
+class ScanLoweringHelper {
+public:
+  explicit ScanLoweringHelper(triton::ScanOp op) : scanOp(op) {
+    auto type = scanOp.getOperand(0).getType().cast<RankedTensorType>();
+    srcEncoding = type.getEncoding();
+  }
+  Location getLoc() { return scanOp.getLoc(); }
+  unsigned getAxis() { return scanOp.getAxis(); }
+  unsigned scanElementsPerThreads();
+  unsigned parallelElementsPerThread();
+  Region &getCombineOp();
+  unsigned getNumParrallelThreadsPerWarp();
+  // Return the flat numbers of threads computing independent scan results.
+  unsigned getNumParrallelThreadsPerCTA();
+  unsigned getScanNumWarps();
+  unsigned getNumScanBlocks();
+  unsigned getScanDimSizePerWarp();
+  unsigned getNumParallelBlocks();
+  bool isSupported();
+  unsigned getScratchSizeInBytes();
+  triton::gpu::BlockedEncodingAttr getEncoding();
+
+private:
+  triton::ScanOp scanOp;
+  Attribute srcEncoding;
+};
+
 bool maybeSharedAllocationOp(Operation *op);
 
 bool maybeAliasOp(Operation *op);
@@ -276,8 +303,6 @@ protected:
   FuncDataMapT funcMap;
   SmallVector<FunctionOpInterface> roots;
 };
-
-unsigned getScanSharedMemorySize(triton::ScanOp op);
 
 } // namespace mlir
 
