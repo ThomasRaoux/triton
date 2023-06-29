@@ -23,10 +23,20 @@ public:
     return triton::gpu::getThreadsPerWarpWithUniqueData(
         getEncoding(), type.getShape())[getAxis()];
   }
+
   unsigned getNumParrallelThreadsPerWarp() {
     auto threadsPerWarp = triton::gpu::getThreadsPerWarp(getEncoding());
     threadsPerWarp[getAxis()] = 1;
     return product<unsigned>(threadsPerWarp);
+  }
+
+  // Return the flat numbers of threads computing independent scan results.
+  unsigned getNumParrallelThreadsPerCTA() {
+    unsigned numParallelThreadsPerWarp = getNumParrallelThreadsPerWarp();
+    auto warpsPerCTA = triton::gpu::getWarpsPerCTA(getEncoding());
+    warpsPerCTA[getAxis()] = 1;
+    unsigned numParallelWarpsPerCTA = product<unsigned>(warpsPerCTA);
+    return numParallelThreadsPerWarp * numParallelWarpsPerCTA;
   }
   unsigned getScanNumWarps() {
     auto type = scanOp.getOperand(0).getType().cast<RankedTensorType>();
@@ -143,7 +153,8 @@ static void storeWarpAccumulator(SmallVector<Value> &srcValues,
   Location loc = helper.getLoc();
   unsigned scanThreadsPerBlock = helper.scanThreadsPerBlock();
   unsigned scanDim = helper.getScanDimSizePerWarp();
-  unsigned numParallelLane = helper.getNumParrallelThreadsPerWarp();
+  unsigned numParallelLane = helper.getNumParrallelThreadsPerCTA();
+  llvm::dbgs() << "numParallelLane: " << numParallelLane << "\n";
   unsigned numWarps = helper.getScanNumWarps();
   unsigned chunkId = 0;
   for (unsigned j = scanThreadsPerBlock - 1; j < srcValues.size();
@@ -157,13 +168,14 @@ static void storeWarpAccumulator(SmallVector<Value> &srcValues,
   }
 }
 
-// Read the partial reductions from shared memory from each warp and chunks and combine them with the right elements.
+// Read the partial reductions from shared memory from each warp and chunks and
+// combine them with the right elements.
 static void AddPartialReduce(SmallVector<Value> &srcValues,
                              ConversionPatternRewriter &rewriter,
                              ScanLoweringHelper &helper, Value sharedMemoryPtr,
                              Value warpId, Value laneId, Value parallelLaneId) {
   Location loc = helper.getLoc();
-  unsigned numParallelLane = helper.getNumParrallelThreadsPerWarp();
+  unsigned numParallelLane = helper.getNumParrallelThreadsPerCTA();
   unsigned numWarps = helper.getScanNumWarps();
   unsigned numChunks = helper.getNumChunks();
   Value acc;
@@ -276,8 +288,16 @@ ScanOpConversion::emitFastScan(triton::ScanOp op, triton::ScanOpAdaptor adaptor,
   Value warpIdAxis = multiDimWarpId[axis];
 
   multiDimLaneId[axis] = i32_val(0);
+  threadsPerWarp[axis] = 1;
   Value laneIdParallel =
       linearize(rewriter, loc, multiDimLaneId, threadsPerWarp, order);
+  multiDimWarpId[axis] = i32_val(0);
+  warpsPerCTA[axis] = 1;
+  Value warpIdParallel =
+      linearize(rewriter, loc, multiDimWarpId, warpsPerCTA, order);
+  Value flatIdParallel =
+      add(laneIdParallel,
+          mul(warpIdParallel, i32_val(helper.getNumParrallelThreadsPerWarp())));
 
   SmallVector<Value> srcValues =
       getTypeConverter()->unpackLLElements(loc, input, rewriter, type);
@@ -293,13 +313,13 @@ ScanOpConversion::emitFastScan(triton::ScanOp op, triton::ScanOpAdaptor adaptor,
   Value baseSharedMemPtr = bitcast(
       getSharedMemoryBase(loc, rewriter, op.getOperation()), elemPtrTys);
   storeWarpAccumulator(srcValues, rewriter, helper, laneIdAxis, warpIdAxis,
-                       baseSharedMemPtr, laneIdParallel);
+                       baseSharedMemPtr, flatIdParallel);
   barrier();
   // Read back the partial reduction of each warp and accumulate them based on
   // warpId. Then update each chunk of contiguous elements by adding the
   // accumulated value from the previous lane.
   AddPartialReduce(srcValues, rewriter, helper, baseSharedMemPtr, warpIdAxis,
-                   laneIdAxis, laneIdParallel);
+                   laneIdAxis, flatIdParallel);
 
   Value results =
       getTypeConverter()->packLLElements(loc, srcValues, rewriter, input.getType());

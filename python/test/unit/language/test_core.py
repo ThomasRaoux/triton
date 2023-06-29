@@ -1572,15 +1572,19 @@ def test_scan2d(op, dtype_str, shape, axis, device):
 
 scan_layouts = [
     BlockedLayout([1, 4], [4, 8], [4, 1], [1, 0]),
+    BlockedLayout([1, 4], [8, 4], [4, 1], [1, 0]),
+    BlockedLayout([4, 1], [4, 8], [1, 4], [1, 0]),
+    BlockedLayout([2, 2], [4, 8], [2, 2], [1, 0]),
+    #BlockedLayout([2, 2], [8, 4], [2, 2], [1, 0]),
 ]
 
 
 @pytest.mark.parametrize("src_layout", scan_layouts)
-def test_scan_layouts(M, N, src_layout, axis, device):
+def test_scan_layouts(src_layout, device):
     ir = f"""
     #blocked = {src_layout}
     module attributes {{"triton_gpu.num-warps" = 4 : i32, "triton_gpu.threads-per-warp" = 32 : i32}} {{
-    tt.func public @kernel_0d1d(%arg0: !tt.ptr<i32> {{tt.divisibility = 16 : i32}}, %arg1: !tt.ptr<i32> {{tt.divisibility = 16 : i32}}) attributes {{noinline = false}} {{
+    tt.func public @kernel_0d1d(%arg0: !tt.ptr<i32> {{tt.divisibility = 16 : i32}}, %arg1: !tt.ptr<i32> {{tt.divisibility = 16 : i32}}) {{
       %cst = arith.constant dense<32> : tensor<32x1xi32, #blocked>
       %0 = tt.make_range {{end = 32 : i32, start = 0 : i32}} : tensor<32xi32, #triton_gpu.slice<{{dim = 1, parent = #blocked}}>>
       %1 = tt.expand_dims %0 {{axis = 1 : i32}} : (tensor<32xi32, #triton_gpu.slice<{{dim = 1, parent = #blocked}}>>) -> tensor<32x1xi32, #blocked>
@@ -1625,7 +1629,7 @@ def test_scan_layouts(M, N, src_layout, axis, device):
     kernel[(1, 1, 1)](x_tri, z_tri)
 
     z_ref = np.cumsum(x, axis=1)
-
+    
     np.testing.assert_equal(z_ref, z_tri.cpu().numpy())
 
 
