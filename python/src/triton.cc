@@ -1065,6 +1065,16 @@ void init_triton_ir(py::module &&m) {
               mlir::Value &rhs) -> mlir::Value {
              return mlir::Value(self.create<mlir::arith::ShRSIOp>(lhs, rhs));
            })
+      .def("create_maxsi",
+           [](TritonOpBuilder &self, mlir::Value &lhs,
+              mlir::Value &rhs) -> mlir::Value {
+             return mlir::Value(self.create<mlir::arith::MaxSIOp>(lhs, rhs));
+           })
+      .def("create_maxui",
+           [](TritonOpBuilder &self, mlir::Value &lhs,
+              mlir::Value &rhs) -> mlir::Value {
+             return mlir::Value(self.create<mlir::arith::MaxUIOp>(lhs, rhs));
+           })           
       // AddPtr (similar to GEP)
       .def("create_addptr",
            [](TritonOpBuilder &self, mlir::Value &ptr,

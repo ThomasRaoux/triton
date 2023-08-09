@@ -1398,7 +1398,7 @@ def floor(x: tl.tensor, builder: ir.builder) -> tl.tensor:
     return math.floor(x, _builder=builder)
 
 
-@_check_dtype(dtypes=["fp32", "fp64"])
+@_check_dtype(dtypes=["fp16", "fp32", "fp64"])
 def exp(x: tl.tensor, builder: ir.builder) -> tl.tensor:
     return tl.tensor(builder.create_exp(x.handle), x.type)
 
@@ -1431,6 +1431,14 @@ def abs(x: tl.tensor, builder: ir.builder) -> tl.tensor:
         return tl.tensor(builder.create_iabs(x.handle), x.type)
     elif dtype.is_int_unsigned():
         return x  # no-op
+    else:
+        assert False, f"Unexpected dtype {dtype}"
+
+
+def max(x: tl.tensor, y: tl.tensor, builder: ir.builder) -> tl.tensor:
+    dtype = x.dtype
+    if dtype.is_int_signed():
+        return tl.tensor(builder.create_maxsi(x.handle, y.handle), x.type)
     else:
         assert False, f"Unexpected dtype {dtype}"
 

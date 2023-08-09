@@ -1079,6 +1079,29 @@ struct ExpOpConversionApprox
   }
 };
 
+struct ExpOpConversionApprox2
+    : ElementwiseOpConversionBase<triton::PureExternElementwiseOp, ExpOpConversionApprox2> {
+  using Base =
+      ElementwiseOpConversionBase<triton::PureExternElementwiseOp, ExpOpConversionApprox2>;
+  using Base::Base;
+  using Adaptor = typename Base::OpAdaptor;
+
+  SmallVector<Value> createDestOps(triton::PureExternElementwiseOp op, OpAdaptor adaptor,
+                                   ConversionPatternRewriter &rewriter,
+                                   Type elemTy, MultipleOperandsRange operands,
+                                   Location loc) const {
+    if (op.getSymbol() != "__nv_exp2h")                                    
+      return {};
+
+    PTXBuilder ptxBuilder;
+    auto &exp2 = ptxBuilder.create<PTXInstr>("ex2")->o("approx").o("f16");
+    auto output = ptxBuilder.newOperand("=h");
+    auto input = ptxBuilder.newOperand(operands[0][0], "h");
+    exp2(output, input);
+    return {ptxBuilder.launch(rewriter, loc, f16_ty, false)};
+  }
+};
+
 struct AbsIOpConversion
     : ElementwiseOpConversionBase<mlir::math::AbsIOp, AbsIOpConversion> {
   using Base =
@@ -1182,6 +1205,7 @@ void populateElementwiseOpToLLVMPatterns(
   POPULATE_BINARY_OP(arith::ShRUIOp, LLVM::LShrOp)  // >>
   POPULATE_BINARY_OP(arith::MinFOp, LLVM::MinNumOp) // fmin
   POPULATE_BINARY_OP(arith::MinSIOp, LLVM::SMinOp)  // smin
+  POPULATE_BINARY_OP(arith::MaxSIOp, LLVM::SMaxOp)  // smax
 #undef POPULATE_BINARY_OP
 
 #define POPULATE_UNARY_OP(SRC_OP, DST_OP)                                      \
@@ -1229,6 +1253,7 @@ void populateElementwiseOpToLLVMPatterns(
   // ElementwiseOpConversion<math::ExpOp, math::ExpOp> defined below will call
   // __nv_expf for higher-precision calculation
   patterns.add<ExpOpConversionApprox>(typeConverter, benefit);
+  patterns.add<ExpOpConversionApprox2>(typeConverter, 11);
 }
 
 struct FPExtOpConversion
