@@ -90,7 +90,7 @@ def _fwd_kernel(
         if IS_CAUSAL:
             inf = float("-inf")
             qk = tl.where(offs_m[:, None] >= (start_n + offs_n[None, :]), qk, inf.to(tl.float16))
-        qk += tl.dot(q, k).to(tl.float16)
+        qk += tl.dot(q, k, out_dtype=tl.float16)
         # -- compute scaling constant ---
         qki = qk.to(tl.int16, bitcast=True)
         r = tl.max(qki, 1)
@@ -101,9 +101,9 @@ def _fwd_kernel(
         # -- scale and update acc --
         acc_scale = l_i * 0 + alpha  # workaround some compiler bug
         acc *= acc_scale[:, None]
-        acc += tl.dot(p.to(tl.float16), v).to(tl.float16)
+        acc += tl.dot(p, v, out_dtype=tl.float16)
         # -- update m_i and l_i --
-        l_i = l_i * alpha + tl.sum(p, 1).to(tl.float16)
+        l_i = l_i * alpha + tl.sum(p, 1)
         m_i = m_i_new
         # update pointers
         K_block_ptr = tl.advance(K_block_ptr, (0, BLOCK_N))

@@ -573,6 +573,37 @@ struct ElementwiseOpConversion
   }
 };
 
+
+class MaxVectorOpConversion
+    : public ConvertTritonGPUOpToLLVMPattern<arith::MaxSIOp> {
+public:
+  using OpAdaptor = typename arith::MaxSIOp::Adaptor;
+
+  explicit MaxVectorOpConversion(
+      TritonGPUToLLVMTypeConverter &typeConverter, PatternBenefit benefit = 1)
+      : ConvertTritonGPUOpToLLVMPattern<arith::MaxSIOp>(typeConverter, benefit) {}
+
+  LogicalResult
+  matchAndRewrite(arith::MaxSIOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if(!op.getType().isa<VectorType>())
+      return failure();
+
+    Value a = rewriter.create<LLVM::BitcastOp>(op.getLoc(), i32_ty, adaptor.getOperands()[0]);
+    Value b = rewriter.create<LLVM::BitcastOp>(op.getLoc(), i32_ty, adaptor.getOperands()[1]);
+
+    PTXBuilder builder;
+    auto &cvt = *builder.create("max.s16x2");
+    auto res = builder.newOperand("=r");
+    auto operand0 = builder.newOperand(a, "r");
+    auto operand1 = builder.newOperand(b, "r");
+    cvt(res, operand0, operand1);
+    Value result = builder.launch(rewriter, op.getLoc(), i32_ty, false);
+    rewriter.replaceOpWithNewOp<LLVM::BitcastOp>(op, op.getType(), result);
+    return success();
+  }
+};
+
 // Attempts to use vectorized conversions via inline PTX when possible.
 struct FpToFpOpConversion
     : public ElementwiseOpConversionBase<triton::FpToFpOp, FpToFpOpConversion> {
@@ -1226,6 +1257,8 @@ void populateElementwiseOpToLLVMPatterns(
   POPULATE_UNARY_OP(triton::IntToPtrOp, LLVM::IntToPtrOp)
   POPULATE_UNARY_OP(triton::PtrToIntOp, LLVM::PtrToIntOp)
 #undef POPULATE_UNARY_OP
+
+  patterns.add<MaxVectorOpConversion>(typeConverter, benefit);
 
   patterns.add<AbsIOpConversion>(typeConverter, benefit);
   patterns.add<AbsFOpConversion>(typeConverter, benefit);
