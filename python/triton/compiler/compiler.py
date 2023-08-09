@@ -20,7 +20,7 @@ from ..common.backend import get_backend, path_to_ptxas
 # from ..runtime import driver, jit, JITFunction
 # TODO: runtime.errors
 from ..runtime.autotuner import OutOfResources
-from ..runtime.cache import get_cache_manager
+from ..runtime.cache import (get_cache_manager, get_override_manager)
 from ..runtime.driver import driver
 from ..runtime.jit import (JITFunction, get_cuda_stream, get_current_device,
                            get_device_capability, version_key)
@@ -511,6 +511,8 @@ def compile(fn, **kwargs):
 
     # create cache manager
     fn_cache_manager = get_cache_manager(make_hash(fn, arch, get_env_vars(), **kwargs))
+    fn_override_manager = get_override_manager(make_hash(fn, arch, get_env_vars(), **kwargs))
+
     # determine name and extension type of provided function
     if isinstance(fn, JITFunction):
         name, ext = fn.__name__, "ast"
@@ -571,6 +573,10 @@ def compile(fn, **kwargs):
                 else:
                     metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)
                     fn_cache_manager.put(next_module, ir_filename)
+                    if(fn_override_manager.has_file(ir_filename)):
+                        full_name = fn_override_manager.get_file(ir_filename)
+                        print("overriding kernel: " + full_name)
+                        next_module = parse(full_name)
             else:
                 if ir_name == "amdgcn":
                     extra_file_name = f"{name}.hsaco_path"

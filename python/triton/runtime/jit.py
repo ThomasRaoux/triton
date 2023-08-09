@@ -100,6 +100,7 @@ class DependenciesFinder(ast.NodeVisitor):
 
 @functools.lru_cache()
 def version_key():
+    return ''
     import pkgutil
     contents = []
     # frontend
