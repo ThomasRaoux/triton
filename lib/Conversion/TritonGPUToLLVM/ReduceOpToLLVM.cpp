@@ -42,6 +42,36 @@ private:
       return;
     }
 
+    bool vectorize = acc[0].getType().isa<VectorType>();
+    if (vectorize) {
+      unsigned vecSize = acc[0].getType().cast<VectorType>().getNumElements();
+      IRMapping bvm;
+      for (unsigned i = 0; i < acc.size(); ++i) {
+        bvm.map(combineOp.getArgument(i), acc[i]);
+        bvm.map(combineOp.getArgument(acc.size() + i), cur[i]);
+      }
+      for (Operation &op : combineOp.getOps()) {
+        SmallVector<Value> vecOperands;
+        for (Value scalarOperand : op.getOperands()) {
+          vecOperands.push_back(bvm.lookup(scalarOperand));
+        }
+        if (auto returnOp = dyn_cast<triton::ReduceReturnOp>(op)) {
+          for (unsigned i = 0; i < acc.size(); ++i) {
+            acc[i] = vecOperands[i];
+          }
+          break;
+        }
+        SmallVector<Type> resultTypes;
+        for (Type resultType : op.getResultTypes())
+          resultTypes.push_back(VectorType::get(vecSize, resultType));
+        Operation *clonedOp =
+            rewriter.create(op.getLoc(), op.getName().getIdentifier(),
+                            vecOperands, resultTypes, op.getAttrs());
+        bvm.map(op.getResults(), clonedOp->getResults());
+      }
+      return;
+    }
+
     // Create a new copy of the reduce block, and inline it
     Block *currentBlock = rewriter.getBlock();
     Region &parent = *currentBlock->getParent();
@@ -54,13 +84,19 @@ private:
       combineArgs[i] = acc[i];
       combineArgs[acc.size() + i] = cur[i];
     }
-
+    assert(combineArgs.size() == newReduce.getNumArguments());
+    // TODO: Why are the arguments not replaced?
+    for (auto it : llvm::zip(newReduce.getArguments(), combineArgs)) {
+      rewriter.replaceAllUsesWith(std::get<0>(it), std::get<1>(it));
+    }
     rewriter.inlineBlockBefore(&newReduce, &*rewriter.getInsertionPoint(),
                                combineArgs);
 
+
+
     auto results = returnOp.getResult();
     for (unsigned i = 0; i < acc.size(); ++i) {
-      acc[i] = results[i];
+      acc[i] = returnOp.getOperand(i);
     }
 
     // Delete the terminator, which is no longer used
@@ -342,6 +378,7 @@ private:
       std::map<SmallVector<unsigned>, SmallVector<Value>> &indices,
       ConversionPatternRewriter &rewriter) const {
     triton::ReduceOp op = helper.getOperation();
+    Location loc = op.getLoc();
     RankedTensorType operandType = op.getInputTypes()[0];
     // Assumes offsets don't actually depend on type
     SmallVector<SmallVector<unsigned>> offset =
@@ -349,13 +386,31 @@ private:
     unsigned srcElems = getTotalElemsPerThread(operandType);
     auto *combineOp = &op.getCombineOp();
     auto srcIndices =
-        emitIndices(op.getLoc(), rewriter, helper.getSrcLayout(), operandType);
+        emitIndices(loc, rewriter, helper.getSrcLayout(), operandType);
+
+    int64_t typeSizeInBits = operandType.getElementTypeBitWidth();
+    unsigned pack = 1;
+    if (typeSizeInBits < 32 && typeSizeInBits % 8 == 0)
+      pack = 32 / typeSizeInBits;
+    if(srcElems % pack != 0)
+      pack = 1;
+
     // reduce within threads
-    for (unsigned i = 0; i < srcElems; ++i) {
+    for (unsigned i = 0; i < srcElems; i+=pack) {
+      SmallVector<Value> src = srcValues[i];
+      if(pack > 1) {
+        auto vecTy = VectorType::get(pack, src[0].getType());
+        Value undef = undef(vecTy);
+        for (unsigned srcIdx = 0; srcIdx < src.size(); srcIdx++) {
+          src[srcIdx] = undef;
+          for (unsigned j = 0; j < pack; j++)
+            src[srcIdx] = insert_element(vecTy, src[srcIdx], srcValues[i + j][srcIdx], i32_val(j));
+        }
+      }
       SmallVector<unsigned> key = offset[i];
       key[op.getAxis()] = 0;
       bool isFirst = accs.find(key) == accs.end();
-      accumulate(rewriter, *combineOp, accs[key], srcValues[i], isFirst);
+      accumulate(rewriter, *combineOp, accs[key], src, isFirst);
       if (isFirst)
         indices[key] = srcIndices[i];
     }
@@ -393,7 +448,9 @@ private:
     for (unsigned N = numLaneToReduce / 2; N > 0; N >>= 1) {
       SmallVector<Value> shfl(acc.size());
       for (unsigned i = 0; i < acc.size(); ++i) {
-        shfl[i] = shflSync(loc, rewriter, acc[i], N);
+        Value tmp = bitcast(acc[i], rewriter.getIntegerType(32));
+        shfl[i] = shflSync(loc, rewriter, tmp, N);
+        shfl[i] = bitcast(shfl[i], acc[i].getType());
       }
       accumulate(rewriter, op.getCombineOp(), acc, shfl, false);
     }
@@ -432,7 +489,16 @@ private:
         for (int j = 0; j < resultElems; j++) {
           auto key = resultOffset[j];
           key.insert(key.begin() + axis, 0);
-          resultVals.push_back(accs[key][i]);
+          Value acc = accs[key][i];
+          if(acc.getType().isa<VectorType>()) {
+            Value a0 = extract_element(acc, i32_val(0));
+            Value a1 = extract_element(acc, i32_val(1));
+            SmallVector<Value> combine = { a0 };
+            accumulate(rewriter, op.getCombineOp(), combine, {a1}, false);
+            resultVals.push_back(combine[0]);
+          } else {
+            resultVals.push_back(acc);
+          }
         }
         results[i] = getTypeConverter()->packLLElements(loc, resultVals,
                                                         rewriter, resultTy);

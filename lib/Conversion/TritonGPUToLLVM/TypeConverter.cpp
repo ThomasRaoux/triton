@@ -103,6 +103,7 @@ SmallVector<Value> TritonGPUToLLVMTypeConverter::unpackLLElements(
     Type type) {
   assert(bool(llvmStruct) && "can not unpack null values");
   if (llvmStruct.getType().isIntOrIndexOrFloat() ||
+      llvmStruct.getType().isa<VectorType>() ||
       llvmStruct.getType().isa<triton::PointerType>() ||
       llvmStruct.getType().isa<LLVM::LLVMPointerType>())
     return {llvmStruct};

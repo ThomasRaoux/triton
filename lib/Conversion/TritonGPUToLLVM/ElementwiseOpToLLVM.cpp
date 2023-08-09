@@ -501,6 +501,8 @@ public:
   matchAndRewrite(SourceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto resultTy = op.getType();
+    if(op.getType().template isa<VectorType>())
+      return failure();
     Location loc = op->getLoc();
     // element type
     auto resultElementTy = getElementTypeOrSelf(resultTy);
