@@ -633,6 +633,67 @@ public:
 
 } // namespace
 
+static bool isLayoutAnchor(Operation *op) {
+  if (isa<triton::LoadOp, triton::StoreOp>(op))
+    return isExpensiveLoadOrStore(op);
+  if(isa<triton::DotOp>(op))
+    return true;
+  return false;
+}
+
+static bool canBePropagatedTo(Operation *op) {
+  // don't rematerialize non-element-wise
+  if (!op->hasTrait<mlir::OpTrait::SameOperandsAndResultEncoding>() &&
+      !op->hasTrait<mlir::OpTrait::Elementwise>() &&
+      !isa<triton::StoreOp, triton::AssertOp, triton::PrintOp,
+           triton::ReduceOp>(op))
+    return false;
+  return true;
+}
+
+static bool propagate(Value v, llvm::MapVector<Value, LayoutInfo>& layouts) {
+  if(isLayoutAnchor(v.getDefiningOp()))
+    return false;
+  
+  return false;
+}
+
+static void analyzeLayout(ModuleOp m) {
+  struct LayoutInfo {
+    LayoutInfo(Value v) {
+      encoding =
+          v.getType().cast<RankedTensorType>().getEncoding();
+    }
+    Attribute encoding;
+  };
+  llvm::MapVector<Value, LayoutInfo> layouts;
+  m.walk([&](Operation *op) {
+    if (isLayoutAnchor(op)) {
+      layouts.insert({op->getResult(0), op->getResult(0)});
+    }
+  });
+  std::vector<Value> queue;
+  for (auto it : layouts) {
+    queue.push_back(it.first);
+  }
+  while (!queue.empty()) {
+    Value currentValue = queue.back();
+    LayoutInfo& info = layouts[currentValue];
+    queue.pop_back();
+    for (OpOperand &operand : currentValue.getUses()) {
+      if (propagate(operand, info, layouts))
+        queue.push_back(user);
+    }
+    for (Value operand : currentOp->getOperands()) {
+      Operation *producer = operand.getDefiningOp();
+      if (!producer)
+        continue;
+      if (propagate(producer, layouts))
+        queue.push_back(producer);
+    }
+  }
+}
+
 #define GEN_PASS_CLASSES
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
 
@@ -649,21 +710,18 @@ public:
     mlir::RewritePatternSet patterns(context);
 
     patterns.add<SimplifyConversion>(context);
-    patterns.add<SimplifyReduceCvt>(context);
-    patterns.add<RematerializeBackward>(context);
-    patterns.add<RematerializeForward>(context);
-    patterns.add<MoveConvertOutOfLoop>(context);
-    patterns.add<MoveConvertOutOfIf>(context);
+//    patterns.add<SimplifyReduceCvt>(context);
+//    patterns.add<RematerializeBackward>(context);
+//    patterns.add<RematerializeForward>(context);
+//    patterns.add<MoveConvertOutOfLoop>(context);
+//    patterns.add<MoveConvertOutOfIf>(context);
     patterns.add<DecomposeDotOperand>(context);
     patterns.add<ConvertDotConvert>(context);
 
     if (mlir::applyPatternsAndFoldGreedily(m, std::move(patterns)).failed()) {
       signalPassFailure();
     }
-
-    if (fixupLoops(m).failed()) {
-      signalPassFailure();
-    }
+    analyzeLayout(m);
   }
 };
 

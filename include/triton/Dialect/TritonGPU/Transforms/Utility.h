@@ -107,7 +107,7 @@ protected:
 LogicalResult invertEncoding(Attribute targetEncoding, Operation *op,
                              Attribute &ret);
 
-bool isExpensiveLoadOrStore(Operation *op, Attribute &targetEncoding);
+bool isExpensiveLoadOrStore(Operation *op);
 
 bool isExpensiveToRemat(Operation *op, Attribute &targetEncoding);
 

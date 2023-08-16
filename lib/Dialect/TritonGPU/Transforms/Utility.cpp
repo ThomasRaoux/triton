@@ -318,7 +318,7 @@ LogicalResult invertEncoding(Attribute targetEncoding, Operation *op,
   return success();
 }
 
-bool isExpensiveLoadOrStore(Operation *op, Attribute &targetEncoding) {
+bool isExpensiveLoadOrStore(Operation *op) {
   // Case 1: Pointer of tensor is always expensive
   auto operandType = op->getOperand(0).getType();
   if (triton::isTensorPointerType(operandType))
@@ -342,7 +342,7 @@ bool isExpensiveToRemat(Operation *op, Attribute &targetEncoding) {
   if (!op)
     return true;
   if (isa<triton::LoadOp, triton::StoreOp>(op))
-    return isExpensiveLoadOrStore(op, targetEncoding);
+    return isExpensiveLoadOrStore(op);
   if (isa<triton::CatOp>(op))
     return triton::gpu::isExpensiveCat(cast<triton::CatOp>(op), targetEncoding);
   if (isa<tensor::ExtractSliceOp, triton::gpu::AllocTensorOp,
