@@ -368,6 +368,7 @@ int simulateBackwardRematerialization(
     SetVector<Attribute> &layout, llvm::MapVector<Value, Attribute> &toConvert,
     Attribute targetEncoding) {
   // DFS
+  DenseSet<Value> valueProcessed;
   std::vector<std::pair<Operation *, Attribute>> queue;
   queue.emplace_back(initOp, targetEncoding);
   // We want to see the effect of converting `initOp` to a new layout
@@ -381,7 +382,7 @@ int simulateBackwardRematerialization(
     // If the current operation is expensive to rematerialize,
     // we stop everything
     if (isExpensiveToRemat(currOp, currLayout))
-      break;
+      return INT_MAX;
     // A conversion will be removed here (i.e. transferred to operands)
     numCvts -= 1;
     // Done processing
@@ -408,18 +409,22 @@ int simulateBackwardRematerialization(
       // 2. Skip if there's no defining op
       // 3. Skip if the defining op has already been processed
       // 4. Skip or the defining op is in a different block
-      if (!argI.getType().isa<RankedTensorType>() || !opArgI ||
-          processed.contains(opArgI) ||
-          opArgI->getBlock() != currOp->getBlock())
+      if (!argI.getType().isa<RankedTensorType>() || valueProcessed.count(argI))
         continue;
+      if(opArgI && (
+          processed.contains(opArgI) ||
+          opArgI->getBlock() != currOp->getBlock()))
+          continue;
+        
       // If the conversion can be folded into opArgI then
       // we don't count this conversion as expensive
-      if (canFoldConversion(opArgI, newEncoding))
+      if (opArgI && canFoldConversion(opArgI, newEncoding))
         continue;
-
+      valueProcessed.insert(argI);
       // We add one expensive conversion for the current operand
       numCvts += 1;
-      queue.emplace_back(opArgI, newEncoding);
+      if(opArgI)
+        queue.emplace_back(opArgI, newEncoding);
     }
   }
   // return net number of conversions

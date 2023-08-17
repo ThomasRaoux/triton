@@ -353,9 +353,6 @@ public:
     if (srcEncoding.isa<triton::gpu::SharedEncodingAttr>() ||
         dstEncoding.isa<triton::gpu::SharedEncodingAttr>())
       return failure();
-    // heuristics for flash attention
-    if (srcEncoding.isa<triton::gpu::SliceEncodingAttr>())
-      return failure();
     // For cases like:
     // %0 = convert_layout %arg0
     // We should try to move %0 out of scf.for first, if it couldn't be moved
@@ -379,25 +376,29 @@ public:
       // don't rematerialize anything expensive
       if (isExpensiveToRemat(op, srcEncoding))
         return failure();
+
+      if (isa<triton::ExpandDimsOp>(op) &&
+          !srcEncoding.isa<triton::gpu::SliceEncodingAttr>())
+        return failure();
       // don't rematerialize non-element-wise
       if (!op->hasTrait<mlir::OpTrait::SameOperandsAndResultEncoding>() &&
           !op->hasTrait<mlir::OpTrait::Elementwise>() &&
           !isa<triton::StoreOp, triton::AssertOp, triton::PrintOp,
-               triton::ReduceOp>(op))
+               triton::ReduceOp, triton::ExpandDimsOp>(op))
         return failure();
       // don't rematerialize if it adds an extra conversion that can't
       // be removed
-      for (Value arg : op->getOperands()) {
-        Operation *argOp = arg.getDefiningOp();
-        SetVector<Operation *> processed;
-        SetVector<Attribute> layout;
-        llvm::MapVector<Value, Attribute> toConvert;
-        int numAddedConvs = simulateBackwardRematerialization(
-            argOp, processed, layout, toConvert, srcEncoding);
-        if (argOp && !isa<triton::gpu::ConvertLayoutOp>(argOp) &&
-            cvtSlices.count(argOp) == 0 && numAddedConvs > 0)
-          return failure();
-      }
+     // for (Value arg : op->getOperands()) {
+     //   Operation *argOp = arg.getDefiningOp();
+     //   SetVector<Operation *> processed;
+     //   SetVector<Attribute> layout;
+     //   llvm::MapVector<Value, Attribute> toConvert;
+     //   int numAddedConvs = simulateBackwardRematerialization(
+     //       argOp, processed, layout, toConvert, srcEncoding);
+     //   if (argOp && !isa<triton::gpu::ConvertLayoutOp>(argOp) &&
+     //       cvtSlices.count(argOp) == 0 && numAddedConvs > 0)
+     //     return failure();
+     // }
     }
 
     // Call SimplifyReduceCvt instead of the general push conversion forward
@@ -633,6 +634,7 @@ public:
 
 } // namespace
 
+/*
 static bool isLayoutAnchor(Operation *op) {
   if (isa<triton::LoadOp, triton::StoreOp>(op))
     return isExpensiveLoadOrStore(op);
@@ -651,36 +653,40 @@ static bool canBePropagatedTo(Operation *op) {
   return true;
 }
 
-SmallVector<Value> propagate(Value v, llvm::MapVector<Value, LayoutInfo>& layouts) {
-  
+void propagateDown(Operation* op, DenseMap<Value>& processed) {
+  for (OpOperand& operand : op->getUses()) {
+    bool isProcessed = processed.count(operand.get());
+    // We have already picked the layout for this value. Need to insert a
+convert. if (isProcessed) {
+      // Convert and stop propagating.
+      continue;
+    }
+    // clone the operation with new type.
+
+    Operation* owner = operand->getOwner();
+    propagate(owner, processed);
+  }
 }
 
-static void analyzeLayout(ModuleOp m) {
-  struct LayoutInfo {
-    LayoutInfo(Value v) {
-      encoding =
-          v.getType().cast<RankedTensorType>().getEncoding();
-    }
-    Attribute encoding;
-  };
-  llvm::MapVector<Value, LayoutInfo> layouts;
+void propagateUp(Operation* op, DenseMap<Value>& processed) {
+
+}
+
+static void propagateLayout(ModuleOp m) {
+  std::vector<Operation*> anchors;
   m.walk([&](Operation *op) {
-    if (isLayoutAnchor(op)) {
-      layouts.insert({op->getResult(0), op->getResult(0)});
-    }
+    if (isLayoutAnchor(op))
+      anchors.push_back(op);
   });
-  std::vector<Value> queue;
-  for (auto it : layouts) {
-    queue.push_back(it.first);
+  DenseMap<Value> processed;
+  for(Operation* op : anchors) {
+    propagateDown(op, processed);
   }
-  while (!queue.empty()) {
-    Value currentValue = queue.back();
-    LayoutInfo& info = layouts[currentValue];
-    queue.pop_back();
-    SmallVector<Value> changed = propagate(currentValue, layouts);
-    queue.append(changed.begin(), changed.end());
+  for(Operation* op : anchors) {
+    propagateUp(op, processed);
   }
 }
+*/
 
 #define GEN_PASS_CLASSES
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
@@ -695,21 +701,49 @@ public:
     MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
 
-    mlir::RewritePatternSet patterns(context);
-
-    patterns.add<SimplifyConversion>(context);
-//    patterns.add<SimplifyReduceCvt>(context);
-//    patterns.add<RematerializeBackward>(context);
-//    patterns.add<RematerializeForward>(context);
-//    patterns.add<MoveConvertOutOfLoop>(context);
-//    patterns.add<MoveConvertOutOfIf>(context);
-    patterns.add<DecomposeDotOperand>(context);
-    patterns.add<ConvertDotConvert>(context);
-
-    if (mlir::applyPatternsAndFoldGreedily(m, std::move(patterns)).failed()) {
-      signalPassFailure();
+    {
+      mlir::RewritePatternSet patterns(context);
+      patterns.add<SimplifyConversion>(context);
+      patterns.add<RematerializeBackward>(context);
+      if (mlir::applyPatternsAndFoldGreedily(m, std::move(patterns)).failed()) {
+        signalPassFailure();
+      }
     }
-    analyzeLayout(m);
+    {
+      mlir::RewritePatternSet patterns(context);
+      patterns.add<SimplifyConversion>(context);
+      patterns.add<SimplifyReduceCvt>(context);
+      patterns.add<RematerializeForward>(context);
+      if (mlir::applyPatternsAndFoldGreedily(m, std::move(patterns)).failed()) {
+        signalPassFailure();
+      }
+    }
+
+
+    if(0){
+      mlir::RewritePatternSet patterns(context);
+      patterns.add<SimplifyConversion>(context);
+      patterns.add<MoveConvertOutOfLoop>(context);
+      if (mlir::applyPatternsAndFoldGreedily(m, std::move(patterns)).failed()) {
+        signalPassFailure();
+      }
+    }
+    {
+      mlir::RewritePatternSet patterns(context);
+
+      //patterns.add<SimplifyConversion>(context);
+      //    patterns.add<SimplifyReduceCvt>(context);
+      //    patterns.add<RematerializeBackward>(context);
+      //    patterns.add<RematerializeForward>(context);
+      //    patterns.add<MoveConvertOutOfLoop>(context);
+      //    patterns.add<MoveConvertOutOfIf>(context);
+      patterns.add<DecomposeDotOperand>(context);
+      patterns.add<ConvertDotConvert>(context);
+
+      if (mlir::applyPatternsAndFoldGreedily(m, std::move(patterns)).failed()) {
+        signalPassFailure();
+      }
+    }
   }
 };
 
