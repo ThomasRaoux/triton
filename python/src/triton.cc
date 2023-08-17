@@ -1519,6 +1519,20 @@ void init_triton_ir(py::module &&m) {
              return self.create<mlir::arith::SelectOp>(condition, trueValue,
                                                        falseValue);
            })
+      .def("create_inline_asm",
+           [](TritonOpBuilder &self, const std::string &inlineAsm,
+              const std::string &constraints,
+              const std::vector<mlir::Value> &values,
+              mlir::Type &type) -> mlir::Value {
+             return self.create<mlir::triton::ElementwiseInlineAsmOp>(
+                 type, inlineAsm, constraints, false, values);
+             // return self.create<::mlir::arith::ConstantOp>(
+             //     self.getBuilder().getZeroAttr(type));
+             // self.create<mlir::triton::PrintOp>(
+             //     mlir::StringAttr::get(self.getBuilder().getContext(),
+             //                          llvm::StringRef(prefix)),
+             //    values);
+           })
       .def("create_print",
            [](TritonOpBuilder &self, const std::string &prefix,
               const std::vector<mlir::Value> &values) -> void {

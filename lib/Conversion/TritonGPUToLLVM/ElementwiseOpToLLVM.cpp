@@ -829,6 +829,39 @@ private:
   }
 };
 
+struct ElementwiseInlineAsmOpConversion
+    : public ElementwiseOpConversionBase<ElementwiseInlineAsmOp,
+                                         ElementwiseInlineAsmOpConversion> {
+  using Base = ElementwiseOpConversionBase<ElementwiseInlineAsmOp,
+                                           ElementwiseInlineAsmOpConversion>;
+  using Base::Base;
+  using Adaptor = typename Base::OpAdaptor;
+  typedef typename Base::OpAdaptor OpAdaptor;
+
+  SmallVector<Value> createDestOps(ElementwiseInlineAsmOp op, OpAdaptor adaptor,
+                                   ConversionPatternRewriter &rewriter,
+                                   Type elemTy, MultipleOperandsRange operands,
+                                   Location loc) const {
+    Type dstType =
+        getTypeConverter()->convertType(getElementType(op.getResult()));
+    Value inlineAsm = rewriter
+                          .create<LLVM::InlineAsmOp>(
+                              loc, dstType,
+                              operands[0],         // operands
+                              op.getAsmString(),   // asm_string
+                              op.getConstraints(), // constraints
+                              !op.getPure(),       // has_side_effects
+                              false,               // is_align_stack
+                              LLVM::AsmDialectAttr::get(
+                                  rewriter.getContext(),
+                                  LLVM::AsmDialect::AD_ATT), // asm_dialect
+                              ArrayAttr()                    // operand_attrs
+                              )
+                          ->getResult(0);
+    return {inlineAsm};
+  }
+};
+
 struct FDivOpConversion
     : ElementwiseOpConversionBase<mlir::arith::DivFOp, FDivOpConversion> {
   using Base =
@@ -1231,6 +1264,7 @@ void populateElementwiseOpToLLVMPatterns(
   patterns
       .add<ExternElementwiseOpConversion<triton::ImpureExternElementwiseOp>>(
           typeConverter, benefit);
+  patterns.add<ElementwiseInlineAsmOpConversion>(typeConverter, benefit);
   // ExpOpConversionApprox will try using ex2.approx if the input type is
   // FP32. For other input types, ExpOpConversionApprox will return failure and
   // ElementwiseOpConversion<math::ExpOp, math::ExpOp> defined below will call

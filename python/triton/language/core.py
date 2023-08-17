@@ -1793,6 +1793,43 @@ def device_assert(cond, msg="", _builder=None):
     return semantic.device_assert(_to_tensor(cond, _builder), msg, file_name, func_name, lineno, _builder)
 
 
+@builtin
+def inline_asm_elementwise(asm: str, constraints: str, args: list, dtype, is_pure: bool, _builder=None):
+    '''
+        Dispatch an elementwise function using the inline assembly provided
+        :param lib_name: the name of the library
+        :param lib_path: the path of the library
+        :param args: the arguments of the function
+        :param arg_type_symbol_dict: the type of the arguments
+        :param is_pure: whether the function is pure
+        :param _builder: the builder
+        :return: the return value of the function
+    '''
+    dispatch_args = args.copy()
+    asm = _constexpr_to_value(asm)
+    constraints = _constexpr_to_value(constraints)
+    ret_shape = None
+    arg_types = []
+    for i in range(len(dispatch_args)):
+        dispatch_args[i] = _to_tensor(dispatch_args[i], _builder)
+        arg_types.append(dispatch_args[i].dtype)
+    if len(arg_types) > 0:
+        arg_types = tuple(arg_types)
+        broadcast_arg = dispatch_args[0]
+        # Get the broadcast shape over all the arguments
+        for i, item in enumerate(dispatch_args):
+            _, broadcast_arg = semantic.binary_op_type_checking_impl(
+                item, broadcast_arg, _builder, arithmetic_check=False)
+        # Change the shape of each argument based on the broadcast shape
+        for i in range(len(dispatch_args)):
+            dispatch_args[i], _ = semantic.binary_op_type_checking_impl(
+                dispatch_args[i], broadcast_arg, _builder, arithmetic_check=False)
+    ret_shape = broadcast_arg.shape
+    res_ty = block_type(dtype, ret_shape).to_ir(_builder)
+    call = _builder.create_inline_asm(asm, constraints, [t.handle for t in args], res_ty)
+    return tensor(call, block_type(dtype, ret_shape))
+
+
 # -----------------------
 # Iterators
 # -----------------------

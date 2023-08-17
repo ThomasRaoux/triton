@@ -511,6 +511,24 @@ def TT_MakeRangeOp : TT_Op<"make_range", [Pure]> {
 }
 
 //
+// ElementwiseInlineAsm Op
+//
+def TT_ElementwiseInlineAsmOp : TT_Op<"elementwise_inline_asm", [Elementwise]>,
+  Arguments<(ins StrAttr:$asm_string, StrAttr:$constraints, BoolAttr:$pure, Variadic<AnyTypeOf<[TT_Type]>>:$args)> {
+  let summary = "inline assembly for one element of the elementwise op.";
+  let description = [{
+   TODO
+  }];
+
+  let results = (outs TT_Tensor:$result);
+
+
+  let assemblyFormat = [{
+    $asm_string attr-dict (`:` $args^ `:` type($args))? `->` type($result)
+  }];
+}
+
+//
 // Print Op
 //
 def TT_PrintOp : TT_Op<"print", [MemoryEffects<[MemWrite]>]>,
