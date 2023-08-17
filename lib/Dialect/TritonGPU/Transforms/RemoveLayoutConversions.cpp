@@ -651,11 +651,8 @@ static bool canBePropagatedTo(Operation *op) {
   return true;
 }
 
-static bool propagate(Value v, llvm::MapVector<Value, LayoutInfo>& layouts) {
-  if(isLayoutAnchor(v.getDefiningOp()))
-    return false;
+SmallVector<Value> propagate(Value v, llvm::MapVector<Value, LayoutInfo>& layouts) {
   
-  return false;
 }
 
 static void analyzeLayout(ModuleOp m) {
@@ -680,17 +677,8 @@ static void analyzeLayout(ModuleOp m) {
     Value currentValue = queue.back();
     LayoutInfo& info = layouts[currentValue];
     queue.pop_back();
-    for (OpOperand &operand : currentValue.getUses()) {
-      if (propagate(operand, info, layouts))
-        queue.push_back(user);
-    }
-    for (Value operand : currentOp->getOperands()) {
-      Operation *producer = operand.getDefiningOp();
-      if (!producer)
-        continue;
-      if (propagate(producer, layouts))
-        queue.push_back(producer);
-    }
+    SmallVector<Value> changed = propagate(currentValue, layouts);
+    queue.append(changed.begin(), changed.end());
   }
 }
 
