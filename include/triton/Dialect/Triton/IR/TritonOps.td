@@ -514,7 +514,7 @@ def TT_MakeRangeOp : TT_Op<"make_range", [Pure]> {
 // ElementwiseInlineAsm Op
 //
 def TT_ElementwiseInlineAsmOp : TT_Op<"elementwise_inline_asm", [Elementwise,
-                                                                 SameOperandsAndResultEncoding,  
+                                                                 SameOperandsAndResultEncoding,
                                                                  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "inline assembly for one element of the elementwise op.";
   let description = [{
@@ -526,7 +526,7 @@ def TT_ElementwiseInlineAsmOp : TT_Op<"elementwise_inline_asm", [Elementwise,
 
 
   let assemblyFormat = [{
-    $asm_string attr-dict (`:` $args^ `:` type($args))? `->` type($result)
+    $asm_string attr-dict ($args^ `:` type($args))? `->` type($result)
   }];
 }
 

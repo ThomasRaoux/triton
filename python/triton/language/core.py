@@ -1796,12 +1796,13 @@ def device_assert(cond, msg="", _builder=None):
 @builtin
 def inline_asm_elementwise(asm: str, constraints: str, args: list, dtype, is_pure: bool, pack: int, _builder=None):
     '''
-        Dispatch an elementwise function using the inline assembly provided
-        :param lib_name: the name of the library
-        :param lib_path: the path of the library
-        :param args: the arguments of the function
-        :param arg_type_symbol_dict: the type of the arguments
-        :param is_pure: whether the function is pure
+        Execute the inline assembly to a packed of elements of the tensor
+        :param asm: assembly to be inlined, it has to match the target assembly format
+        :param constraints: string representing the mapping of operands to register
+        :param args: the arguments of the operation
+        :param dtype: the element type of the returned variable
+        :param is_pure: whether the operation is pure
+        :param pack: the number of elements to be processed by one instance of inline assembly
         :param _builder: the builder
         :return: the return value of the function
     '''
