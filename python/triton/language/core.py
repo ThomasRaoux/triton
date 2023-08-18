@@ -1794,7 +1794,7 @@ def device_assert(cond, msg="", _builder=None):
 
 
 @builtin
-def inline_asm_elementwise(asm: str, constraints: str, args: list, dtype, is_pure: bool, _builder=None):
+def inline_asm_elementwise(asm: str, constraints: str, args: list, dtype, is_pure: bool, pack: int, _builder=None):
     '''
         Dispatch an elementwise function using the inline assembly provided
         :param lib_name: the name of the library
@@ -1808,6 +1808,7 @@ def inline_asm_elementwise(asm: str, constraints: str, args: list, dtype, is_pur
     dispatch_args = args.copy()
     asm = _constexpr_to_value(asm)
     constraints = _constexpr_to_value(constraints)
+    pack = _constexpr_to_value(pack)
     ret_shape = None
     arg_types = []
     for i in range(len(dispatch_args)):
@@ -1826,7 +1827,7 @@ def inline_asm_elementwise(asm: str, constraints: str, args: list, dtype, is_pur
                 dispatch_args[i], broadcast_arg, _builder, arithmetic_check=False)
     ret_shape = broadcast_arg.shape
     res_ty = block_type(dtype, ret_shape).to_ir(_builder)
-    call = _builder.create_inline_asm(asm, constraints, [t.handle for t in args], res_ty)
+    call = _builder.create_inline_asm(asm, constraints, [t.handle for t in args], res_ty, pack)
     return tensor(call, block_type(dtype, ret_shape))
 
 
