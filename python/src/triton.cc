@@ -1523,9 +1523,9 @@ void init_triton_ir(py::module &&m) {
            [](TritonOpBuilder &self, const std::string &inlineAsm,
               const std::string &constraints,
               const std::vector<mlir::Value> &values, mlir::Type &type,
-              int pack) -> mlir::Value {
+              bool isPure, int pack) -> mlir::Value {
              return self.create<mlir::triton::ElementwiseInlineAsmOp>(
-                 type, inlineAsm, constraints, false, pack, values);
+                 type, inlineAsm, constraints, isPure, pack, values);
            })
       .def("create_print",
            [](TritonOpBuilder &self, const std::string &prefix,
