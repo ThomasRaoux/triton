@@ -112,7 +112,7 @@ public:
     auto targetType = cvt->getResultTypes()[0].cast<RankedTensorType>();
     if (targetType.getEncoding().isa<triton::gpu::DotOperandEncodingAttr>())
       return mlir::failure();
-    
+
     // If the conversion can be folded let the canonicalization handle it.
     if (canFoldIntoConversion(op, targetType.getEncoding()))
       return failure();
@@ -192,6 +192,70 @@ public:
 
 } // namespace
 
+namespace {
+// Class to propagate layout globally within a function.
+// The current algorithm works by analysis the IR and doing a one shot rewrite
+// based on the analysis. The algorithm is as follows:
+// 1. Find all the anchor ops. These are ops that have a layout we want to
+// preserve.
+//
+// 2. Propagate the layout to every op reachable which is a transitive child of
+// an anchor op until we reach a fix point.
+// An op can have multiple transitive anchor parents therefore at this stage
+// it may have multiple layout associated to it.
+//
+// 3. Resolve conflicts by deciding which of the multiple layouts the op should
+// keep. If one of the parents has a different layout than what is picked a
+// convert operation will be inserted. After this stage each value should have
+// only one layout associated.
+//
+// 4. Rewrite the IR by walking the function following dominance order. Since we
+// assume the IR is structured we just need to process the regions in the
+// correct order. For each op rewrite it using the layout decided by the
+// analysis phase.
+class LayoutPropagation {
+public:
+  // Structure to keep track of the layout associated to a value.
+  struct LayoutInfo {
+    LayoutInfo(Attribute encoding) { encodings.insert(encoding); }
+    LayoutInfo() {}
+    llvm::SmallSetVector<Attribute, 8> encodings;
+  };
+  LayoutPropagation(ModuleOp m) : module(m) {}
+  // Find the anchor ops and set their layout in the data structure.
+  void initAnchorLayout();
+  // Recursively Propagate the layout to all the users of the anchor ops until
+  // we reach a fix point.
+  void propagateLayout();
+  // Add layouts given in `Info` to the uses of `value`.
+  SmallVector<Value> propagateToUsers(Value value, LayoutInfo &info);
+  // Set the encoding to all the values and fill out the values with new layout
+  // in `changed`.
+  void setEncoding(ValueRange values, LayoutInfo &info,
+                   SmallVector<Value> &changed, Operation *op);
+  // Resolve cases where a value has multiple layouts associated to it.
+  void resolveConflicts();
+  // Rewrite the IR for the full module.
+  void rewrite();
+  // Rewrite the IR for a region.
+  void rewriteRegion(Region &R, IRMapping &mapping);
+  // Rewrite an op based on the layout picked by the analysis.
+  Operation *rewriteOp(Operation *op, IRMapping &mapping);
+  // Rewrite a for op based on the layout picked by the analysis.
+  Operation *rewriteForOp(scf::ForOp forOp, IRMapping &mapping);
+  // Dump the current stage of layout information.
+  void dump();
+
+private:
+  // map from value to layout information.
+  llvm::MapVector<Value, LayoutInfo> layouts;
+  std::vector<Operation *> opToDelete;
+  ModuleOp module;
+};
+} // namespace
+
+// Return true if the op is an op with a layout we don't want to change. We will
+// propagate the layout starting from anchor ops.
 static bool isLayoutAnchor(Operation *op) {
   if (isa<triton::LoadOp, triton::StoreOp>(op))
     return isExpensiveLoadOrStore(op);
@@ -199,34 +263,6 @@ static bool isLayoutAnchor(Operation *op) {
     return true;
   return false;
 }
-
-namespace {
-class LayoutPropagation {
-public:
-  struct LayoutInfo {
-    LayoutInfo(Attribute encoding) { encodings = {encoding}; }
-    LayoutInfo() {}
-    llvm::SmallDenseSet<Attribute> encodings;
-  };
-  LayoutPropagation(ModuleOp m) : module(m) {}
-  void initAnchorLayout();
-  void propagateLayout();
-  SmallVector<Value> propagateToUsers(Value value, LayoutInfo &info);
-  void setEncoding(ValueRange values, LayoutInfo &info,
-                   SmallVector<Value> &changed, Operation *op);
-  void dump();
-
-  void rewrite();
-  void rewriteRegion(Region &R, IRMapping &mapping);
-  Operation *rewriteOp(Operation *op, IRMapping &mapping);
-  Operation *rewriteForOp(scf::ForOp forOp, IRMapping &mapping);
-
-private:
-  llvm::MapVector<Value, LayoutInfo> layouts;
-  std::vector<Operation *> opToDelete;
-  ModuleOp module;
-};
-} // namespace
 
 void LayoutPropagation::initAnchorLayout() {
   module.walk([&](Operation *op) {
@@ -263,7 +299,7 @@ void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
         encoding = inferDestEncoding(reduceOp, encoding);
       else if (auto expand = dyn_cast<triton::ExpandDimsOp>(op))
         encoding = inferDestEncoding(expand, encoding);
-      hasChanged |= layouts[value].encodings.insert(encoding).second;
+      hasChanged |= layouts[value].encodings.insert(encoding);
     }
     if (hasChanged)
       changed.push_back(value);
@@ -314,6 +350,17 @@ void LayoutPropagation::propagateLayout() {
     queue.pop_back();
     SmallVector<Value> changed = propagateToUsers(currentValue, info);
     queue.insert(queue.end(), changed.begin(), changed.end());
+  }
+}
+
+void LayoutPropagation::resolveConflicts() {
+  for (auto it : layouts) {
+    // Hacky resolve, just pick the first encoding.
+    // TODO: add a proper heuristic.
+    LayoutInfo &info = it.second;
+    Attribute encoding = *info.encodings.begin();
+    info.encodings.clear();
+    info.encodings.insert(encoding);
   }
 }
 
@@ -383,7 +430,7 @@ void LayoutPropagation::rewriteRegion(Region &region, IRMapping &mapping) {
       }
     }
   }
-  for(Operation *op : llvm::reverse(opToDelete))
+  for (Operation *op : llvm::reverse(opToDelete))
     op->erase();
 }
 
@@ -436,7 +483,7 @@ Operation *LayoutPropagation::rewriteForOp(scf::ForOp forOp,
     mapping.map(oldResult, newResult);
   for (auto [oldArg, newArg] : llvm::zip(forOp.getBody()->getArguments(),
                                          newForOp.getBody()->getArguments())) {
-    if(oldArg.getType() == newArg.getType()) {
+    if (oldArg.getType() == newArg.getType()) {
       oldArg.replaceAllUsesWith(newArg);
       continue;
     }
@@ -507,6 +554,7 @@ public:
     LayoutPropagation layoutPropagation(m);
     layoutPropagation.initAnchorLayout();
     layoutPropagation.propagateLayout();
+    layoutPropagation.resolveConflicts();
     layoutPropagation.rewrite();
 
     {
