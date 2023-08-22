@@ -107,7 +107,7 @@ protected:
 LogicalResult invertEncoding(Attribute targetEncoding, Operation *op,
                              Attribute &ret);
 
-bool isExpensiveLoadOrStore(Operation *op, Attribute &targetEncoding);
+bool isExpensiveLoadOrStore(Operation *op);
 
 bool isExpensiveToRemat(Operation *op, Attribute &targetEncoding);
 
@@ -125,9 +125,6 @@ void rematerializeConversionChain(
     const llvm::MapVector<Value, Attribute> &toConvert,
     mlir::PatternRewriter &rewriter, SetVector<Operation *> &processed,
     IRMapping &mapping);
-
-LogicalResult canMoveOutOfLoop(BlockArgument arg,
-                               SmallVector<Operation *> &cvts);
 
 // Convert an \param index to a multi-dim coordinate given \param shape and
 // \param order.
