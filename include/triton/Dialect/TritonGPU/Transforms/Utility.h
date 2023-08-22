@@ -111,6 +111,8 @@ bool isExpensiveLoadOrStore(Operation *op);
 
 bool isExpensiveToRemat(Operation *op, Attribute &targetEncoding);
 
+bool canFoldIntoConversion(Operation *op, Attribute targetEncoding);
+
 // skipInit is True when we only consider the operands of the initOp but
 // not the initOp itself.
 int simulateBackwardRematerialization(

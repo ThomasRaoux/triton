@@ -1503,6 +1503,13 @@ struct TritonGPUInferLayoutInterface
 // Canonicalizer
 //===----------------------------------------------------------------------===//
 
+OpFoldResult ConvertLayoutOp::fold(FoldAdaptor adaptor) {
+  // convert to the same layout -- we can delete.
+  if(getResult().getType() == getOperand().getType())
+    return getOperand();
+  return {};
+}
+
 LogicalResult ConvertLayoutOp::canonicalize(ConvertLayoutOp op,
                                             PatternRewriter &rewriter) {
   // we don't handle conversions to DotOperandEncodingAttr
@@ -1526,11 +1533,6 @@ LogicalResult ConvertLayoutOp::canonicalize(ConvertLayoutOp op,
     }
   }
 
-  // convert to the same layout -- we can delete
-  if (op->getResultTypes() == op->getOperandTypes()) {
-    rewriter.replaceOp(op, op->getOperands());
-    return mlir::success();
-  }
   Operation *arg = op->getOperand(0).getDefiningOp();
   // block argument
   if (!arg)

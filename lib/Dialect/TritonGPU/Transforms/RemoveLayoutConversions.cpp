@@ -112,6 +112,11 @@ public:
     auto targetType = cvt->getResultTypes()[0].cast<RankedTensorType>();
     if (targetType.getEncoding().isa<triton::gpu::DotOperandEncodingAttr>())
       return mlir::failure();
+    
+    // If the conversion can be folded let the canonicalization handle it.
+    if (canFoldIntoConversion(op, targetType.getEncoding()))
+      return failure();
+
     // DFS
     SetVector<Operation *> processed;
     SetVector<Attribute> layout;

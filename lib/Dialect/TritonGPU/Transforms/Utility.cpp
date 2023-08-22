@@ -355,7 +355,7 @@ bool isExpensiveToRemat(Operation *op, Attribute &targetEncoding) {
   return false;
 }
 
-bool canFoldConversion(Operation *op, Attribute targetEncoding) {
+bool canFoldIntoConversion(Operation *op, Attribute targetEncoding) {
   if (isa<triton::CatOp>(op))
     return !triton::gpu::isExpensiveCat(cast<triton::CatOp>(op),
                                         targetEncoding);
@@ -415,7 +415,7 @@ int simulateBackwardRematerialization(
         continue;
       // If the conversion can be folded into opArgI then
       // we don't count this conversion as expensive
-      if (opArgI && canFoldConversion(opArgI, newEncoding))
+      if (opArgI && canFoldIntoConversion(opArgI, newEncoding))
         continue;
 
       // We add one expensive conversion for the current operand
