@@ -30,6 +30,8 @@ def TTG_ConvertLayoutOp : TTG_Op<"convert_layout",
 
   let hasCanonicalizeMethod = 1;
 
+  let hasFolder = 1;
+
   let assemblyFormat = "$src attr-dict `:` functional-type(operands, results)";
 }
 

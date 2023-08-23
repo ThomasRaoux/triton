@@ -318,7 +318,7 @@ LogicalResult invertEncoding(Attribute targetEncoding, Operation *op,
   return success();
 }
 
-bool isExpensiveLoadOrStore(Operation *op, Attribute &targetEncoding) {
+bool isExpensiveLoadOrStore(Operation *op) {
   // Case 1: Pointer of tensor is always expensive
   auto operandType = op->getOperand(0).getType();
   if (triton::isTensorPointerType(operandType))
@@ -342,7 +342,7 @@ bool isExpensiveToRemat(Operation *op, Attribute &targetEncoding) {
   if (!op)
     return true;
   if (isa<triton::LoadOp, triton::StoreOp>(op))
-    return isExpensiveLoadOrStore(op, targetEncoding);
+    return isExpensiveLoadOrStore(op);
   if (isa<triton::CatOp>(op))
     return triton::gpu::isExpensiveCat(cast<triton::CatOp>(op), targetEncoding);
   if (isa<tensor::ExtractSliceOp, triton::gpu::AllocTensorOp,
@@ -355,7 +355,7 @@ bool isExpensiveToRemat(Operation *op, Attribute &targetEncoding) {
   return false;
 }
 
-bool canFoldConversion(Operation *op, Attribute targetEncoding) {
+bool canFoldIntoConversion(Operation *op, Attribute targetEncoding) {
   if (isa<triton::CatOp>(op))
     return !triton::gpu::isExpensiveCat(cast<triton::CatOp>(op),
                                         targetEncoding);
@@ -381,7 +381,7 @@ int simulateBackwardRematerialization(
     // If the current operation is expensive to rematerialize,
     // we stop everything
     if (isExpensiveToRemat(currOp, currLayout))
-      break;
+      return INT_MAX;
     // A conversion will be removed here (i.e. transferred to operands)
     numCvts -= 1;
     // Done processing
@@ -408,18 +408,20 @@ int simulateBackwardRematerialization(
       // 2. Skip if there's no defining op
       // 3. Skip if the defining op has already been processed
       // 4. Skip or the defining op is in a different block
-      if (!argI.getType().isa<RankedTensorType>() || !opArgI ||
-          processed.contains(opArgI) ||
-          opArgI->getBlock() != currOp->getBlock())
+      if (!argI.getType().isa<RankedTensorType>())
+        continue;
+      if (opArgI && (processed.contains(opArgI) ||
+                     opArgI->getBlock() != currOp->getBlock()))
         continue;
       // If the conversion can be folded into opArgI then
       // we don't count this conversion as expensive
-      if (canFoldConversion(opArgI, newEncoding))
+      if (opArgI && canFoldIntoConversion(opArgI, newEncoding))
         continue;
 
       // We add one expensive conversion for the current operand
       numCvts += 1;
-      queue.emplace_back(opArgI, newEncoding);
+      if (opArgI)
+        queue.emplace_back(opArgI, newEncoding);
     }
   }
   // return net number of conversions
@@ -462,103 +464,6 @@ Operation *cloneWithInferType(mlir::OpBuilder &rewriter, Operation *op,
     }
   }
   return newOp;
-}
-
-namespace {
-
-struct OpUseInfo {
-  Value value;
-  Operation *op;
-  unsigned index;
-};
-
-void getForwardSliceOpUseInfo(Operation *op,
-                              SetVector<Operation *> *forwardSliceOps,
-                              SmallVector<OpUseInfo> *forwardOpUseInfo) {
-  if (!op)
-    return;
-
-  for (Region &region : op->getRegions())
-    for (Block &block : region)
-      for (Operation &blockOp : block)
-        if (forwardSliceOps->count(&blockOp) == 0)
-          getForwardSliceOpUseInfo(&blockOp, forwardSliceOps, forwardOpUseInfo);
-  for (Value result : op->getResults()) {
-    for (OpOperand &operand : result.getUses()) {
-      auto *blockOp = operand.getOwner();
-      forwardOpUseInfo->push_back(
-          {operand.get(), blockOp, operand.getOperandNumber()});
-      if (forwardSliceOps->count(blockOp) == 0)
-        getForwardSliceOpUseInfo(blockOp, forwardSliceOps, forwardOpUseInfo);
-    }
-  }
-
-  forwardSliceOps->insert(op);
-}
-} // namespace
-
-LogicalResult simulateForwardRematerializationInLoop(Operation *startOp,
-                                                     BlockArgument arg,
-                                                     Attribute targetEncoding) {
-  // heuristics for flash attention
-  if (targetEncoding.isa<triton::gpu::SharedEncodingAttr>())
-    return failure();
-  SetVector<Operation *> cvtSliceOps;
-  SmallVector<OpUseInfo> cvtSliceOpUseInfo;
-  getForwardSliceOpUseInfo(startOp, &cvtSliceOps, &cvtSliceOpUseInfo);
-
-  // Check if any additional conversion is needed along the way
-  for (Operation *op : cvtSliceOps) {
-    if (isa<scf::YieldOp>(op))
-      continue;
-    // The first op doesn't push forward any conversion
-    if (op != startOp) {
-      if (isa<triton::ReduceOp>(op) &&
-          !op->getResult(0).getType().isa<RankedTensorType>())
-        return failure();
-      // don't rematerialize anything expensive
-      if (isExpensiveToRemat(op, targetEncoding))
-        return failure();
-      // don't rematerialize non-element-wise
-      if (!op->hasTrait<mlir::OpTrait::SameOperandsAndResultEncoding>() &&
-          !op->hasTrait<mlir::OpTrait::Elementwise>() &&
-          !isa<triton::StoreOp, triton::AssertOp, triton::PrintOp,
-               triton::ReduceOp>(op))
-        return failure();
-    }
-    // don't rematerialize if it adds an extra conversion that can't
-    // be removed
-    for (Value value : op->getOperands()) {
-      Operation *argOp = arg.getDefiningOp();
-      SetVector<Operation *> processed;
-      SetVector<Attribute> layout;
-      llvm::MapVector<Value, Attribute> toConvert;
-      int numAddedConvs = simulateBackwardRematerialization(
-          argOp, processed, layout, toConvert, targetEncoding);
-      if (argOp && !isa<triton::gpu::ConvertLayoutOp>(argOp) &&
-          cvtSliceOps.count(argOp) == 0 && numAddedConvs > 0)
-        return failure();
-    }
-  }
-
-  // We apply conservative analysis. Only when the final operand's index
-  // matches the argument's index or their encoding match, we can rematerialize.
-  for (auto &opUseInfo : cvtSliceOpUseInfo) {
-    Operation *op = opUseInfo.op;
-    if (isa<scf::YieldOp>(op)) {
-      auto yieldIdx = opUseInfo.index;
-      // 0 is the induction variable
-      auto argIdx = arg.getArgNumber() - 1;
-      if (yieldIdx != argIdx) {
-        auto argType = arg.getType().cast<RankedTensorType>();
-        auto yieldType =
-            op->getOperand(yieldIdx).getType().dyn_cast<RankedTensorType>();
-        if (!yieldType || argType.getEncoding() != yieldType.getEncoding())
-          return failure();
-      }
-    }
-  }
-  return success();
 }
 
 void rematerializeConversionChain(
@@ -605,72 +510,6 @@ void rematerializeConversionChain(
     }
     mapping.map(origOperand, newOperand);
   }
-}
-
-LogicalResult canMoveOutOfLoop(BlockArgument arg,
-                               SmallVector<Operation *> &cvts) {
-  auto parentOp = arg.getOwner()->getParentOp();
-  // Don't move if arg is defined in a while loop
-  if (isa<scf::WhileOp>(parentOp))
-    return failure();
-  // Skip if arg is not defined in scf.for
-  if (!isa<scf::ForOp>(parentOp))
-    return success();
-  auto forOp = cast<scf::ForOp>(parentOp);
-  // We only move `iterArg` out of the loop if
-  // 1. There is no conversion
-  // 2. There is only a single conversion
-  // 3. Moving this conversion out of the loop will not generate any extra
-  // non-removable conversion
-  SetVector<RankedTensorType> cvtTypes;
-  SetVector<Operation *> others;
-  auto oldType = arg.getType().cast<RankedTensorType>();
-  for (auto user : arg.getUsers()) {
-    if (isa<triton::gpu::ConvertLayoutOp>(user)) {
-      // Don't move if the conversion target is a dot operand or shared memory
-      auto newType = user->getResults()[0].getType().cast<RankedTensorType>();
-      if (oldType.getEncoding().isa<triton::gpu::SharedEncodingAttr>() &&
-          newType.getEncoding().isa<triton::gpu::DotOperandEncodingAttr>()) {
-        continue;
-      }
-      if (newType.getEncoding().isa<triton::gpu::SharedEncodingAttr>()) {
-        if (newType.getEncoding()
-                .cast<triton::gpu::SharedEncodingAttr>()
-                .getVec() == 1)
-          continue;
-      }
-      cvts.emplace_back(user);
-      cvtTypes.insert(newType);
-    } else
-      others.insert(user);
-  }
-  // First condition
-  if (cvts.empty())
-    return success();
-  if (cvtTypes.size() == 1) {
-    // Third condition - part 1:
-    // If the other or the cvt is in the different block, we cannot push the
-    // conversion forward or backward
-    for (auto *cvt : cvts) {
-      if (cvt->getBlock() != forOp.getBody())
-        return failure();
-    }
-    auto targetEncoding = cvtTypes.front().getEncoding();
-    for (auto *other : others) {
-      // Third condition - part 2:
-      // If the other non-cvt op is in the different block, we cannot push the
-      // conversion forward or backward
-      if (other->getBlock() != forOp.getBody())
-        return failure();
-      // Third condition - part 3:
-      // Check if we can directly use arg without conversion
-      if (simulateForwardRematerializationInLoop(other, arg, targetEncoding)
-              .failed())
-        return failure();
-    }
-    return success();
-  }
-  return failure();
 }
 
 // TODO(thomas): this is duplicated with what is in GPUToLLVM

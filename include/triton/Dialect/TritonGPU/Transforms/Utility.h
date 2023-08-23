@@ -103,13 +103,9 @@ protected:
   std::string getColor(const Type &type) const;
 };
 
-// TODO: Interface
-LogicalResult invertEncoding(Attribute targetEncoding, Operation *op,
-                             Attribute &ret);
+bool isExpensiveLoadOrStore(Operation *op);
 
-bool isExpensiveLoadOrStore(Operation *op, Attribute &targetEncoding);
-
-bool isExpensiveToRemat(Operation *op, Attribute &targetEncoding);
+bool canFoldIntoConversion(Operation *op, Attribute targetEncoding);
 
 // skipInit is True when we only consider the operands of the initOp but
 // not the initOp itself.
@@ -125,9 +121,6 @@ void rematerializeConversionChain(
     const llvm::MapVector<Value, Attribute> &toConvert,
     mlir::PatternRewriter &rewriter, SetVector<Operation *> &processed,
     IRMapping &mapping);
-
-LogicalResult canMoveOutOfLoop(BlockArgument arg,
-                               SmallVector<Operation *> &cvts);
 
 // Convert an \param index to a multi-dim coordinate given \param shape and
 // \param order.
