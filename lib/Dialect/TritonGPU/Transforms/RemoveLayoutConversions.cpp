@@ -227,12 +227,16 @@ public:
   // Recursively Propagate the layout to all the users of the anchor ops until
   // we reach a fix point.
   void propagateLayout();
+  void propagateLayoutDown();
+  void propagateLayoutUp();
   // Add layouts given in `Info` to the uses of `value`.
   SmallVector<Value> propagateToUsers(Value value, LayoutInfo &info);
+  SmallVector<Value> propagateToDefs(Value value, LayoutInfo &info);
   // Set the encoding to all the values and fill out the values with new layout
   // in `changed`.
   void setEncoding(ValueRange values, LayoutInfo &info,
-                   SmallVector<Value> &changed, Operation *op);
+                   SmallVector<Value> &changed, Operation *op,
+                   bool reverse = false);
   // Resolve cases where a value has multiple layouts associated to it.
   void resolveConflicts();
   // Rewrite the IR for the full module.
@@ -287,18 +291,37 @@ static Attribute inferDestEncoding(triton::ExpandDimsOp op,
   return sliceEncoding.getParent();
 }
 
+static Attribute inferSrcEncoding(triton::ReduceOp op, Attribute encoding) {
+  auto sliceEncoding = encoding.cast<triton::gpu::SliceEncodingAttr>();
+  assert(op.getAxis() == sliceEncoding.getDim());
+  return sliceEncoding.getParent();
+}
+
+static Attribute inferSrcEncoding(triton::ExpandDimsOp op, Attribute encoding) {
+  return SliceEncodingAttr::get(op->getContext(), op.getAxis(), encoding);
+}
+
 void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
-                                    SmallVector<Value> &changed,
-                                    Operation *op) {
+                                    SmallVector<Value> &changed, Operation *op,
+                                    bool reverse) {
   for (Value value : values) {
+    if (!value.getType().isa<RankedTensorType>())
+      continue;
     bool hasChanged = false;
     SmallVector<Attribute> encodings(info.encodings.begin(),
                                      info.encodings.end());
     for (auto encoding : encodings) {
-      if (auto reduceOp = dyn_cast<triton::ReduceOp>(op))
-        encoding = inferDestEncoding(reduceOp, encoding);
-      else if (auto expand = dyn_cast<triton::ExpandDimsOp>(op))
-        encoding = inferDestEncoding(expand, encoding);
+      if (auto reduceOp = dyn_cast<triton::ReduceOp>(op)) {
+        if (reverse)
+          encoding = inferSrcEncoding(reduceOp, encoding);
+        else
+          encoding = inferDestEncoding(reduceOp, encoding);
+      } else if (auto expand = dyn_cast<triton::ExpandDimsOp>(op)) {
+        if (reverse)
+          encoding = inferSrcEncoding(expand, encoding);
+        else
+          encoding = inferDestEncoding(expand, encoding);
+      }
       hasChanged |= layouts[value].encodings.insert(encoding);
     }
     if (hasChanged)
@@ -339,8 +362,36 @@ SmallVector<Value> LayoutPropagation::propagateToUsers(Value value,
   return changed;
 }
 
+SmallVector<Value> LayoutPropagation::propagateToDefs(Value value,
+                                                      LayoutInfo &info) {
+  SmallVector<Value> changed;
+  if (auto blockArg = value.dyn_cast<BlockArgument>()) {
+    Operation *op = blockArg.getOwner()->getParentOp();
+    if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+      Value arg = forOp.getOpOperandForRegionIterArg(blockArg).get();
+      Value result = forOp.getBody()->getTerminator()->getOperand(
+          blockArg.getArgNumber() - forOp.getNumInductionVars());
+      setEncoding({arg, result}, info, changed, op, /*reverse=*/true);
+    }
+    return changed;
+  }
+  Operation *def = value.getDefiningOp();
+  if (def->hasTrait<mlir::OpTrait::SameOperandsAndResultEncoding>() ||
+      def->hasTrait<mlir::OpTrait::Elementwise>() ||
+      isa<triton::ReduceOp, triton::ExpandDimsOp, triton::gpu::ConvertLayoutOp>(
+          def)) {
+    setEncoding(def->getOperands(), info, changed, def, /*reverse=*/true);
+  }
+  return changed;
+}
+
 void LayoutPropagation::propagateLayout() {
-  std::vector<Value> queue;
+  propagateLayoutDown();
+  propagateLayoutUp();
+}
+
+void LayoutPropagation::propagateLayoutDown() {
+  SmallVector<Value> queue;
   for (auto it : layouts) {
     queue.push_back(it.first);
   }
@@ -353,10 +404,31 @@ void LayoutPropagation::propagateLayout() {
   }
 }
 
+void LayoutPropagation::propagateLayoutUp() {
+  SmallVector<Value> queue;
+  module.walk([&](Operation *op) {
+    if (isa<triton::LoadOp>(op) && isExpensiveLoadOrStore(op)) {
+      for (Value operand : op->getOperands()) {
+        if (layouts.count(operand) == 0) {
+          queue.push_back(operand);
+          layouts[operand] = layouts[op->getResult(0)];
+        }
+      }
+    }
+  });
+  while (!queue.empty()) {
+    Value currentValue = queue.back();
+    LayoutInfo &info = layouts[currentValue];
+    queue.pop_back();
+    SmallVector<Value> changed = propagateToDefs(currentValue, info);
+    queue.insert(queue.end(), changed.begin(), changed.end());
+  }
+}
+
 void LayoutPropagation::resolveConflicts() {
-  for (auto& it : layouts) {
+  for (auto &it : layouts) {
     LayoutInfo &info = it.second;
-    if(info.encodings.size() <= 1)
+    if (info.encodings.size() <= 1)
       continue;
     // Hacky resolve, just pick the first encoding.
     // TODO: add a proper heuristic.
@@ -526,8 +598,16 @@ Operation *LayoutPropagation::rewriteOp(Operation *op, IRMapping &mapping) {
     opToDelete.push_back(op);
     return newOp;
   }
-  assert(false && "unhandled op");
-  return nullptr;
+  Operation* newOp = rewriter.clone(*op);
+  Attribute encoding = *layouts[op->getResult(0)].encodings.begin();
+  auto tensorType = op->getResult(0).getType().cast<RankedTensorType>();
+  auto newType = RankedTensorType::get(tensorType.getShape(),
+                                       tensorType.getElementType(), encoding);
+  auto cvt = rewriter.create<triton::gpu::ConvertLayoutOp>(
+      op->getLoc(), newType, newOp->getResult(0));
+  mapping.map(op->getResult(0), cvt.getResult());
+  opToDelete.push_back(op);
+  return cvt.getOperation();
 }
 
 #define GEN_PASS_CLASSES
@@ -556,9 +636,10 @@ public:
     LayoutPropagation layoutPropagation(m);
     layoutPropagation.initAnchorLayout();
     layoutPropagation.propagateLayout();
+    layoutPropagation.dump();
     layoutPropagation.resolveConflicts();
     layoutPropagation.rewrite();
-
+    m.dump();
     {
       mlir::RewritePatternSet patterns(context);
       patterns.add<RematerializeBackward>(context);
