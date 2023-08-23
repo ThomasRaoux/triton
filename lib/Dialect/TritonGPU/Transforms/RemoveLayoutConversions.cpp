@@ -354,10 +354,12 @@ void LayoutPropagation::propagateLayout() {
 }
 
 void LayoutPropagation::resolveConflicts() {
-  for (auto it : layouts) {
+  for (auto& it : layouts) {
+    LayoutInfo &info = it.second;
+    if(info.encodings.size() <= 1)
+      continue;
     // Hacky resolve, just pick the first encoding.
     // TODO: add a proper heuristic.
-    LayoutInfo &info = it.second;
     Attribute encoding = *info.encodings.begin();
     info.encodings.clear();
     info.encodings.insert(encoding);
