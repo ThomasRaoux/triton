@@ -103,30 +103,12 @@ protected:
   std::string getColor(const Type &type) const;
 };
 
-// TODO: Interface
-LogicalResult invertEncoding(Attribute targetEncoding, Operation *op,
-                             Attribute &ret);
-
 bool isExpensiveLoadOrStore(Operation *op);
-
-bool isExpensiveToRemat(Operation *op, Attribute &targetEncoding);
 
 bool canFoldIntoConversion(Operation *op, Attribute targetEncoding);
 
-// skipInit is True when we only consider the operands of the initOp but
-// not the initOp itself.
-int simulateBackwardRematerialization(
-    Operation *initOp, SetVector<Operation *> &processed,
-    SetVector<Attribute> &layout, llvm::MapVector<Value, Attribute> &toConvert,
-    Attribute targetEncoding);
-
 Operation *cloneWithInferType(mlir::OpBuilder &rewriter, Operation *op,
                               IRMapping &mapping);
-
-void rematerializeConversionChain(
-    const llvm::MapVector<Value, Attribute> &toConvert,
-    mlir::PatternRewriter &rewriter, SetVector<Operation *> &processed,
-    IRMapping &mapping);
 
 // Convert an \param index to a multi-dim coordinate given \param shape and
 // \param order.
