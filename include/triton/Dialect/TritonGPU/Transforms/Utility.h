@@ -103,13 +103,7 @@ protected:
   std::string getColor(const Type &type) const;
 };
 
-// TODO: Interface
-LogicalResult invertEncoding(Attribute targetEncoding, Operation *op,
-                             Attribute &ret);
-
 bool isExpensiveLoadOrStore(Operation *op);
-
-bool isExpensiveToRemat(Operation *op, Attribute &targetEncoding);
 
 bool canFoldIntoConversion(Operation *op, Attribute targetEncoding);
 
