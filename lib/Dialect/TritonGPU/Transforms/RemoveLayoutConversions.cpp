@@ -822,15 +822,20 @@ public:
 
     backwardRematerialization(m);
 
-    /*  {
-        mlir::RewritePatternSet patterns(context);
-        patterns.add<DecomposeDotOperand>(context);
-        patterns.add<ConvertDotConvert>(context);
+    mlir::RewritePatternSet decomposePatterns(context);
+    decomposePatterns.add<DecomposeDotOperand>(context);
+    decomposePatterns.add<ConvertDotConvert>(context);
 
-        if (mlir::applyPatternsAndFoldGreedily(m, std::move(patterns)).failed())
-      { signalPassFailure();
-        }
-      }*/
+    if (mlir::applyPatternsAndFoldGreedily(m, std::move(decomposePatterns)).failed()) {
+      signalPassFailure();
+    }
+
+    mlir::RewritePatternSet cleanUpPatterns2(context);
+    ConvertLayoutOp::getCanonicalizationPatterns(cleanUpPatterns2, context);
+    if (mlir::applyPatternsAndFoldGreedily(m, std::move(cleanUpPatterns2))
+            .failed()) {
+      signalPassFailure();
+    }
   }
 };
 
