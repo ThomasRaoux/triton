@@ -480,7 +480,7 @@ Operation *LayoutPropagation::cloneElementwise(OpBuilder &rewriter,
         operand.getOperandNumber(),
         getValueAs(operand.get(), *inferSrcEncoding(op, encoding)));
   for (unsigned i = 0, e = op->getNumResults(); i < e; ++i) {
-    auto origType = op->getResult(0).getType().dyn_cast<RankedTensorType>();
+    auto origType = op->getResult(i).getType().dyn_cast<RankedTensorType>();
     if (!origType)
       continue;
     auto newType = RankedTensorType::get(origType.getShape(),
