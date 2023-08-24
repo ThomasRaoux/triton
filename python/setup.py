@@ -22,8 +22,16 @@ def check_env_flag(name: str, default: str = "") -> bool:
 
 
 def get_build_type():
-    return "Debug"
-    
+    if check_env_flag("DEBUG"):
+        return "Debug"
+    elif check_env_flag("REL_WITH_DEB_INFO"):
+        return "RelWithDebInfo"
+    elif check_env_flag("TRITON_REL_BUILD_WITH_ASSERTS"):
+        return "TritonRelBuildWithAsserts"
+    else:
+        # TODO: change to release when stable enough
+        return "TritonRelBuildWithAsserts"
+
 
 def get_codegen_backends():
     backends = []
@@ -73,7 +81,7 @@ def get_llvm_package_info():
         system_suffix = f"linux-gnu-{linux_suffix}"
     else:
         return Package("llvm", "LLVM-C.lib", "", "LLVM_INCLUDE_DIRS", "LLVM_LIBRARY_DIR", "LLVM_SYSPATH")
-    use_assert_enabled_llvm = True#check_env_flag("TRITON_USE_ASSERT_ENABLED_LLVM", "False")
+    use_assert_enabled_llvm = check_env_flag("TRITON_USE_ASSERT_ENABLED_LLVM", "False")
     release_suffix = "assert" if use_assert_enabled_llvm else "release"
     name = f'llvm+mlir-17.0.0-{arch}-{system_suffix}-{release_suffix}'
     version = "llvm-17.0.0-c5dede880d17"
