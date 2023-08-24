@@ -210,6 +210,41 @@ private:
 };
 } // namespace
 
+// Look ahead to at the transitive uses and see if there is a convert to mma
+// operations.
+static bool hasConvertToMMATransisitiveUse(Operation *op) {
+  SmallVector<Value> queue = {op->getResult(0)};
+  SetVector<Operation *> forwardSlice;
+  llvm::SmallDenseSet<Value> seen;
+  while (!queue.empty()) {
+    Value currentValue = queue.back();
+    queue.pop_back();
+    getForwardSlice(currentValue, &forwardSlice);
+    for (Operation *op : forwardSlice) {
+      if (auto convertOp = dyn_cast<triton::gpu::ConvertLayoutOp>(op)) {
+        if (convertOp.getResult()
+                .getType()
+                .cast<RankedTensorType>()
+                .getEncoding()
+                .isa<triton::gpu::MmaEncodingAttr>())
+          return true;
+      }
+      auto yield = dyn_cast<scf::YieldOp>(op);
+      if (!yield)
+        continue;
+      auto forOp = dyn_cast<scf::ForOp>(yield.getOperation()->getParentOp());
+      if (!forOp)
+        continue;
+      for (OpOperand &operand : yield->getOpOperands()) {
+        Operation *def = operand.get().getDefiningOp();
+        if (def && forwardSlice.count(def) && (seen.insert(operand.get()).second == true))
+          queue.push_back(forOp.getRegionIterArg(operand.getOperandNumber()));
+      }
+    }
+  }
+  return false;
+}
+
 // Return true if the op is an op with a layout we don't want to change. We will
 // propagate the layout starting from anchor ops.
 static bool isLayoutAnchor(Operation *op) {
@@ -225,7 +260,12 @@ void LayoutPropagation::initAnchorLayout() {
     if (isLayoutAnchor(op)) {
       for (auto result : op->getResults()) {
         if (auto tensorType = result.getType().dyn_cast<RankedTensorType>()) {
-          if(tensorType.getEncoding().isa<triton::gpu::MmaEncodingAttr>())
+          // Workaround, don't popagate MMA layout unless there is a convert
+          // back to mma further down to avoid generating reduction with MMA
+          // layout that may have lower performance.
+          // This can be improved with more aggressive backward propagation.
+          if (tensorType.getEncoding().isa<triton::gpu::MmaEncodingAttr>() &&
+              !hasConvertToMMATransisitiveUse(op))
             continue;
           layouts.insert({result, tensorType.getEncoding()});
         }
