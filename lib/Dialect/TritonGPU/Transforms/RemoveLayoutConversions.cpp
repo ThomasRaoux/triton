@@ -225,6 +225,8 @@ void LayoutPropagation::initAnchorLayout() {
     if (isLayoutAnchor(op)) {
       for (auto result : op->getResults()) {
         if (auto tensorType = result.getType().dyn_cast<RankedTensorType>()) {
+          if(tensorType.getEncoding().isa<triton::gpu::MmaEncodingAttr>())
+            continue;
           layouts.insert({result, tensorType.getEncoding()});
         }
       }
@@ -739,7 +741,7 @@ static void backwardRematerialization(ConvertLayoutOp convertOp) {
   bool success =
       getBackwardSliceSCF(convertOp.getOperand(), slice, hasTensorType,
                           targetType.getEncoding(), layout);
-  if (!success)
+  if (!success || slice.empty())
     return;
 
   // 2. Check if all the operations in the slice can be rematerialized.
@@ -749,6 +751,7 @@ static void backwardRematerialization(ConvertLayoutOp convertOp) {
         return;
     }
   }
+
   // 3. Rewrite the slice.
   rewriteSlice(slice, layout, convertOp);
 }
@@ -761,6 +764,104 @@ static void backwardRematerialization(ModuleOp module) {
     backwardRematerialization(convertOp);
   }
 }
+
+
+
+
+namespace {
+
+/// Detect dead arguments in scf.for op by assuming all the values are dead and
+/// propagate liveness property.
+struct ForOpDeadArgElimination : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp forOp,
+                                PatternRewriter &rewriter) const final {
+    Block &block = *forOp.getBody();
+    auto yieldOp = cast<scf::YieldOp>(block.getTerminator());
+    // Assume that nothing is live at the beginning and mark values as live
+    // based on uses.
+    DenseSet<Value> aliveValues;
+    SmallVector<Value> queue;
+    // Helper to mark values as live and add them to the queue of value to
+    // propagate if it is the first time we detect the value as live.
+    auto markLive = [&](Value val) {
+      if (!forOp->isAncestor(val.getParentRegion()->getParentOp()))
+        return;
+      if (aliveValues.insert(val).second)
+        queue.push_back(val);
+    };
+    // Mark all yield operands as live if the associated forOp result has any
+    // use.
+    for (auto result : llvm::enumerate(forOp.getResults())) {
+      if (!result.value().use_empty())
+        markLive(yieldOp.getOperand(result.index()));
+    }
+    if (aliveValues.size() == forOp.getNumResults())
+      return failure();
+    // Operations with side-effects are always live. Mark all theirs operands as
+    // live.
+    block.walk([&](Operation *op) {
+      if (!isa<scf::YieldOp, scf::ForOp>(op) && !wouldOpBeTriviallyDead(op)) {
+        for (Value operand : op->getOperands())
+          markLive(operand);
+      }
+    });
+    // Propagate live property until reaching a fixed point.
+    while (!queue.empty()) {
+      Value value = queue.pop_back_val();
+      if (auto nestedFor = value.getDefiningOp<scf::ForOp>()) {
+        auto result = value.cast<OpResult>();
+        OpOperand &forOperand = nestedFor.getOpOperandForResult(result);
+        markLive(forOperand.get());
+        auto nestedYieldOp =
+            cast<scf::YieldOp>(nestedFor.getBody()->getTerminator());
+        Value nestedYieldOperand =
+            nestedYieldOp.getOperand(result.getResultNumber());
+        markLive(nestedYieldOperand);
+        continue;
+      }
+      if (Operation *def = value.getDefiningOp()) {
+        for (Value operand : def->getOperands())
+          markLive(operand);
+        continue;
+      }
+      // If an argument block is live then the associated yield operand and
+      // forOp operand are live.
+      auto arg = value.cast<BlockArgument>();
+      if (auto forOwner = dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp())) {
+        if (arg.getArgNumber() < forOwner.getNumInductionVars())
+          continue;
+        unsigned iterIdx = arg.getArgNumber() - forOwner.getNumInductionVars();
+        Value yieldOperand = yieldOp.getOperand(iterIdx);
+        markLive(yieldOperand);
+        markLive(forOwner.getIterOperands()[iterIdx]);
+      }
+    }
+    SmallVector<unsigned> deadArg;
+    for (auto yieldOperand : llvm::enumerate(yieldOp->getOperands())) {
+      if (aliveValues.contains(yieldOperand.value()))
+        continue;
+      if (yieldOperand.value() == block.getArgument(yieldOperand.index() + 1))
+        continue;
+      deadArg.push_back(yieldOperand.index());
+    }
+    if (deadArg.empty())
+      return failure();
+    rewriter.updateRootInPlace(forOp, [&]() {
+      // For simplicity we just change the dead yield operand to use the
+      // associated argument and leave the operations and argument removal to
+      // dead code elimination.
+      for (unsigned deadArgIdx : deadArg) {
+        BlockArgument arg = block.getArgument(deadArgIdx + 1);
+        yieldOp.setOperand(deadArgIdx, arg);
+      }
+    });
+    return success();
+  }
+};
+  
+} // namespace
 
 #define GEN_PASS_CLASSES
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
@@ -792,17 +893,21 @@ public:
 
     backwardRematerialization(m);
 
-    mlir::RewritePatternSet decomposePatterns(context);
-    decomposePatterns.add<DecomposeDotOperand>(context);
-    decomposePatterns.add<ConvertDotConvert>(context);
-    if (mlir::applyPatternsAndFoldGreedily(m, std::move(decomposePatterns))
+    mlir::RewritePatternSet cleanUpPatterns2(context);
+    // Clean up potentially dead arguments generated by backward rematerialization.
+    cleanUpPatterns2.add<ForOpDeadArgElimination>(context);
+    scf::ForOp::getCanonicalizationPatterns(cleanUpPatterns2, context);
+    ConvertLayoutOp::getCanonicalizationPatterns(cleanUpPatterns2, context);
+    if (mlir::applyPatternsAndFoldGreedily(m, std::move(cleanUpPatterns2))
             .failed()) {
       signalPassFailure();
     }
 
-    mlir::RewritePatternSet cleanUpPatterns2(context);
-    ConvertLayoutOp::getCanonicalizationPatterns(cleanUpPatterns2, context);
-    if (mlir::applyPatternsAndFoldGreedily(m, std::move(cleanUpPatterns2))
+
+    mlir::RewritePatternSet decomposePatterns(context);
+    decomposePatterns.add<DecomposeDotOperand>(context);
+    decomposePatterns.add<ConvertDotConvert>(context);
+    if (mlir::applyPatternsAndFoldGreedily(m, std::move(decomposePatterns))
             .failed()) {
       signalPassFailure();
     }
