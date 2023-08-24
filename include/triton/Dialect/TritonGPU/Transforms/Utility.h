@@ -122,6 +122,11 @@ void rematerializeConversionChain(
     mlir::PatternRewriter &rewriter, SetVector<Operation *> &processed,
     IRMapping &mapping);
 
+bool getBackwardSliceSCF(Value root, SetVector<Value> &slice,
+                         llvm::function_ref<bool(Value)> filter,
+                         Attribute rootEncoding,
+                         DenseMap<Value, Attribute>& layout);
+
 // Convert an \param index to a multi-dim coordinate given \param shape and
 // \param order.
 SmallVector<Value> delinearize(OpBuilder &b, Location loc, Value linear,

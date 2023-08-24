@@ -232,8 +232,7 @@ public:
   // Set the encoding to all the values and fill out the values with new layout
   // in `changed`.
   void setEncoding(ValueRange values, LayoutInfo &info,
-                   SmallVector<Value> &changed, Operation *op,
-                   bool reverse = false);
+                   SmallVector<Value> &changed, Operation *op);
   // Resolve cases where a value has multiple layouts associated to it.
   void resolveConflicts();
   // Rewrite the IR for the full module.
@@ -321,8 +320,8 @@ static Attribute inferDstEncoding(Operation *op, Attribute encoding) {
 }
 
 void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
-                                    SmallVector<Value> &changed, Operation *op,
-                                    bool reverse) {
+                                    SmallVector<Value> &changed,
+                                    Operation *op) {
   SmallVector<Attribute> encodings(info.encodings.begin(),
                                    info.encodings.end());
   for (Value value : values) {
@@ -330,10 +329,7 @@ void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
       continue;
     bool hasChanged = false;
     for (auto encoding : encodings) {
-      if (reverse)
-        encoding = inferSrcEncoding(op, encoding);
-      else
-        encoding = inferDstEncoding(op, encoding);
+      encoding = inferDstEncoding(op, encoding);
       hasChanged |= layouts[value].encodings.insert(encoding);
     }
     if (hasChanged)
@@ -627,6 +623,177 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
   return nullptr;
 }
 
+static bool canBeRemat(Operation *op) {
+  if (isa<triton::LoadOp, triton::StoreOp>(op))
+    return !isExpensiveLoadOrStore(op);
+  if (isa<triton::CatOp, triton::ViewOp>(op))
+    return false;
+  if (isa<tensor::ExtractSliceOp, triton::gpu::AllocTensorOp,
+          triton::gpu::InsertSliceAsyncOp, triton::AtomicRMWOp,
+          triton::AtomicCASOp, triton::DotOp>(op))
+    return false;
+  if (isa<scf::IfOp, scf::WhileOp, scf::ConditionOp>(op))
+    return false;
+
+  return true;
+}
+
+// Replace ForOp with a new ForOp with extra operands. The YieldOp is not
+// updated and needs to be updated separatly for the loop to be correct.
+static scf::ForOp replaceForOpWithNewSignature(OpBuilder &rewriter,
+                                               scf::ForOp loop,
+                                               ValueRange newIterOperands) {
+  OpBuilder::InsertionGuard g(rewriter);
+  rewriter.setInsertionPoint(loop);
+
+  // Create a new loop before the existing one, with the extra operands.
+  rewriter.setInsertionPoint(loop);
+  auto operands = llvm::to_vector<4>(loop.getIterOperands());
+  operands.append(newIterOperands.begin(), newIterOperands.end());
+  scf::ForOp newLoop = rewriter.create<scf::ForOp>(
+      loop.getLoc(), loop.getLowerBound(), loop.getUpperBound(), loop.getStep(),
+      operands);
+  newLoop.getBody()->erase();
+
+  newLoop.getLoopBody().getBlocks().splice(
+      newLoop.getLoopBody().getBlocks().begin(),
+      loop.getLoopBody().getBlocks());
+  for (Value operand : newIterOperands)
+    newLoop.getBody()->addArgument(operand.getType(), operand.getLoc());
+
+  for (auto it : llvm::zip(loop.getResults(), newLoop.getResults().take_front(
+                                                  loop.getNumResults())))
+    std::get<0>(it).replaceAllUsesWith(std::get<1>(it));
+  return newLoop;
+}
+
+void rewriteSlice(SetVector<Value> &slice, DenseMap<Value, Attribute> &layout,
+                  ConvertLayoutOp convertOp) {
+
+  SetVector<Operation *> opsToRewrite;
+  for (Value v : slice) {
+    if (v.getDefiningOp()) {
+      opsToRewrite.insert(v.getDefiningOp());
+    } else {
+      opsToRewrite.insert(v.cast<BlockArgument>().getOwner()->getParentOp());
+      // We also need to rewrite the yield op.
+      opsToRewrite.insert(v.cast<BlockArgument>().getOwner()->getTerminator());
+    }
+  }
+  opsToRewrite = mlir::topologicalSort(opsToRewrite);
+
+  IRMapping mapping;
+  SmallVector<Operation *> deadLoops;
+  OpBuilder builder(slice.begin()->getContext());
+  for (Operation *op : opsToRewrite) {
+    if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+      // Keep a mapping of the operands index to the new operands index.
+      SmallVector<std::pair<size_t, size_t>> argMapping;
+      SmallVector<Value> newOperands;
+      for (auto arg : forOp.getRegionIterArgs()) {
+        if (slice.count(arg)) {
+          OpOperand &initVal = forOp.getOpOperandForRegionIterArg(arg);
+          argMapping.push_back(
+              std::make_pair(*forOp.getIterArgNumberForOpOperand(initVal),
+                             forOp.getNumIterOperands() + newOperands.size()));
+          newOperands.push_back(mapping.lookup(initVal.get()));
+        }
+      }
+      // Create a new for loop with the new operands.
+      scf::ForOp newForOp =
+          replaceForOpWithNewSignature(builder, forOp, newOperands);
+      deadLoops.push_back(forOp.getOperation());
+      Block &loopBody = *newForOp.getBody();
+      for (auto m : argMapping) {
+        mapping.map(newForOp.getResult(m.first), newForOp.getResult(m.second));
+        int numIndVars = newForOp.getNumInductionVars();
+        mapping.map(loopBody.getArgument(m.first + numIndVars),
+                    loopBody.getArgument(m.second + numIndVars));
+      }
+      continue;
+    }
+    builder.setInsertionPoint(op);
+    if(auto yieldOp = dyn_cast<scf::YieldOp>(op)) {
+      auto yieldOperands = llvm::to_vector(yieldOp.getOperands());
+      for (Value operand : yieldOp.getOperands()) {
+        if (slice.count(operand) == 0)
+          continue;
+        yieldOperands.push_back(mapping.lookup(operand));
+      }
+      builder.create<scf::YieldOp>(op->getLoc(), yieldOperands);
+      op->erase();
+      continue;
+    }
+    if (isa<arith::ConstantOp>(op)) {
+      Operation *newOp = builder.clone(*op);
+      auto tensorType = op->getResult(0).getType().cast<RankedTensorType>();
+      auto newType = RankedTensorType::get(
+          tensorType.getShape(), tensorType.getElementType(), layout[op->getResult(0)]);
+      auto cvt = builder.create<triton::gpu::ConvertLayoutOp>(
+          op->getLoc(), newType, newOp->getResult(0));
+      mapping.map(op->getResult(0), cvt.getResult());
+      continue;
+    }
+    Operation *newOp = builder.clone(*op, mapping);
+    for (auto [old, newV] : llvm::zip(op->getResults(), newOp->getResults())) {
+      auto it = layout.find(old);
+      if (it == layout.end())
+        continue;
+      auto newType = RankedTensorType::get(
+          old.getType().cast<RankedTensorType>().getShape(),
+          old.getType().cast<RankedTensorType>().getElementType(), it->second);
+      newV.setType(newType);
+    }
+  }
+  convertOp.replaceAllUsesWith(mapping.lookup(convertOp.getOperand()));
+  convertOp.erase();
+  for (Operation *op : deadLoops)
+    op->erase();
+}
+
+static void backwardRematerialization(ConvertLayoutOp convertOp) {
+  // we don't want to rematerialize any conversion to/from shared
+  if (triton::gpu::isSharedEncoding(convertOp.getResult()) ||
+      triton::gpu::isSharedEncoding(convertOp.getOperand()))
+    return;
+  // we don't handle conversions to DotOperandEncodingAttr
+  // this is a heuristics to accommodate fused attention
+  auto targetType = convertOp->getResultTypes()[0].cast<RankedTensorType>();
+  if (targetType.getEncoding().isa<triton::gpu::DotOperandEncodingAttr>())
+    return;
+
+  // 1. Take a backward slice of all the tensor dependencies.
+  SetVector<Value> slice;
+  DenseMap<Value, Attribute> layout;
+  auto hasTensorType = [](Value v) {
+    return v.getType().isa<RankedTensorType>();
+  };
+  bool success =
+      getBackwardSliceSCF(convertOp.getOperand(), slice, hasTensorType,
+                          targetType.getEncoding(), layout);
+  if (!success)
+    return;
+
+  // 2. Check if all the operations in the slice can be rematerialized.
+  for (Value v : slice) {
+    if (Operation *op = v.getDefiningOp()) {
+      if (!canBeRemat(op))
+        return;
+    }
+  }
+  // 3. Rewrite the slice.
+  rewriteSlice(slice, layout, convertOp);
+}
+
+static void backwardRematerialization(ModuleOp module) {
+  SmallVector<ConvertLayoutOp> convertOps;
+  module.walk(
+      [&](ConvertLayoutOp convertOp) { convertOps.push_back(convertOp); });
+  for (ConvertLayoutOp convertOp : convertOps) {
+    backwardRematerialization(convertOp);
+  }
+}
+
 #define GEN_PASS_CLASSES
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
 
@@ -640,40 +807,30 @@ public:
     MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
 
-    {
-      mlir::RewritePatternSet patterns(context);
-      patterns.add<RematerializeBackward>(context);
-      ConvertLayoutOp::getCanonicalizationPatterns(patterns, context);
-
-      if (mlir::applyPatternsAndFoldGreedily(m, std::move(patterns)).failed()) {
-        signalPassFailure();
-      }
-    }
-
     LayoutPropagation layoutPropagation(m);
     layoutPropagation.initAnchorLayout();
     layoutPropagation.propagateLayout();
     layoutPropagation.resolveConflicts();
     layoutPropagation.rewrite();
-    {
-      mlir::RewritePatternSet patterns(context);
-      patterns.add<RematerializeBackward>(context);
-      ConvertLayoutOp::getCanonicalizationPatterns(patterns, context);
 
-      if (mlir::applyPatternsAndFoldGreedily(m, std::move(patterns)).failed()) {
-        signalPassFailure();
-      }
+    mlir::RewritePatternSet cleanUpPatterns(context);
+    ConvertLayoutOp::getCanonicalizationPatterns(cleanUpPatterns, context);
+    if (mlir::applyPatternsAndFoldGreedily(m, std::move(cleanUpPatterns))
+            .failed()) {
+      signalPassFailure();
     }
 
-    {
-      mlir::RewritePatternSet patterns(context);
-      patterns.add<DecomposeDotOperand>(context);
-      patterns.add<ConvertDotConvert>(context);
+    backwardRematerialization(m);
 
-      if (mlir::applyPatternsAndFoldGreedily(m, std::move(patterns)).failed()) {
-        signalPassFailure();
-      }
-    }
+    /*  {
+        mlir::RewritePatternSet patterns(context);
+        patterns.add<DecomposeDotOperand>(context);
+        patterns.add<ConvertDotConvert>(context);
+
+        if (mlir::applyPatternsAndFoldGreedily(m, std::move(patterns)).failed())
+      { signalPassFailure();
+        }
+      }*/
   }
 };
 

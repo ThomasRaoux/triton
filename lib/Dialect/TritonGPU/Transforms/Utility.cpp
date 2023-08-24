@@ -512,6 +512,54 @@ void rematerializeConversionChain(
   }
 }
 
+bool getBackwardSliceSCF(Value root, SetVector<Value> &slice,
+                         llvm::function_ref<bool(Value)> filter,
+                         Attribute rootEncoding,
+                         DenseMap<Value, Attribute>& layout) {
+  SmallVector<std::pair<Value, Attribute>> queue = {{ root, rootEncoding }};
+  while (!queue.empty()) {
+    auto [currentValue, encoding] = queue.back();
+    queue.pop_back();
+    if (filter && !filter(currentValue))
+      continue;
+    slice.insert(currentValue);
+    layout[currentValue] = encoding;
+    if (auto *definingOp = currentValue.getDefiningOp()) {
+      if (auto forOp = dyn_cast<scf::ForOp>(definingOp)) {
+        auto result = currentValue.cast<OpResult>();
+        OpOperand &initOperand = forOp.getOpOperandForResult(result);
+        Value yieldOperand = forOp.getBody()->getTerminator()->getOperand(
+            result.getResultNumber());
+        queue.push_back({initOperand.get(), encoding});
+        queue.push_back({yieldOperand, encoding});
+        continue;
+      }
+      for (Value operand : definingOp->getOperands()) {
+        Attribute srcEncoding;
+        if(invertEncoding(encoding, definingOp, srcEncoding).failed())
+          return false;
+        if (slice.count(operand) == 0)
+          queue.push_back({operand, srcEncoding});
+      }
+      continue;
+    }
+    auto blockArg = cast<BlockArgument>(currentValue);
+    Block *block = blockArg.getOwner();
+    Operation *parentOp = block->getParentOp();
+    if (auto forOp = dyn_cast<scf::ForOp>(parentOp)) {
+      OpOperand &initOperand = forOp.getOpOperandForRegionIterArg(blockArg);
+      Value yieldOperand = forOp.getBody()->getTerminator()->getOperand(
+          blockArg.getArgNumber() - forOp.getNumInductionVars());
+      queue.push_back({initOperand.get(), encoding});
+      queue.push_back({yieldOperand, encoding});
+      continue;
+    }
+    // TODO: add support for WhileOp and other region types.
+    return false;
+  }
+  return true;
+}
+
 // TODO(thomas): this is duplicated with what is in GPUToLLVM
 //  Convert an \param index to a multi-dim coordinate given \param shape and
 //  \param order.
