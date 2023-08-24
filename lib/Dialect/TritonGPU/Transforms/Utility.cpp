@@ -522,6 +522,10 @@ bool getBackwardSliceSCF(Value root, SetVector<Value> &slice,
     queue.pop_back();
     if (filter && !filter(currentValue))
       continue;
+    // Skip propagating through for op results for now.
+    // TODO: enable this based on needs.
+    if(currentValue.getDefiningOp<scf::ForOp>())
+      return false;
     slice.insert(currentValue);
     layout[currentValue] = encoding;
     if (auto *definingOp = currentValue.getDefiningOp()) {
@@ -534,6 +538,8 @@ bool getBackwardSliceSCF(Value root, SetVector<Value> &slice,
         queue.push_back({yieldOperand, encoding});
         continue;
       }
+      if (canFoldIntoConversion(definingOp, encoding))
+        continue;
       for (Value operand : definingOp->getOperands()) {
         Attribute srcEncoding;
         if(invertEncoding(encoding, definingOp, srcEncoding).failed())

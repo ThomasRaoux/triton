@@ -225,6 +225,8 @@ void LayoutPropagation::initAnchorLayout() {
     if (isLayoutAnchor(op)) {
       for (auto result : op->getResults()) {
         if (auto tensorType = result.getType().dyn_cast<RankedTensorType>()) {
+          if(tensorType.getEncoding().isa<triton::gpu::MmaEncodingAttr>())
+            continue;
           layouts.insert({result, tensorType.getEncoding()});
         }
       }
@@ -739,7 +741,7 @@ static void backwardRematerialization(ConvertLayoutOp convertOp) {
   bool success =
       getBackwardSliceSCF(convertOp.getOperand(), slice, hasTensorType,
                           targetType.getEncoding(), layout);
-  if (!success)
+  if (!success || slice.empty())
     return;
 
   // 2. Check if all the operations in the slice can be rematerialized.
