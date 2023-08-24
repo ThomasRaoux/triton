@@ -363,71 +363,6 @@ bool canFoldIntoConversion(Operation *op, Attribute targetEncoding) {
              triton::MakeRangeOp, triton::SplatOp, triton::ViewOp>(op);
 }
 
-int simulateBackwardRematerialization(
-    Operation *initOp, SetVector<Operation *> &processed,
-    SetVector<Attribute> &layout, llvm::MapVector<Value, Attribute> &toConvert,
-    Attribute targetEncoding) {
-  // DFS
-  std::vector<std::pair<Operation *, Attribute>> queue;
-  queue.emplace_back(initOp, targetEncoding);
-  // We want to see the effect of converting `initOp` to a new layout
-  // so we initialize `numCvts = 1`.
-  int numCvts = 1;
-  while (!queue.empty()) {
-    Operation *currOp;
-    Attribute currLayout;
-    std::tie(currOp, currLayout) = queue.back();
-    queue.pop_back();
-    // If the current operation is expensive to rematerialize,
-    // we stop everything
-    if (isExpensiveToRemat(currOp, currLayout))
-      return INT_MAX;
-    // A conversion will be removed here (i.e. transferred to operands)
-    numCvts -= 1;
-    // Done processing
-    processed.insert(currOp);
-    layout.insert(currLayout);
-    // Add all operands to the queue
-    for (Value argI : currOp->getOperands()) {
-      Attribute newEncoding;
-      // Cannot invert the current encoding for this operand
-      // we stop everything
-      if (failed(invertEncoding(currLayout, currOp, newEncoding)))
-        return INT_MAX;
-      if (toConvert.count(argI) && toConvert[argI] != newEncoding)
-        return INT_MAX;
-      if (auto ptrTy = argI.getType().dyn_cast<triton::PointerType>()) {
-        if (ptrTy.getPointeeType().isa<RankedTensorType>()) {
-          return INT_MAX;
-        }
-      }
-
-      Operation *opArgI = argI.getDefiningOp();
-      toConvert.insert({argI, newEncoding});
-      // 1. Only convert RankedTensorType
-      // 2. Skip if there's no defining op
-      // 3. Skip if the defining op has already been processed
-      // 4. Skip or the defining op is in a different block
-      if (!argI.getType().isa<RankedTensorType>())
-        continue;
-      if (opArgI && (processed.contains(opArgI) ||
-                     opArgI->getBlock() != currOp->getBlock()))
-        continue;
-      // If the conversion can be folded into opArgI then
-      // we don't count this conversion as expensive
-      if (opArgI && canFoldIntoConversion(opArgI, newEncoding))
-        continue;
-
-      // We add one expensive conversion for the current operand
-      numCvts += 1;
-      if (opArgI)
-        queue.emplace_back(opArgI, newEncoding);
-    }
-  }
-  // return net number of conversions
-  return numCvts;
-}
-
 //
 
 Operation *cloneWithInferType(mlir::OpBuilder &rewriter, Operation *op,
@@ -464,52 +399,6 @@ Operation *cloneWithInferType(mlir::OpBuilder &rewriter, Operation *op,
     }
   }
   return newOp;
-}
-
-void rematerializeConversionChain(
-    const llvm::MapVector<Value, Attribute> &toConvert,
-    mlir::PatternRewriter &rewriter, SetVector<Operation *> &processed,
-    IRMapping &mapping) {
-  SmallVector<Value, 4> sortedValues;
-  SetVector<Operation *> tmp;
-  for (auto &item : toConvert) {
-    Value v = item.first;
-    if (v.getDefiningOp())
-      tmp.insert(v.getDefiningOp());
-    else
-      sortedValues.push_back(v);
-  }
-  tmp = mlir::multiRootTopologicalSort(tmp);
-  for (Operation *op : tmp)
-    sortedValues.push_back(op->getResult(0));
-
-  for (Value currOperand : sortedValues) {
-    Value origOperand = currOperand;
-    // unpack information
-    Attribute targetLayout = toConvert.lookup(currOperand);
-    // rematerialize the operand if necessary
-    Operation *currOperation = currOperand.getDefiningOp();
-    if (processed.contains(currOperation)) {
-      Operation *newOperation =
-          cloneWithInferType(rewriter, currOperation, mapping);
-      newOperation->moveAfter(currOperation);
-      currOperation = newOperation;
-      currOperand = currOperation->getResult(0);
-    }
-    // compute target type for the layout cast
-    auto currType = currOperand.getType().cast<RankedTensorType>();
-    auto newType = RankedTensorType::get(
-        currType.getShape(), currType.getElementType(), targetLayout);
-    auto newOperand = rewriter.create<triton::gpu::ConvertLayoutOp>(
-        currOperand.getLoc(), newType, currOperand);
-    if (currOperation)
-      newOperand->moveAfter(currOperation);
-    else {
-      Block *block = currOperand.cast<BlockArgument>().getOwner();
-      newOperand->moveBefore(block, block->begin());
-    }
-    mapping.map(origOperand, newOperand);
-  }
 }
 
 bool getBackwardSliceSCF(Value root, SetVector<Value> &slice,

@@ -82,57 +82,6 @@ public:
   }
 };
 
-// Layout conversions are expensive. They require going through
-// shared memory, which is orders of magnitude slower than
-// other non-i/o operations in the dialect.
-// It therefore makes sense to remove them whenever possible,
-// even if it means rematerializing all values whose definitions
-// are reachable from it without passing through any memory operation.
-class RematerializeBackward : public mlir::RewritePattern {
-public:
-  explicit RematerializeBackward(mlir::MLIRContext *context)
-      : mlir::RewritePattern(triton::gpu::ConvertLayoutOp::getOperationName(),
-                             3, context) {}
-
-  mlir::LogicalResult
-  matchAndRewrite(mlir::Operation *cvt,
-                  mlir::PatternRewriter &rewriter) const override {
-    if (!llvm::isa<triton::gpu::ConvertLayoutOp>(cvt))
-      return mlir::failure();
-    // we don't touch block arguments
-    Operation *op = cvt->getOperand(0).getDefiningOp();
-    if (!op)
-      return mlir::failure();
-    // we don't want to rematerialize any conversion to/from shared
-    if (triton::gpu::isSharedEncoding(cvt->getResults()[0]) ||
-        triton::gpu::isSharedEncoding(cvt->getOperand(0)))
-      return mlir::failure();
-    // we don't handle conversions to DotOperandEncodingAttr
-    // this is a heuristics to accommodate fused attention
-    auto targetType = cvt->getResultTypes()[0].cast<RankedTensorType>();
-    if (targetType.getEncoding().isa<triton::gpu::DotOperandEncodingAttr>())
-      return mlir::failure();
-
-    // If the conversion can be folded let the canonicalization handle it.
-    if (canFoldIntoConversion(op, targetType.getEncoding()))
-      return failure();
-
-    // DFS
-    SetVector<Operation *> processed;
-    SetVector<Attribute> layout;
-    llvm::MapVector<Value, Attribute> toConvert;
-    if (simulateBackwardRematerialization(cvt, processed, layout, toConvert,
-                                          targetType.getEncoding()) > 0)
-      return mlir::failure();
-
-    IRMapping mapping;
-    rematerializeConversionChain(toConvert, rewriter, processed, mapping);
-    rewriter.replaceOp(cvt, mapping.lookup(cvt->getOperand(0)));
-
-    return mlir::success();
-  }
-};
-
 //
 class ConvertDotConvert : public mlir::RewritePattern {
 public:
@@ -288,6 +237,7 @@ static Attribute inferDstEncoding(triton::ReduceOp op, Attribute encoding) {
 }
 
 static Attribute inferDstEncoding(triton::ExpandDimsOp op, Attribute encoding) {
+  encoding.dump();
   auto sliceEncoding = encoding.cast<triton::gpu::SliceEncodingAttr>();
   assert(op.getAxis() == sliceEncoding.getDim());
   return sliceEncoding.getParent();
@@ -389,9 +339,15 @@ void LayoutPropagation::resolveConflicts() {
     LayoutInfo &info = it.second;
     if (info.encodings.size() <= 1)
       continue;
-    // Hacky resolve, just pick the first encoding.
-    // TODO: add a proper heuristic.
+    // Hacky resolve, prefer block encoding.
+    // TODO: add a proper heuristic.      
     Attribute encoding = *info.encodings.begin();
+    for(Attribute e : info.encodings) {
+      if (e.isa<triton::gpu::BlockedEncodingAttr>()) {
+        encoding = e;
+        break;
+      }
+    }
     info.encodings.clear();
     info.encodings.insert(encoding);
   }
@@ -825,7 +781,6 @@ public:
     mlir::RewritePatternSet decomposePatterns(context);
     decomposePatterns.add<DecomposeDotOperand>(context);
     decomposePatterns.add<ConvertDotConvert>(context);
-
     if (mlir::applyPatternsAndFoldGreedily(m, std::move(decomposePatterns)).failed()) {
       signalPassFailure();
     }

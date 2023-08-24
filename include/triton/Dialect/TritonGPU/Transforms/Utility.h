@@ -107,20 +107,8 @@ bool isExpensiveLoadOrStore(Operation *op);
 
 bool canFoldIntoConversion(Operation *op, Attribute targetEncoding);
 
-// skipInit is True when we only consider the operands of the initOp but
-// not the initOp itself.
-int simulateBackwardRematerialization(
-    Operation *initOp, SetVector<Operation *> &processed,
-    SetVector<Attribute> &layout, llvm::MapVector<Value, Attribute> &toConvert,
-    Attribute targetEncoding);
-
 Operation *cloneWithInferType(mlir::OpBuilder &rewriter, Operation *op,
                               IRMapping &mapping);
-
-void rematerializeConversionChain(
-    const llvm::MapVector<Value, Attribute> &toConvert,
-    mlir::PatternRewriter &rewriter, SetVector<Operation *> &processed,
-    IRMapping &mapping);
 
 bool getBackwardSliceSCF(Value root, SetVector<Value> &slice,
                          llvm::function_ref<bool(Value)> filter,
