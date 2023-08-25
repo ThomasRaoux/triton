@@ -589,8 +589,6 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
 static bool canBeRemat(Operation *op) {
   if (isa<triton::LoadOp, triton::StoreOp>(op))
     return !isExpensiveLoadOrStore(op);
-  if (isa<triton::CatOp, triton::ViewOp>(op))
-    return false;
   if (isa<tensor::ExtractSliceOp, triton::gpu::AllocTensorOp,
           triton::gpu::InsertSliceAsyncOp, triton::AtomicRMWOp,
           triton::AtomicCASOp, triton::DotOp>(op))
