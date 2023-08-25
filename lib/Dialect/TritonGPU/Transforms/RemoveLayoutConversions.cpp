@@ -16,7 +16,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
-
+#include "triton/Analysis/Utility.h"
 #include <memory>
 
 using namespace mlir;
@@ -624,7 +624,7 @@ static void rewriteSlice(SetVector<Value> &slice, DenseMap<Value, Attribute> &la
       opsToRewrite.insert(v.cast<BlockArgument>().getOwner()->getTerminator());
     }
   }
-  opsToRewrite = mlir::topologicalSort(opsToRewrite);
+  opsToRewrite = multiRootTopologicalSort(opsToRewrite);
 
   IRMapping mapping;
   SmallVector<Operation *> deadLoops;
