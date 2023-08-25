@@ -363,6 +363,15 @@ void LayoutPropagation::dump() {
 
 void LayoutPropagation::rewrite() { rewriteRegion(funcOp->getRegion(0)); }
 
+static bool allowChangingSrcEncoding(Operation* op) {
+  // For reductions returning a scalar we can change the src encoding without
+  // affecting the output.
+  if (isa<triton::ReduceOp>(op) &&
+      !op->getResultTypes()[0].isa<RankedTensorType>())
+    return true;
+  return false;
+}
+
 void LayoutPropagation::rewriteRegion(Region &region) {
   SmallVector<Region *> queue = {&region};
   while (!queue.empty()) {
@@ -392,15 +401,18 @@ void LayoutPropagation::rewriteRegion(Region &region) {
       } else if (auto yieldOp = dyn_cast<scf::YieldOp>(&op)) {
         rewriteYieldOp(yieldOp);
       } else {
+        bool canChangeSrcEncoding = allowChangingSrcEncoding(&op);
         // If we don't need to rewrite the op we still need to remap the
         // operands.
         for (OpOperand &operand : op.getOpOperands()) {
           auto it = layouts.find(operand.get());
           if (it == layouts.end())
             continue;
-          Value newOperand = getValueAs(
-              operand.get(),
-              operand.get().getType().cast<RankedTensorType>().getEncoding());
+          Attribute encoding =
+              operand.get().getType().cast<RankedTensorType>().getEncoding();
+          if (canChangeSrcEncoding)
+            encoding = it->second.encodings[0];
+          Value newOperand = getValueAs(operand.get(), encoding);
           op.setOperand(operand.getOperandNumber(), newOperand);
         }
         for (Region &R : op.getRegions())
