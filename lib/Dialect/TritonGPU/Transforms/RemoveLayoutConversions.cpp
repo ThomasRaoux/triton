@@ -295,8 +295,9 @@ SmallVector<Value> LayoutPropagation::propagateToUsers(Value value,
       if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
         valuesToPropagate.push_back(
             forOp.getRegionIterArg(use.getOperandNumber()));
+        setEncoding({valuesToPropagate}, info, changed, user);            
       }
-      setEncoding({valuesToPropagate}, info, changed, user);
+      // TODO: handle scf.if and while.
       continue;
     }
     // Workaround: don't propagate through truncI
@@ -525,10 +526,11 @@ Operation *LayoutPropagation::rewriteYieldOp(scf::YieldOp yieldOp) {
   Operation *parentOp = yieldOp->getParentOp();
   for (OpOperand &operand : yieldOp->getOpOperands()) {
     Value result = parentOp->getResult(operand.getOperandNumber());
-    if (result.getType() == operand.get().getType())
+    auto tensorType = result.getType().dyn_cast<RankedTensorType>();
+    if(!tensorType)
       continue;
     Value newOperand = getValueAs(
-        operand.get(), result.getType().cast<RankedTensorType>().getEncoding());
+        operand.get(), tensorType.getEncoding());
     newYield->setOperand(operand.getOperandNumber(), newOperand);
   }
   opToDelete.push_back(yieldOp.getOperation());
