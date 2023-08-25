@@ -529,8 +529,10 @@ Operation *LayoutPropagation::rewriteYieldOp(scf::YieldOp yieldOp) {
   Operation *newYield = rewriter.clone(*yieldOp.getOperation());
   Operation *parentOp = yieldOp->getParentOp();
   for (OpOperand &operand : yieldOp->getOpOperands()) {
-    Value result = parentOp->getResult(operand.getOperandNumber());
-    auto tensorType = result.getType().dyn_cast<RankedTensorType>();
+    Type yieldType = operand.get().getType();
+    if (isa<scf::ForOp>(parentOp))
+      yieldType = parentOp->getResult(operand.getOperandNumber()).getType();
+    auto tensorType = yieldType.dyn_cast<RankedTensorType>();
     if (!tensorType)
       continue;
     Value newOperand = getValueAs(operand.get(), tensorType.getEncoding());
