@@ -52,14 +52,7 @@ def min(arg0, arg1, _builder=None):
 
 @core.extern
 def max(arg0, arg1, _builder=None):
-    return core.extern_elementwise("libdevice", libdevice_path(), [arg0, arg1, ],
-                                   {(core.dtype("int32"), core.dtype("int32"),): ("__nv_max", core.dtype("int32")),
-                                    (core.dtype("uint32"), core.dtype("uint32"),): ("__nv_umax", core.dtype("uint32")),
-                                    (core.dtype("int64"), core.dtype("int64"),): ("__nv_llmax", core.dtype("int64")),
-                                    (core.dtype("uint64"), core.dtype("uint64"),): ("__nv_ullmax", core.dtype("uint64")),
-                                    (core.dtype("fp32"), core.dtype("fp32"),): ("__nv_fmaxf", core.dtype("fp32")),
-                                    (core.dtype("fp64"), core.dtype("fp64"),): ("__nv_fmax", core.dtype("fp64")),
-                                    }, is_pure=True, _builder=_builder)
+    return core.tensor(_builder.create_maxsi(arg0.handle, arg1.handle), arg0.dtype)
 
 
 @core.extern
@@ -148,7 +141,8 @@ def trunc(arg0, _builder=None):
 @core.extern
 def exp2(arg0, _builder=None):
     return core.extern_elementwise("libdevice", libdevice_path(), [arg0, ],
-                                   {(core.dtype("fp32"),): ("__nv_exp2f", core.dtype("fp32")),
+                                   {(core.dtype("fp16"),): ("__nv_exp2h", core.dtype("fp16")),
+                                    (core.dtype("fp32"),): ("__nv_exp2f", core.dtype("fp32")),
                                     (core.dtype("fp64"),): ("__nv_exp2", core.dtype("fp64")),
                                     }, is_pure=True, _builder=_builder)
 

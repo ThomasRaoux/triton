@@ -1,6 +1,7 @@
 add_mlir_translation_library(TritonLLVMIR
         LLVMIRTranslation.cpp
         LLVMDIScope.cpp
+        LLVMIRPreProcessing.cpp
 
         LINK_COMPONENTS
         Core
