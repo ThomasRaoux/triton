@@ -21,16 +21,6 @@
 
 namespace triton {
 
-static void initLLVM() {
-  static std::once_flag init_flag;
-  std::call_once(init_flag, []() {
-    LLVMInitializeNVPTXTargetInfo();
-    LLVMInitializeNVPTXTarget();
-    LLVMInitializeNVPTXTargetMC();
-    LLVMInitializeNVPTXAsmPrinter();
-  });
-}
-
 static bool findAndReplace(std::string &str, const std::string &begin,
                            const std::string &end, const std::string &target) {
   size_t startReplace = str.find(begin);
@@ -69,7 +59,6 @@ std::string translateLLVMIRToPTX(llvm::Module &module, int cc, int version) {
     if (!f.hasFnAttribute(llvm::Attribute::NoInline))
       f.addFnAttr(llvm::Attribute::AlwaysInline);
   }
-  initLLVM();
   // verify and store llvm
   llvm::legacy::PassManager pm;
   pm.add(llvm::createAlwaysInlinerLegacyPass());

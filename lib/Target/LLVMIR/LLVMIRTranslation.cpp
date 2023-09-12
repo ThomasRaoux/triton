@@ -8,6 +8,7 @@
 #include "mlir/ExecutionEngine/ExecutionEngine.h"
 #include "mlir/ExecutionEngine/OptUtils.h"
 #include "mlir/IR/Dialect.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
@@ -31,6 +32,7 @@
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Target/TargetMachine.h"
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -40,8 +42,41 @@
 #include <filesystem>
 #include <iterator>
 
-namespace fs = std::filesystem;
+static void initLLVM() {
+  static std::once_flag init_flag;
+  std::call_once(init_flag, []() {
+    LLVMInitializeNVPTXTargetInfo();
+    LLVMInitializeNVPTXTarget();
+    LLVMInitializeNVPTXTargetMC();
+    LLVMInitializeNVPTXAsmPrinter();
+  });
+}
 
+
+namespace fs = std::filesystem;
+namespace {
+
+using namespace llvm;
+
+std::unique_ptr<llvm::TargetMachine>
+createTargetMachine() {
+  std::string triple = "nvptx64-nvidia-cuda";
+  std::string chip = "sm_80";
+  std::string features = "+ptx70";
+  std::string error;
+  const llvm::Target *target =
+      llvm::TargetRegistry::lookupTarget(triple, error);
+  if (!target) {
+    return {};
+  }
+  llvm::TargetMachine *machine =
+      target->createTargetMachine(triple, chip, features, {}, {});
+  if (!machine) {
+    return {};
+  }
+  return std::unique_ptr<llvm::TargetMachine>{machine};
+}
+} // namespace
 namespace mlir {
 namespace triton {
 
@@ -307,10 +342,11 @@ translateLLVMToLLVMIR(llvm::LLVMContext *llvmContext, mlir::ModuleOp module,
     if (linkExternLib(*llvmModule, lib.first, lib.second, target))
       return nullptr;
   }
-
+  initLLVM();
+  std::unique_ptr<llvm::TargetMachine> targetMachine = createTargetMachine();
   auto optPipeline = mlir::makeOptimizingTransformer(
       /*optLevel=*/3, /*sizeLevel=*/0,
-      /*targetMachine=*/nullptr);
+      /*targetMachine=*/&(*targetMachine));
 
   if (auto err = optPipeline(llvmModule.get())) {
     llvm::errs() << "Failed to optimize LLVM IR " << err << "\n";
