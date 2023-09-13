@@ -1,5 +1,6 @@
 #include "triton/Target/LLVMIR/LLVMIRTranslation.h"
 
+#include "LLVMPasses.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/Transforms/Passes.h"
@@ -24,11 +25,20 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
+#include "llvm/Passes/OptimizationLevel.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
+#include <optional>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -39,6 +49,84 @@
 #include <iterator>
 
 namespace fs = std::filesystem;
+
+namespace {
+using namespace llvm;
+
+static std::optional<OptimizationLevel> mapToLevel(unsigned optLevel,
+                                                   unsigned sizeLevel) {
+  switch (optLevel) {
+  case 0:
+    return OptimizationLevel::O0;
+
+  case 1:
+    return OptimizationLevel::O1;
+
+  case 2:
+    switch (sizeLevel) {
+    case 0:
+      return OptimizationLevel::O2;
+
+    case 1:
+      return OptimizationLevel::Os;
+
+    case 2:
+      return OptimizationLevel::Oz;
+    }
+    break;
+  case 3:
+    return OptimizationLevel::O3;
+  }
+  return std::nullopt;
+}
+
+// Create and return a lambda that uses LLVM pass manager builder to set up
+// optimizations based on the given level.
+static std::function<Error(Module *)>
+makeOptimizingPipeline(unsigned optLevel, unsigned sizeLevel,
+                       TargetMachine *targetMachine) {
+  return [optLevel, sizeLevel, targetMachine](Module *m) -> Error {
+    std::optional<OptimizationLevel> ol = mapToLevel(optLevel, sizeLevel);
+    if (!ol) {
+      return make_error<StringError>(
+          formatv("invalid optimization/size level {0}/{1}", optLevel,
+                  sizeLevel)
+              .str(),
+          inconvertibleErrorCode());
+    }
+    LoopAnalysisManager lam;
+    FunctionAnalysisManager fam;
+    CGSCCAnalysisManager cgam;
+    ModuleAnalysisManager mam;
+
+    PipelineTuningOptions tuningOptions;
+    tuningOptions.LoopUnrolling = true;
+    tuningOptions.LoopInterleaving = true;
+    tuningOptions.LoopVectorization = true;
+    tuningOptions.SLPVectorization = true;
+
+    PassBuilder pb(targetMachine, tuningOptions);
+
+    pb.registerModuleAnalyses(mam);
+    pb.registerCGSCCAnalyses(cgam);
+    pb.registerFunctionAnalyses(fam);
+    pb.registerLoopAnalyses(lam);
+    pb.crossRegisterProxies(lam, fam, cgam, mam);
+
+    ModulePassManager mpm;
+    // Run pre-processing pass. TODO: this could be add with the rest of the
+    // optimizations.
+    llvm::FunctionPassManager fpm;
+    fpm.addPass(BreakStructPhiNodesPass());
+    fpm.addPass(InstCombinePass(InstCombineOptions()));
+    fpm.addPass(BreakStructPhiNodesPass());
+    mpm.addPass(createModuleToFunctionPassAdaptor(std::move(fpm)));
+    mpm.addPass(pb.buildPerModuleDefaultPipeline(*ol));
+    mpm.run(*m, mam);
+    return Error::success();
+  };
+}
+} // namespace
 
 namespace mlir {
 namespace triton {
@@ -305,7 +393,7 @@ translateLLVMToLLVMIR(llvm::LLVMContext *llvmContext, mlir::ModuleOp module,
       return nullptr;
   }
 
-  auto optPipeline = mlir::makeOptimizingTransformer(
+  auto optPipeline = makeOptimizingPipeline(
       /*optLevel=*/3, /*sizeLevel=*/0,
       /*targetMachine=*/nullptr);
 

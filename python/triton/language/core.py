@@ -1341,11 +1341,6 @@ def reduce(input, axis, combine_fn, _builder=None, _generator=None):
 @builtin
 def _promote_reduction_input(t, _builder=None):
     scalar_ty = t.type.scalar
-    # input is extended to 32-bits if necessary
-    # this increases numerical accuracy and can be done pretty much for free
-    # on GPUs
-    if scalar_ty.is_int() and scalar_ty.int_bitwidth < 32:
-        return t.to(int32, _builder=_builder)
 
     # hardware doesn't support FMAX, FMIN, CMP for bfloat16
     if scalar_ty is bfloat16:
@@ -1385,17 +1380,10 @@ def minimum(x, y):
     return where(x < y, x, y)
 
 
-@jit
-def maximum(x, y):
-    """
-    Computes the element-wise maximum of :code:`x` and :code:`y`.
-
-    :param input: the first input tensor
-    :type input: Block
-    :param other: the second input tensor
-    :type other: Block
-    """
-    return where(x > y, x, y)
+@builtin
+@_add_math_1arg_docstr("maximum")
+def maximum(x, y, _builder=None):
+    return semantic.max(x, y, _builder)
 
 # max and argmax
 
@@ -1439,12 +1427,6 @@ def max(input, axis=None, return_indices=False, return_indices_tie_break_left=Tr
         else:
             return _reduce_with_indices(input, axis, _argmax_combine_tie_break_fast)
     else:
-        if constexpr(input.dtype.primitive_bitwidth) < 32:
-            if constexpr(input.dtype.is_floating()):
-                input = input.to(float32)
-            else:
-                assert input.dtype.is_integer_type()
-                input = input.to(int32)
         return reduce(input, axis, _fast_max)
 
 

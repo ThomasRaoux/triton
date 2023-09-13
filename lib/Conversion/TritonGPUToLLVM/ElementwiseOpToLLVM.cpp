@@ -1079,6 +1079,56 @@ struct ExpOpConversionApprox
   }
 };
 
+struct ExpOpConversionApprox2
+    : ElementwiseOpConversionBase<triton::PureExternElementwiseOp, ExpOpConversionApprox2> {
+  using Base =
+      ElementwiseOpConversionBase<triton::PureExternElementwiseOp, ExpOpConversionApprox2>;
+  using Base::Base;
+  using Adaptor = typename Base::OpAdaptor;
+
+  SmallVector<Value> createDestOps(triton::PureExternElementwiseOp op, OpAdaptor adaptor,
+                                   ConversionPatternRewriter &rewriter,
+                                   Type elemTy, MultipleOperandsRange operands,
+                                   Location loc) const {
+    if (op.getSymbol() != "__nv_exp2h")
+      return {};
+    if (operands.size() >= 2) {
+      auto vecType = vec_ty(f16_ty, 2);
+      Value packedInput = undef(vecType);
+      for (int i = 0; i < 2; i++)
+        packedInput = insert_element(vecType, packedInput, operands[i][0], i32_val(i));
+      packedInput = bitcast(packedInput, i32_ty);  
+      const std::string ex2f16x2 =
+          "{                            \n"
+          ".reg .b32 a<3>;              \n"
+          "mov.b32 a0, 0x00800080;      \n"
+          "mov.b32 a1, 0x07800780;      \n"
+          "fma.rn.f16x2.relu a2, $1, a0, a1; \n"
+          "shl.b32 $0, a2, 3; \n"
+          "}";
+          
+      PTXBuilder ptxBuilder;
+      auto &ex = *ptxBuilder.create<PTXInstr>(ex2f16x2);
+      auto res = ptxBuilder.newOperand("=r");
+      auto operand = ptxBuilder.newOperand(packedInput, "r");
+      ex({res, operand}, /*onlyAttachMLIRArgs=*/true);          
+      Value result = ptxBuilder.launch(rewriter, loc, i32_ty, false);
+      Value unpack = bitcast(result, vecType);
+      SmallVector<Value> ret;
+      ret.push_back(extract_element(unpack, i32_val(0)));
+      ret.push_back(extract_element(unpack, i32_val(1)));
+      return ret;
+    } else {
+      PTXBuilder ptxBuilder;
+      auto &exp2 = ptxBuilder.create<PTXInstr>("ex2")->o("approx").o("f16");
+      auto output = ptxBuilder.newOperand("=h");
+      auto input = ptxBuilder.newOperand(operands[0][0], "h");
+      exp2(output, input);
+      return {ptxBuilder.launch(rewriter, loc, f16_ty, false)};
+    }
+  }
+};
+
 struct AbsIOpConversion
     : ElementwiseOpConversionBase<mlir::math::AbsIOp, AbsIOpConversion> {
   using Base =
@@ -1182,6 +1232,7 @@ void populateElementwiseOpToLLVMPatterns(
   POPULATE_BINARY_OP(arith::ShRUIOp, LLVM::LShrOp)  // >>
   POPULATE_BINARY_OP(arith::MinFOp, LLVM::MinNumOp) // fmin
   POPULATE_BINARY_OP(arith::MinSIOp, LLVM::SMinOp)  // smin
+  POPULATE_BINARY_OP(arith::MaxSIOp, LLVM::SMaxOp)  // smax
 #undef POPULATE_BINARY_OP
 
 #define POPULATE_UNARY_OP(SRC_OP, DST_OP)                                      \
@@ -1229,6 +1280,7 @@ void populateElementwiseOpToLLVMPatterns(
   // ElementwiseOpConversion<math::ExpOp, math::ExpOp> defined below will call
   // __nv_expf for higher-precision calculation
   patterns.add<ExpOpConversionApprox>(typeConverter, benefit);
+  patterns.add<ExpOpConversionApprox2>(typeConverter, 11);
 }
 
 struct FPExtOpConversion
