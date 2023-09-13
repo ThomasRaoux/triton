@@ -12,4 +12,11 @@ struct BreakStructPhiNodesPass : PassInfoMixin<BreakStructPhiNodesPass> {
   static StringRef name() { return "BreakStructPhiNodesPass"; }
 };
 
+struct VectorizeArith : PassInfoMixin<VectorizeArith> {
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
+
+  static StringRef name() { return "VectorizeArithPass"; }
+};
+
+
 }  // namespace llvm

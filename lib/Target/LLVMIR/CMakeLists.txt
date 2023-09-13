@@ -2,6 +2,7 @@ add_mlir_translation_library(TritonLLVMIR
         LLVMIRTranslation.cpp
         LLVMDIScope.cpp
         LLVMIRPreProcessing.cpp
+        LLVMVectorizeArith.cpp
 
         LINK_COMPONENTS
         Core

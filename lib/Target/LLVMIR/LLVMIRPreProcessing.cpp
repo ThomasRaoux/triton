@@ -102,6 +102,6 @@ PreservedAnalyses BreakStructPhiNodesPass::run(Function &F,
                                                FunctionAnalysisManager &AM) {
 
   bool b = runOnFunction(F);
-  llvm::errs() << F;
+  llvm::errs() << *F.getParent();
   return b ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }
