@@ -569,7 +569,7 @@ BATCH, N_HEADS, N_CTX, D_HEAD = 4, 48, 4096, 64
 configs = [
     triton.testing.Benchmark(
         x_names=["N_CTX"],
-        x_vals=[2**i for i in range(10, 15)],
+        x_vals=[2**i for i in range(14, 15)],
         line_arg="provider",
         line_vals=["triton"] + (["flash"] if HAS_FLASH else []),
         line_names=["Triton"] + (["Flash-2"] if HAS_FLASH else []),
@@ -585,7 +585,7 @@ configs = [
             "causal": causal,
         },
     )
-    for mode in ["fwd", "bwd"]
+    for mode in ["fwd"]
     for causal in [True]
 ]
 
