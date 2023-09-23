@@ -324,8 +324,11 @@ LogicalResult convertDot(TritonGPUToLLVMTypeConverter *typeConverter,
   int numRepN = ceil<unsigned>(dShapePerCTA[1], shapePerCTATile[1]);
   int numRepK = ceil<unsigned>(aTensorTy.getShape()[1], instrShape[2]);
   DotOpMmaV3SmemLoader aLoader;
+  SmallVector<Value> structA;
   if(aSharedLayout) {
       aLoader = loadA(typeConverter, rewriter, loc, mmaEncoding, a, baseA, thread);
+  } else {
+    structA = typeConverter->unpackLLElements(loc, loadedA, rewriter, aTensorTy);
   }
   DotOpMmaV3SmemLoader bLoader =
       loadB(typeConverter, rewriter, loc, mmaEncoding, b, baseB, thread);
@@ -373,7 +376,7 @@ LogicalResult convertDot(TritonGPUToLLVMTypeConverter *typeConverter,
         } else {
           unsigned regASize = (instrShape[0] * instrShape[2]) / 32;
           llvm::SmallVector<Value> regA =
-            loadReg(rewriter, loc, fc, (m * numRepK + k) * regASize, regASize);
+            loadReg(rewriter, loc, structA, (m * numRepK + k) * regASize, regASize);
           auto regATy = LLVM::LLVMStructType::getLiteral(
               rewriter.getContext(),
               SmallVector<Type>(regA.size(), regA[0].getType()));
