@@ -6,21 +6,35 @@ using ::mlir::triton::gpu::getTotalElemsPerThread;
 
 /* ----- FP8E5M2 ------ */
 // This data-type is the standard FP8E5M2 format
+const std::string Fp16_to_Fp8E5M2(bool hasNativeFP) {
+  std::string ret;
+  if (!hasNativeFP) {
+    ret = "{                            \n"
+          ".reg .b32 a<2>;              \n"
+          "and.b32 a0, $1, 0xfffefffe;  \n"   // a0 &= 0xfffefffe
+          "and.b32 a1, $2, 0xfffefffe;  \n"   // (strip lowest bit)
+          "add.u32 a0, a0, 0x00800080;  \n"   // a0 += 0x00800080
+          "add.u32 a1, a1, 0x00800080;  \n"   // (round to nearest)
+          "prmt.b32 $0, a0, a1, 0x7531; \n\t" // output = a1a0
+          "}";
+  } else {
+    ret = "cvt.rn.satfinite.e5m2x2.f16x2 $0, $1; \n\t";
+  }
+  return ret;
+}
 
-const std::string Fp16_to_Fp8E5M2 =
-    "{                            \n"
-    ".reg .b32 a<2>;              \n"
-    "and.b32 a0, $1, 0xfffefffe;  \n"   // a0 &= 0xfffefffe
-    "and.b32 a1, $2, 0xfffefffe;  \n"   // (strip lowest bit)
-    "add.u32 a0, a0, 0x00800080;  \n"   // a0 += 0x00800080
-    "add.u32 a1, a1, 0x00800080;  \n"   // (round to nearest)
-    "prmt.b32 $0, a0, a1, 0x7531; \n\t" // output = a1a0
-    "}";
-
-const std::string Fp8E5M2_to_Fp16 = "{                           \n"
-                                    "prmt.b32 $0, 0, $2, 0x5140; \n\t"
-                                    "prmt.b32 $1, 0, $2, 0x7362; \n\t"
-                                    "}";
+const std::string Fp8E5M2_to_Fp16(bool hasNativeFP) {
+  std::string ret;
+  if (!hasNativeFP) {
+    ret = "{                           \n"
+          "prmt.b32 $0, 0, $2, 0x5140; \n\t"
+          "prmt.b32 $1, 0, $2, 0x7362; \n\t"
+          "}";
+  } else {
+    ret = "cvt.rn.f16x2.e5m2x2 $0, $1; \n\t";
+  }
+  return ret;
+}
 
 const std::string Fp8E5M2_to_Bf16 =
     "{                                      \n"
@@ -220,6 +234,12 @@ const std::string S8_to_Bf16 =
     "prmt.b32 $0, f0, f1, 0x7632;                \n" // f32->bf16 + pack
     "prmt.b32 $1, f2, f3, 0x7632;                \n" //
     "}";
+
+// Fp32 (x2) -> Fp8 (x2) (packed)
+const std::string Fp32_to_Fp8E4M3Nv =
+    "cvt.rn.satfinite.e4m3x2.f32  $0, $1, $2; \n";
+const std::string Fp32_to_Fp8E5M2 =
+    "cvt.rn.satfinite.e5m2x2.f32 $0, $1, $2; \n";
 
 static SmallVector<Value> reorderValues(const SmallVector<Value> &values,
                                         Type inType, Type ouType) {
@@ -599,26 +619,31 @@ struct FpToFpOpConversion
         {{F8E4M3B15TyID, F16TyID}, Fp8E4M3B15_to_Fp16},
         {{F8E4M3FNTyID, F16TyID}, Fp8E4M3B15x4_to_Fp16},
         {{F8E4M3TyID, F16TyID}, Fp8E4M3Nv_to_Fp16},
-        {{F8E5M2TyID, F16TyID}, Fp8E5M2_to_Fp16},
+        {{F8E5M2TyID, F16TyID}, Fp8E5M2_to_Fp16(computeCapability >= 90)},
         // F16 -> F8
         {{F16TyID, F8E4M3B15TyID}, Fp16_to_Fp8E4M3B15(computeCapability >= 80)},
         {{F16TyID, F8E4M3FNTyID}, Fp16_to_Fp8E4M3B15x4},
         {{F16TyID, F8E4M3TyID}, Fp16_to_Fp8E4M3Nv},
-        {{F16TyID, F8E5M2TyID}, Fp16_to_Fp8E5M2},
+        {{F16TyID, F8E5M2TyID}, Fp16_to_Fp8E5M2(computeCapability >= 90)},
         // F8 -> BF16
         {{F8E5M2TyID, BF16TyID}, Fp8E5M2_to_Bf16},
         {{F8E4M3TyID, BF16TyID}, Fp8E4M3Nv_to_Bf16},
         // BF16 -> F8
         {{BF16TyID, F8E5M2TyID}, Bf16_to_Fp8E5M2},
         {{BF16TyID, F8E4M3TyID}, Bf16_to_Fp8E4M3Nv},
+        // F32 -> F8
+        {{F32TyID, F8E4M3TyID}, Fp32_to_Fp8E4M3Nv},
+        {{F32TyID, F8E5M2TyID}, Fp32_to_Fp8E5M2},
     };
     int inVecWidthBits = 32;
     int outVecWidthBits = 32;
-    if (srcTy.isFloat8E4M3FNUZ()) {
+    if (srcTy.isFloat8E4M3FNUZ() ||
+        (computeCapability >= 90 && srcTy.isFloat8E5M2())) {
       inVecWidthBits = 16;
       outVecWidthBits = 32;
     }
-    if (dstTy.isFloat8E4M3FNUZ()) {
+    if (dstTy.isFloat8E4M3FNUZ() ||
+        (computeCapability >= 90 && dstTy.isFloat8E5M2())) {
       inVecWidthBits = 32;
       outVecWidthBits = 16;
     }
@@ -651,18 +676,24 @@ struct FpToFpOpConversion
 
     size_t numElements = 4;
     if (srcElementType.isFloat8E4M3FNUZ() ||
-        dstElementType.isFloat8E4M3FNUZ()) {
+        dstElementType.isFloat8E4M3FNUZ() ||
+        (computeCapability >= 90 &&
+         (srcElementType.isFloat8E5M2() || dstElementType.isFloat8E5M2()))) {
       numElements = 2;
     }
-    bool isSrcFP32 = srcElementType.isF32();
+    bool useFP16IntermediateSrc =
+        srcElementType.isF32() &&
+        !(computeCapability >= 90 &&
+          (dstElementType.isFloat8E4M3FNUZ() || dstElementType.isFloat8E5M2()));
     bool isDstFP32 = dstElementType.isF32();
-    auto cvtFunc = getConversionFunc(isSrcFP32 ? f16_ty : srcElementType,
-                                     isDstFP32 ? f16_ty : dstElementType);
+    auto cvtFunc =
+        getConversionFunc(useFP16IntermediateSrc ? f16_ty : srcElementType,
+                          isDstFP32 ? f16_ty : dstElementType);
     SmallVector<Value> inVals;
     for (unsigned i = 0; i < std::min(numElements, operands.size()); i++) {
       inVals.push_back(operands[i][0]);
     }
-    if (isSrcFP32)
+    if (useFP16IntermediateSrc)
       for (Value &v : inVals)
         v = convertFp32ToFp16(loc, rewriter, v);
     inVals.resize(numElements,
