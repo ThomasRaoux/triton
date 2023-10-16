@@ -4,7 +4,9 @@ add_mlir_dialect_library(TritonGPUTransforms
   DecomposeConversions.cpp
   OptimizeDotOperands.cpp
   OptimizeEpilogue.cpp
-  Pipeline.cpp
+  Pipeliner/SoftwarePipeliner.cpp
+  Pipeliner/ScheduleCreator.cpp
+  Pipeliner/Expander.cpp
   Prefetch.cpp
   RemoveLayoutConversions.cpp
   ReorderInstructions.cpp

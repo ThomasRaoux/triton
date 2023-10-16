@@ -1,3 +1,4 @@
+#if 0
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/TypeUtilities.h"
@@ -1824,3 +1825,4 @@ std::unique_ptr<Pass> mlir::createTritonGPUPipelinePass(int numStages,
   return std::make_unique<PipelinePass>(numStages, numWarps, numCTAs,
                                         computeCapability);
 }
+#endif
