@@ -2,6 +2,55 @@
 
 using namespace mlir;
 
+static void createAsyncLoad(scf::ForOp forOp, tt::LoadOp loadOp,
+                            unsigned distance) {
+  OpBuilder builder(forOp);
+  auto ty = loadOp.getType().cast<RankedTensorType>();
+  if (loadOp.getResult().hasOneUse()) {
+    Operation *user = *loadOp.getResult().getUsers().begin();
+    Attribute sharedEnc;
+    if (auto convertLayout = llvm::dyn_cast<ttg::ConvertLayoutOp>(user)) {
+      auto tensorType =
+          convertLayout.getResult().getType().cast<RankedTensorType>();
+      if (auto dotOpEnc = tensorType.getEncoding()
+                              .dyn_cast<ttg::DotOperandEncodingAttr>()) {
+        bool needTrans = dyn_cast_or_null<tt::TransOp>(
+            cvt.getDefiningOp()->getOperand(0).getDefiningOp());
+        unsigned bitWidth = ty.getElementType().getIntOrFloatBitWidth();
+        auto CTALayout = ttg::getCTALayout(ty.getEncoding());
+        sharedEnc = ttg::SharedEncodingAttr::get(
+            ty.getContext(), dotOpEnc, ty.getShape(),
+            ttg::getOrder(ty.getEncoding()), CTALayout, bitWidth, needTrans);
+      }
+    }
+    SmallVector<int64_t> bufferShape(ty.getShape().begin(),
+                                     ty.getShape().end());
+    bufferShape.insert(bufferShape.begin(), distance);
+    Type allocType =
+        RankedTensorType::get(bufferShape, ty.getElementType(), sharedEnc);
+    Value alloc =
+        builder.create<triton::gpu::AllocTensorOp>(loadOp.getLoc(), allocType);
+  }
+}
+
+/// Convert loads where the def and uses are in different stages to async loads.
+static void createAsynOps(scf::ForOp forOp,
+                          DenseMap<Operation *, unsigned> &opToStage) {
+  for (Operation &op : forOp.getBody()->without_terminator()) {
+    auto loadOp = dyn_cast<tt::LoadOp>(&op);
+    if (!loadOp)
+      continue;
+    unsigned defStage = opToStage[&op];
+    unsigned firstUse = defStage;
+    for (auto user : op.getUsers()) {
+      firstUse = std::min(firstUse, opToStage[user]);
+    }
+    if (firstUse == defStage)
+      continue;
+    createAsyncLoad(forOp, loadOp, firstUse - defStage);
+  }
+}
+
 /// Helper to recursively add dependencies to the same stage.
 static void addDep(Operation *op, unsigned stage,
                    DenseMap<Operation *, unsigned> &opToStage) {
@@ -31,8 +80,7 @@ static void addDep(Operation *op, unsigned stage,
 }
 
 std::vector<std::pair<Operation *, unsigned>> mlir::triton::createSchedule(
-    scf::ForOp forOp,
-    int numStages,
+    scf::ForOp forOp, int numStages,
     ArrayRef<std::pair<Operation *, unsigned>> coarseSchedule) {
   SmallVector<SmallVector<Operation *>> stages(numStages);
   for (auto opStage : coarseSchedule)
