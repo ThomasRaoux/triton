@@ -11,7 +11,10 @@ static void addDep(Operation *op, unsigned stage,
   for (Value operand : op->getOperands()) {
     Value v = operand;
     int distance = 0;
+    SmallDenseSet<Value> seen;
     while (auto arg = v.dyn_cast<BlockArgument>()) {
+      if (!seen.insert(v).second)
+        break;
       if (arg.getArgNumber() > 0 && arg.getOwner() == op->getBlock()) {
         auto yieldOp = op->getBlock()->getTerminator();
         v = yieldOp->getOperand(arg.getArgNumber() - 1);
@@ -48,10 +51,12 @@ std::vector<std::pair<Operation *, unsigned>> mlir::triton::createSchedule(
       opToStage[&op] = numStages - 1;
   }
 
-  std::vector<std::pair<Operation *, unsigned>> schedule;
+  createAsynOps(forOp, opToStage);
+
   // Schedule stage in decreasing order. This is an arbritrary choice but works
   // well for matmul loops, it can be passed a parameter to this function in the
   // future and decided based on the type of loop.
+  std::vector<std::pair<Operation *, unsigned>> schedule;
   for (int i = numStages - 1; i >= 0; i--) {
     for (Operation &op : forOp) {
       if (!opToStage.count(&op))
