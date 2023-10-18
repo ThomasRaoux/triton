@@ -139,6 +139,10 @@ static void pipelineLoop(scf::ForOp forOp, int numStages) {
   std::vector<std::pair<Operation *, unsigned>> schedule =
       mlir::triton::createSchedule(forOp, numStages, ops);
 
+  //for(auto &op : schedule) {
+  //  llvm::dbgs() << "op: " << *op.first << " stage: " << op.second << "\n";
+  //}
+
   // 3. rewrite the loop using the given schedule, this part of the
   // transformation doesn't take any decision.
   mlir::triton::PipeliningOption options;

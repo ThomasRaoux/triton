@@ -221,7 +221,6 @@ void LoopPipelinerInternal::emitPrologue(RewriterBase &rewriter) {
       Operation *newOp =
           cloneAndUpdateOperands(rewriter, op, [&](OpOperand *newOperand) {
             auto it = valueMapping.find(newOperand->get());
-            newOperand->get().dump();
             if (it != valueMapping.end()) {
               Value replacement = it->second[i - stages[op]];
               newOperand->set(replacement);
@@ -473,9 +472,11 @@ LogicalResult LoopPipelinerInternal::createKernel(
     Operation *def = retVal.value().getDefiningOp();
     assert(def && "Only support loop carried dependencies of distance 1");
     unsigned defStage = stages[def];
-    setValueMapping(forOp.getRegionIterArgs()[retVal.index()],
-                    newForOp->getResult(retVal.index()),
-                    maxStage - defStage + 1);
+    if (defStage > 0) {
+      setValueMapping(forOp.getRegionIterArgs()[retVal.index()],
+                      newForOp->getResult(retVal.index()),
+                      maxStage - defStage + 1);
+    }
   }
   rewriter.create<scf::YieldOp>(forOp.getLoc(), yieldOperands);
   return success();

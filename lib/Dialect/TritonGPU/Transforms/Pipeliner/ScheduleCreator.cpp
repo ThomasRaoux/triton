@@ -9,9 +9,21 @@ static void addDep(Operation *op, unsigned stage,
     return;
   opToStage[op] = stage;
   for (Value operand : op->getOperands()) {
-    Operation *defOp = operand.getDefiningOp();
-    if (defOp && defOp->getBlock() == op->getBlock())
+    Value v = operand;
+    int distance = 0;
+    while (auto arg = v.dyn_cast<BlockArgument>()) {
+      if (arg.getArgNumber() > 0 && arg.getOwner() == op->getBlock()) {
+        auto yieldOp = op->getBlock()->getTerminator();
+        v = yieldOp->getOperand(arg.getArgNumber() - 1);
+        distance++;
+        continue;
+      }
+      break;
+    }
+    Operation *defOp = v.getDefiningOp();
+    if (defOp && defOp->getBlock() == op->getBlock()) {
       addDep(defOp, stage, opToStage);
+    }
   }
 }
 
