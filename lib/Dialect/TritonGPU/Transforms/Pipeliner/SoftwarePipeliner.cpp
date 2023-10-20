@@ -126,6 +126,30 @@ collectOpsToPipeline(scf::ForOp forOp,
     }
 }
 
+// Function to mask operations during scheduling.
+static Operation *predicateOp(RewriterBase &rewriter, Operation *op,
+                              Value pred) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  if (mlir::isMemoryEffectFree(op))
+    return op;
+  if(isa<ttg::AsyncCommitGroupOp>(op))
+    return op;
+  if(auto insertOp = dyn_cast<ttg::InsertSliceAsyncOp>(op)) {
+    Type maskType = tt::getI1SameShape(insertOp.getSrc().getType());
+    Location loc = pred.getLoc();
+    rewriter.setInsertionPoint(insertOp);
+    Value mask = rewriter.create<tt::SplatOp>(loc, maskType, pred);
+    if(insertOp.getMask()) {
+      mask = rewriter.create<arith::AndIOp>(loc, mask, insertOp.getMask());
+    }
+    insertOp.getMaskMutable().assign(mask);
+    return op;
+  }
+  
+  assert("don't know how to predicate this op" && false);
+  return op;
+}
+
 static void pipelineLoop(scf::ForOp forOp, int numStages) {
   // 1. First collect "interesting" operations with a stage where to schedule
   // them. This gives a coarse scheduling for the loop.
@@ -139,10 +163,6 @@ static void pipelineLoop(scf::ForOp forOp, int numStages) {
   std::vector<std::pair<Operation *, unsigned>> schedule =
       mlir::triton::createSchedule(forOp, numStages, ops);
 
-  //for(auto &op : schedule) {
-  //  llvm::dbgs() << "op: " << *op.first << " stage: " << op.second << "\n";
-  //}
-
   // 3. rewrite the loop using the given schedule, this part of the
   // transformation doesn't take any decision.
   mlir::triton::PipeliningOption options;
@@ -151,10 +171,19 @@ static void pipelineLoop(scf::ForOp forOp, int numStages) {
                   std::vector<std::pair<Operation *, unsigned>> &s) {
         s = std::move(schedule);
       };
-  options.needNumIterationChecks = false;      
+  options.peelEpilogue = false;
+  options.predicateFn = predicateOp;
+  options.needNumIterationChecks = false;
   IRRewriter rewriter(forOp->getContext());
   rewriter.setInsertionPoint(forOp);
-  (void)mlir::triton::pipelineForLoop(rewriter, forOp, options);
+  FailureOr<scf::ForOp> newForOp =
+      mlir::triton::pipelineForLoop(rewriter, forOp, options);
+  OpBuilder builder(newForOp->getContext());
+  builder.setInsertionPoint(newForOp->getBody(), newForOp->getBody()->begin());
+  builder.create<ttg::AsyncWaitOp>(newForOp->getLoc(),
+                                     ops.size() * (numStages - 2));
+  builder.setInsertionPointAfter(newForOp->getOperation());
+  builder.create<ttg::AsyncWaitOp>(newForOp->getLoc(), 0);
 }
 
 namespace {

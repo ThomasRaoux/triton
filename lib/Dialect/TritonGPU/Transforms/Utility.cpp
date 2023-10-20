@@ -492,6 +492,32 @@ Value linearize(OpBuilder &b, Location loc, ArrayRef<Value> multiDim,
   return linear;
 }
 
+scf::ForOp replaceForOpWithNewSignature(OpBuilder &rewriter,
+                                               scf::ForOp loop,
+                                               ValueRange newIterOperands) {
+  OpBuilder::InsertionGuard g(rewriter);
+  rewriter.setInsertionPoint(loop);
+
+  // Create a new loop before the existing one, with the extra operands.
+  rewriter.setInsertionPoint(loop);
+  auto operands = llvm::to_vector<4>(loop.getInitArgs());
+  operands.append(newIterOperands.begin(), newIterOperands.end());
+  scf::ForOp newLoop = rewriter.create<scf::ForOp>(
+      loop.getLoc(), loop.getLowerBound(), loop.getUpperBound(), loop.getStep(),
+      operands);
+  newLoop.getBody()->erase();
+
+  newLoop.getRegion().getBlocks().splice(
+      newLoop.getRegion().getBlocks().begin(), loop.getRegion().getBlocks());
+  for (Value operand : newIterOperands)
+    newLoop.getBody()->addArgument(operand.getType(), operand.getLoc());
+
+  for (auto it : llvm::zip(loop.getResults(), newLoop.getResults().take_front(
+                                                  loop.getNumResults())))
+    std::get<0>(it).replaceAllUsesWith(std::get<1>(it));
+  return newLoop;
+}
+
 namespace {
 
 /// Detect dead arguments in scf.for op by assuming all the values are dead and

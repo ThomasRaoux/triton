@@ -25,7 +25,7 @@
 // c. Compute operations: for instance, Triton dot.
 // d. Post-load operations: for instance, index computation.
 //
-// To pipeline the loop, we need to:
+// To pipeline the loop, we need to:we
 // - Hoist the pipelinable load operations for the first numStages-1 iterations
 // to the loop pre-header
 // - Find all the dependencies of the load operations.

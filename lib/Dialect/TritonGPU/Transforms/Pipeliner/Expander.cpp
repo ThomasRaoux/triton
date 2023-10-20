@@ -210,10 +210,13 @@ void LoopPipelinerInternal::emitPrologue(RewriterBase &rewriter) {
   for (int64_t i = 0; i < maxStage; i++) {
     // special handling for induction variable as the increment is implicit.
     // iv = lb + i * step
+    Type t = lb.getType();
     Value iv = rewriter.create<arith::AddIOp>(
         loc, lb,
         rewriter.create<arith::MulIOp>(
-            loc, step, rewriter.create<arith::ConstantIndexOp>(loc, i)));
+            loc, step,
+            rewriter.create<arith::ConstantOp>(loc,
+                                               rewriter.getIntegerAttr(t, i))));
     setValueMapping(forOp.getInductionVar(), iv, i);
     for (Operation *op : opOrder) {
       if (stages[op] > i)
@@ -313,13 +316,15 @@ scf::ForOp LoopPipelinerInternal::createKernelLoop(
   // iterations.
   Value newUb = forOp.getUpperBound();
   if (peelEpilogue) {
+    Type t = ub.getType();
     Location loc = forOp.getLoc();
     // newUb = ub - maxStage * step
     newUb = rewriter.create<arith::AddIOp>(
         loc, ub,
         rewriter.create<arith::MulIOp>(
             loc, step,
-            rewriter.create<arith::ConstantIndexOp>(loc, -maxStage)));
+            rewriter.create<arith::ConstantOp>(
+                loc, rewriter.getIntegerAttr(t, -maxStage))));
   }
   auto newForOp =
       rewriter.create<scf::ForOp>(forOp.getLoc(), forOp.getLowerBound(), newUb,
@@ -351,14 +356,15 @@ LogicalResult LoopPipelinerInternal::createKernel(
   if (!peelEpilogue) {
     // Create a predicate for each stage except the last stage.
     Location loc = newForOp.getLoc();
+    Type t = ub.getType();
     for (unsigned i = 0; i < maxStage; i++) {
       // c = ub - (maxStage - i) * step
       Value c = rewriter.create<arith::AddIOp>(
           loc, ub,
           rewriter.create<arith::MulIOp>(
               loc, step,
-              rewriter.create<arith::ConstantIndexOp>(loc,
-                                                      -int(maxStage - i))));
+              rewriter.create<arith::ConstantOp>(
+                  loc, rewriter.getIntegerAttr(t, -int64_t(maxStage - i)))));
 
       Value pred = rewriter.create<arith::CmpIOp>(
           newForOp.getLoc(), arith::CmpIPredicate::slt,
@@ -384,10 +390,12 @@ LogicalResult LoopPipelinerInternal::createKernel(
         rewriter.setInsertionPoint(newOp);
 
         // offset = (maxStage - stages[op]) * step
+        Type t = step.getType();
         Value offset = rewriter.create<arith::MulIOp>(
             forOp.getLoc(), step,
-            rewriter.create<arith::ConstantIndexOp>(forOp.getLoc(),
-                                                    maxStage - stages[op]));
+            rewriter.create<arith::ConstantOp>(
+                forOp.getLoc(),
+                rewriter.getIntegerAttr(t, maxStage - stages[op])));
         Value iv = rewriter.create<arith::AddIOp>(
             forOp.getLoc(), newForOp.getInductionVar(), offset);
         nestedNewOp->setOperand(operand->getOperandNumber(), iv);
@@ -489,6 +497,7 @@ LoopPipelinerInternal::emitEpilogue(RewriterBase &rewriter) {
   // removed by dead code if not used.
   for (int64_t i = 0; i < maxStage; i++) {
     Location loc = forOp.getLoc();
+    Type t = lb.getType();
     // newLastIter = lb + step * ((((ub - 1) - lb) / step) - i)
     Value newlastIter = rewriter.create<arith::AddIOp>(
         loc, lb,
@@ -502,10 +511,12 @@ LoopPipelinerInternal::emitEpilogue(RewriterBase &rewriter) {
                         loc,
                         rewriter.create<arith::AddIOp>(
                             loc, ub,
-                            rewriter.create<arith::ConstantIndexOp>(loc, -1)),
+                            rewriter.create<arith::ConstantOp>(
+                                loc, rewriter.getIntegerAttr(t, -1))),
                         lb),
                     step),
-                rewriter.create<arith::ConstantIndexOp>(loc, -i))));
+                rewriter.create<arith::ConstantOp>(
+                    loc, rewriter.getIntegerAttr(t, -i)))));
     setValueMapping(forOp.getInductionVar(), newlastIter, maxStage - i);
   }
   // Emit `maxStage - 1` epilogue part that includes operations from stages

@@ -14,7 +14,7 @@ namespace triton {
 // schedule passed by user. In the future we should allow different modes based
 // on the type of loop we want to schedule.
 std::vector<std::pair<Operation *, unsigned>>
-createSchedule(scf::ForOp op, int numStages,
+createSchedule(scf::ForOp& op, int numStages,
                ArrayRef<std::pair<Operation *, unsigned>> coarseSchedule);
 
 } // namespace triton
