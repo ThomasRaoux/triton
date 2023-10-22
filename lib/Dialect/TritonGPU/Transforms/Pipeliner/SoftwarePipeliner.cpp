@@ -134,6 +134,8 @@ static Operation *predicateOp(RewriterBase &rewriter, Operation *op,
     return op;
   if(isa<ttg::AsyncCommitGroupOp>(op))
     return op;
+  if(isa<ttg::AsyncWaitOp>(op))
+    return op;    
   if(auto insertOp = dyn_cast<ttg::InsertSliceAsyncOp>(op)) {
     Type maskType = tt::getI1SameShape(insertOp.getSrc().getType());
     Location loc = pred.getLoc();
@@ -179,9 +181,6 @@ static void pipelineLoop(scf::ForOp forOp, int numStages) {
   FailureOr<scf::ForOp> newForOp =
       mlir::triton::pipelineForLoop(rewriter, forOp, options);
   OpBuilder builder(newForOp->getContext());
-  builder.setInsertionPoint(newForOp->getBody(), newForOp->getBody()->begin());
-  builder.create<ttg::AsyncWaitOp>(newForOp->getLoc(),
-                                     ops.size() * (numStages - 2));
   builder.setInsertionPointAfter(newForOp->getOperation());
   builder.create<ttg::AsyncWaitOp>(newForOp->getLoc(), 0);
 }

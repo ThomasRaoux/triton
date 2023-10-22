@@ -70,6 +70,7 @@ static void createAsyncLoad(scf::ForOp &forOp, tt::LoadOp loadOp,
     opToStage[commmit.getOperation()] = defStage;
 
     // Extract part.
+    auto wait = builder.create<ttg::AsyncWaitOp>(newForOp->getLoc(), 0);
     iv = forOp.getInductionVar();
     if (iv.getType().isIndex())
       iv = builder.create<mlir::arith::IndexCastOp>(iv.getLoc(),
@@ -83,9 +84,10 @@ static void createAsyncLoad(scf::ForOp &forOp, tt::LoadOp loadOp,
                                   int_attr(sliceType.getShape()[1])},
         SmallVector<OpFoldResult>{int_attr(1), int_attr(1), int_attr(1)});
     auto newCvt = builder.create<ttg::ConvertLayoutOp>(convertLayout->getLoc(), convertLayout.getType(), extract.getResult());
-    opToStage[index.getDefiningOp()] = useStage;
-    opToStage[iv.getDefiningOp()] = useStage;
-    opToStage[extract.getOperation()] = useStage;
+    opToStage[wait.getOperation()] = useStage - 1;
+    opToStage[index.getDefiningOp()] = useStage - 1;
+    opToStage[iv.getDefiningOp()] = useStage - 1;
+    opToStage[extract.getOperation()] = useStage - 1;
     opToStage[newCvt.getOperation()] = useStage;
     convertLayout->replaceAllUsesWith(newCvt->getResults());
     convertLayout->erase();
@@ -190,7 +192,14 @@ std::vector<std::pair<Operation *, unsigned>> mlir::triton::createSchedule(
   // well for matmul loops, it can be passed a parameter to this function in the
   // future and decided based on the type of loop.
   std::vector<std::pair<Operation *, unsigned>> schedule;
+  SmallVector<int> stagesOrder;
   for (int i = numStages - 1; i >= 0; i--) {
+    if(i == numStages - 2)
+      continue;
+    stagesOrder.push_back(i);
+  }
+  stagesOrder.push_back(numStages - 2);
+  for (int i : stagesOrder) {
     for (Operation &op : forOp) {
       if (!opToStage.count(&op))
         continue;
