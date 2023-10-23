@@ -166,7 +166,7 @@ static void addDep(Operation *op, unsigned stage,
     }
     Operation *defOp = v.getDefiningOp();
     if (defOp && defOp->getBlock() == op->getBlock()) {
-      addDep(defOp, stage, opToStage);
+      addDep(defOp, stage + distance, opToStage);
     }
   }
 }
