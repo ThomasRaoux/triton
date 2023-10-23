@@ -10,6 +10,7 @@ namespace ttg = mlir::triton::gpu;
 
 static void createAsyncLoad(scf::ForOp &forOp, tt::LoadOp loadOp,
                             unsigned defStage, unsigned useStage,
+                            bool insertWait,
                             DenseMap<Operation *, unsigned> &opToStage) {
   OpBuilder builder(forOp);
   unsigned distance = useStage - defStage;
@@ -70,7 +71,10 @@ static void createAsyncLoad(scf::ForOp &forOp, tt::LoadOp loadOp,
     opToStage[commmit.getOperation()] = defStage;
 
     // Extract part.
-    auto wait = builder.create<ttg::AsyncWaitOp>(newForOp->getLoc(), 0);
+    if (insertWait) {
+      auto wait = builder.create<ttg::AsyncWaitOp>(loc, 0);
+      opToStage[wait.getOperation()] = useStage - 1;
+    }
     iv = forOp.getInductionVar();
     if (iv.getType().isIndex())
       iv = builder.create<mlir::arith::IndexCastOp>(iv.getLoc(),
@@ -84,7 +88,6 @@ static void createAsyncLoad(scf::ForOp &forOp, tt::LoadOp loadOp,
                                   int_attr(sliceType.getShape()[1])},
         SmallVector<OpFoldResult>{int_attr(1), int_attr(1), int_attr(1)});
     auto newCvt = builder.create<ttg::ConvertLayoutOp>(convertLayout->getLoc(), convertLayout.getType(), extract.getResult());
-    opToStage[wait.getOperation()] = useStage - 1;
     opToStage[index.getDefiningOp()] = useStage - 1;
     opToStage[iv.getDefiningOp()] = useStage - 1;
     opToStage[extract.getOperation()] = useStage - 1;
@@ -132,9 +135,11 @@ static void createAsynOps(scf::ForOp &forOp,
       continue;
     asyncLoads.emplace_back(loadOp, defStage, firstUse);
   }
+  bool firstLoad = true;
   for (AsyncLoad &asyncLoad : asyncLoads) {
     createAsyncLoad(forOp, asyncLoad.loadOp, asyncLoad.defStage,
-                    asyncLoad.useStage, opToStage);
+                    asyncLoad.useStage, firstLoad, opToStage);
+    firstLoad = false;                    
   }
 }
 

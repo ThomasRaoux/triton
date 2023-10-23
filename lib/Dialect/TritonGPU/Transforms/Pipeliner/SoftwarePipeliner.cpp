@@ -152,6 +152,14 @@ static Operation *predicateOp(RewriterBase &rewriter, Operation *op,
   return op;
 }
 
+static void setWaitNum(Operation *op,
+                       mlir::triton::PipeliningOption::PipelinerPart part,
+                       unsigned iteration, unsigned numLoadsInStage) {
+  if (auto waitOp = dyn_cast<ttg::AsyncWaitOp>(op)) {
+    waitOp.setNum(numLoadsInStage);
+  }
+}
+
 static void pipelineLoop(scf::ForOp forOp, int numStages) {
   // 1. First collect "interesting" operations with a stage where to schedule
   // them. This gives a coarse scheduling for the loop.
@@ -176,6 +184,13 @@ static void pipelineLoop(scf::ForOp forOp, int numStages) {
   options.peelEpilogue = false;
   options.predicateFn = predicateOp;
   options.needNumIterationChecks = false;
+  unsigned numLoadsInStage = (numStages-2) * ops.size();
+  options.annotateFn =
+      [numLoadsInStage](Operation *op,
+                        mlir::triton::PipeliningOption::PipelinerPart part,
+                        unsigned iteration) {
+        return setWaitNum(op, part, iteration, numLoadsInStage);
+      };
   IRRewriter rewriter(forOp->getContext());
   rewriter.setInsertionPoint(forOp);
   FailureOr<scf::ForOp> newForOp =
