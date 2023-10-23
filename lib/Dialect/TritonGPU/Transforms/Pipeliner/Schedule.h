@@ -13,9 +13,9 @@ namespace triton {
 // This helper will generate an opinionated schedule based on the coarse
 // schedule passed by user. In the future we should allow different modes based
 // on the type of loop we want to schedule.
-std::vector<std::pair<Operation *, unsigned>>
-createSchedule(scf::ForOp& op, int numStages,
-               ArrayRef<std::pair<Operation *, unsigned>> coarseSchedule);
+//std::vector<std::pair<Operation *, unsigned>>
+//createSchedule(scf::ForOp& op, int numStages,
+//               ArrayRef<std::pair<Operation *, unsigned>> coarseSchedule);
 
 } // namespace triton
 } // namespace mlir
