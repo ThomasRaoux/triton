@@ -1,3 +1,4 @@
+#if 0
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/TypeUtilities.h"
@@ -24,7 +25,7 @@
 // c. Compute operations: for instance, Triton dot.
 // d. Post-load operations: for instance, index computation.
 //
-// To pipeline the loop, we need to:
+// To pipeline the loop, we need to:we
 // - Hoist the pipelinable load operations for the first numStages-1 iterations
 // to the loop pre-header
 // - Find all the dependencies of the load operations.
@@ -1939,3 +1940,4 @@ std::unique_ptr<Pass> mlir::createTritonGPUPipelinePass(int numStages,
   return std::make_unique<PipelinePass>(numStages, numWarps, numCTAs,
                                         computeCapability);
 }
+#endif
