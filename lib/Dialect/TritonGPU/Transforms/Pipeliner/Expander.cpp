@@ -13,7 +13,7 @@
 // Fork of upstream pipeliner. This will be merged upstream once things are
 // stable. Modifications so far are:
 // -Bug fix for def with a distance of 1 scheduled in stage 0
-// -Support non static loop bounds
+// -Support dynamic loops and predicate operations in the prologue.
 // -Support for non-index type for induction variable
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -55,6 +55,7 @@ protected:
   Value ub;
   Value lb;
   Value step;
+  bool dynamicLoop;
   triton::PipeliningOption::AnnotationlFnType annotateFn = nullptr;
   bool peelEpilogue;
   triton::PipeliningOption::PredicateOpFn predicateFn = nullptr;
@@ -102,26 +103,31 @@ bool LoopPipelinerInternal::initializeLoopInfo(
   ub = forOp.getUpperBound();
   lb = forOp.getLowerBound();
   step = forOp.getStep();
-  if (options.needNumIterationChecks) {
-    auto upperBoundCst = ub.getDefiningOp<arith::ConstantIndexOp>();
-    auto lowerBoundCst = lb.getDefiningOp<arith::ConstantIndexOp>();
-    auto stepCst = step.getDefiningOp<arith::ConstantIndexOp>();
-    if (!upperBoundCst || !lowerBoundCst || !stepCst) {
-      LDBG("--no constant bounds or step -> BAIL");
+
+  dynamicLoop = true;
+  auto upperBoundCst = ub.getDefiningOp<arith::ConstantIndexOp>();
+  auto lowerBoundCst = lb.getDefiningOp<arith::ConstantIndexOp>();
+  auto stepCst = step.getDefiningOp<arith::ConstantIndexOp>();
+  if (!upperBoundCst || !lowerBoundCst || !stepCst) {
+    if (!options.supportDynamicLoops) {
+      LDBG("--dynamic loop not supported -> BAIL");
       return false;
     }
+  } else {
     int64_t ubImm = upperBoundCst.value();
     int64_t lbImm = lowerBoundCst.value();
     int64_t stepImm = stepCst.value();
     int64_t numIteration = ceilDiv(ubImm - lbImm, stepImm);
-    if (numIteration <= maxStage) {
+    if (numIteration > maxStage) {
+      dynamicLoop = false;
+    } else if (!options.supportDynamicLoops) {
       LDBG("--fewer loop iterations than pipeline stages -> BAIL");
       return false;
     }
   }
   peelEpilogue = options.peelEpilogue;
   predicateFn = options.predicateFn;
-  if (!peelEpilogue && predicateFn == nullptr) {
+  if ((!peelEpilogue || dynamicLoop) && predicateFn == nullptr) {
     LDBG("--no epilogue or predicate set -> BAIL");
     return false;
   }
@@ -212,6 +218,20 @@ void LoopPipelinerInternal::emitPrologue(RewriterBase &rewriter) {
   auto yield = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
   Location loc = forOp.getLoc();
   for (int64_t i = 0; i < maxStage; i++) {
+    Value predicate;
+    if (dynamicLoop) {
+      Type t = ub.getType();
+      // pred = ub > lb + (i * step)
+      Value iv = rewriter.create<arith::AddIOp>(
+          loc, lb,
+          rewriter.create<arith::MulIOp>(
+              loc, step,
+              rewriter.create<arith::ConstantOp>(
+                  loc, rewriter.getIntegerAttr(t, i))));
+      predicate = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
+                                                 iv, ub);
+    }
+
     // special handling for induction variable as the increment is implicit.
     // iv = lb + i * step
     Type t = lb.getType();
@@ -233,6 +253,10 @@ void LoopPipelinerInternal::emitPrologue(RewriterBase &rewriter) {
               newOperand->set(replacement);
             }
           });
+      if (predicate) {
+        newOp = predicateFn(rewriter, newOp, predicate);
+        assert(newOp && "failed to predicate op.");
+      }
       if (annotateFn)
         annotateFn(newOp, triton::PipeliningOption::PipelinerPart::Prologue, i);
       for (unsigned destId : llvm::seq(unsigned(0), op->getNumResults())) {
