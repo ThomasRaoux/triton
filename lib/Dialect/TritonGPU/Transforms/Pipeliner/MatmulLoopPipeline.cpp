@@ -407,10 +407,6 @@ bool mlir::triton::preProcessLoopAndGetSchedule(
   std::vector<std::pair<Operation *, unsigned>> schedule =
       createSchedule(forOp, numStages);
 
-  for (auto it : schedule) {
-    llvm::dbgs() << "op: " << *it.first << " stage: " << it.second << "\n";
-  }
-
   // 4. Fill out the pipeline options.
   options.getScheduleFn =
       [schedule](scf::ForOp forOp,
@@ -419,7 +415,7 @@ bool mlir::triton::preProcessLoopAndGetSchedule(
       };
   options.peelEpilogue = false;
   options.predicateFn = predicateOp;
-  options.needNumIterationChecks = false;
+  options.supportDynamicLoops = true;
   unsigned numLoadsInStage = (numStages - 2) * loads.size();
   options.annotateFn =
       [numLoadsInStage](Operation *op,
