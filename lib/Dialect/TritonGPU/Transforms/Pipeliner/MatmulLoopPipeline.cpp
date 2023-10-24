@@ -264,6 +264,20 @@ static void createAsynOps(scf::ForOp &forOp, ArrayRef<tt::LoadOp> loads,
   appendToYield(forOp, {insertIdx, extractIdx});
 }
 
+static Value getPredMask(RewriterBase &rewriter, Value src, Value currentMask,
+                         Value pred) {
+  Type maskType = tt::getI1SameShape(src.getType());
+  Location loc = pred.getLoc();
+  Value mask = pred;
+  if (maskType.isa<RankedTensorType>()) {
+    mask = rewriter.create<tt::SplatOp>(loc, maskType, pred);
+  }
+  if (currentMask) {
+    mask = rewriter.create<arith::AndIOp>(loc, mask, currentMask);
+  }
+  return mask;
+}
+
 // Function to mask operations during scheduling.
 static Operation *predicateOp(RewriterBase &rewriter, Operation *op,
                               Value pred) {
@@ -275,14 +289,17 @@ static Operation *predicateOp(RewriterBase &rewriter, Operation *op,
   if (isa<ttg::AsyncWaitOp>(op))
     return op;
   if (auto insertOp = dyn_cast<ttg::InsertSliceAsyncOp>(op)) {
-    Type maskType = tt::getI1SameShape(insertOp.getSrc().getType());
-    Location loc = pred.getLoc();
     rewriter.setInsertionPoint(insertOp);
-    Value mask = rewriter.create<tt::SplatOp>(loc, maskType, pred);
-    if (insertOp.getMask()) {
-      mask = rewriter.create<arith::AndIOp>(loc, mask, insertOp.getMask());
-    }
+    Value mask = getPredMask(rewriter, insertOp.getSrc(), insertOp.getMask(),
+                             pred);
     insertOp.getMaskMutable().assign(mask);
+    return op;
+  }
+  if (auto loadOp = dyn_cast<tt::LoadOp>(op)) {
+    rewriter.setInsertionPoint(loadOp);
+    Value mask = getPredMask(rewriter, loadOp.getPtr(), loadOp.getMask(),
+                             pred);
+    loadOp.getMaskMutable().assign(mask);
     return op;
   }
 
