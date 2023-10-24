@@ -68,12 +68,12 @@ static void createAsyncLoad(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
 }
 
 // Return true if the load is transitively used by a dot operand.
-static bool isLoadDotOperand(tt::LoadOp loadOp) {
+static Value loadDotOperand(tt::LoadOp loadOp) {
   // We only pipeline loads that have one covert_layout (to dot_op) use
   // TODO: lift this constraint in the future
   bool isCandidate = false;
   if (!loadOp.getResult().hasOneUse())
-    return false;
+    return Value();
 
   Operation *use = *loadOp.getResult().getUsers().begin();
   Operation *preUse = nullptr;
@@ -95,7 +95,7 @@ static bool isLoadDotOperand(tt::LoadOp loadOp) {
             convertLayout.getResult().getType().dyn_cast<RankedTensorType>())
       if (auto dotOpEnc = tensorType.getEncoding()
                               .dyn_cast<ttg::DotOperandEncodingAttr>()) {
-        isCandidate = true;
+        return convertLayout.getResult();
       }
   } else if (preUse && isa<tt::DotOp>(use)) {
     // for MMAv3 whose dot take SharedEncoding as operands directly
@@ -115,15 +115,24 @@ static bool isLoadDotOperand(tt::LoadOp loadOp) {
     // TODO: remove this constraint once the LoadOp supports transpose
     // fusion
     if (newOrder[0] == oldOrder[0] || newOrder[1] == oldOrder[1]) {
-      isCandidate = true;
+      return preUse->getResult(0);
     }
   }
-  return isCandidate;
+  return Value();
 }
+
+namespace {
+struct LoadDotOperand {
+    LoadDotOperand(tt::LoadOp load, Value dotOperand)
+        : load(load), dotOperand(dotOperand) {}
+    tt::LoadOp load;
+    Value dotOperand;
+};
+} // namespace
 
 /// Collect loads to pipeline. Return success if we can pipeline this loop
 static void collectOpsToPipeline(scf::ForOp forOp,
-                                 SmallVectorImpl<tt::LoadOp> &ops) {
+                                 SmallVectorImpl<LoadDotOperand> &ops) {
   ModuleOp moduleOp = forOp->getParentOfType<ModuleOp>();
   ModuleAxisInfoAnalysis axisInfoAnalysis(moduleOp);
 
@@ -158,22 +167,22 @@ static void collectOpsToPipeline(scf::ForOp forOp,
       }
       if (!candidate)
         continue;
-      if (!isLoadDotOperand(loadOp))
+      Value dotOperand = loadDotOperand(loadOp);
+      if (!dotOperand)
         continue;
-      ops.push_back(loadOp);
+      ops.emplace_back(loadOp, dotOperand);
     }
   }
 }
 
-static Value createAlloc(scf::ForOp &forOp, tt::LoadOp loadOp,
+static Value createAlloc(scf::ForOp &forOp, tt::LoadOp loadOp, Value dotOperand,
                          unsigned distance) {
   OpBuilder builder(forOp);
   auto ty = loadOp.getType().cast<RankedTensorType>();
   if (!loadOp.getResult().hasOneUse())
     return Value();
-  Operation *user = *loadOp.getResult().getUsers().begin();
   Attribute sharedEnc;
-  auto convertLayout = llvm::dyn_cast<ttg::ConvertLayoutOp>(user);
+  auto convertLayout = dotOperand.getDefiningOp<ttg::ConvertLayoutOp>();
   if (!convertLayout)
     return Value();
   auto tensorType =
@@ -199,7 +208,7 @@ static Value createAlloc(scf::ForOp &forOp, tt::LoadOp loadOp,
   return alloc;
 }
 
-static void createAsynOps(scf::ForOp &forOp, ArrayRef<tt::LoadOp> loads,
+static void createAsynOps(scf::ForOp &forOp, ArrayRef<LoadDotOperand> loads,
                           int numStages) {
   struct AsyncLoad {
     AsyncLoad(tt::LoadOp loadOp, Value alloc) : loadOp(loadOp), alloc(alloc) {}
@@ -209,8 +218,10 @@ static void createAsynOps(scf::ForOp &forOp, ArrayRef<tt::LoadOp> loads,
   int numBuffers = numStages - 1;
   SmallVector<AsyncLoad> asyncLoads;
   SmallVector<Value> newOperands;
-  for (tt::LoadOp loadOp : loads) {
-    Value alloc = createAlloc(forOp, loadOp, numBuffers);
+  for (const LoadDotOperand& loadOperand : loads) {
+    tt::LoadOp loadOp = loadOperand.load;
+    Value dotOperand = loadOperand.dotOperand;
+    Value alloc = createAlloc(forOp, loadOp, dotOperand, numBuffers);
     assert(alloc && "Failed to create alloc for the async load.");
     newOperands.push_back(alloc);
     asyncLoads.emplace_back(loadOp, alloc);
@@ -395,7 +406,7 @@ bool mlir::triton::preProcessLoopAndGetSchedule(
     scf::ForOp &forOp, int numStages, mlir::triton::PipeliningOption &options) {
   // 1. First collect "interesting" operations with a stage where to schedule
   // them. This gives a coarse scheduling for the loop.
-  SmallVector<tt::LoadOp> loads;
+  SmallVector<LoadDotOperand> loads;
   collectOpsToPipeline(forOp, loads);
   if (loads.empty())
     return false;
