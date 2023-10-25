@@ -29,6 +29,15 @@ using namespace mlir;
 
 static void pipelineLoop(scf::ForOp forOp, int numStages) {
   mlir::triton::PipeliningOption options;
+  // Skip loop with distance > 1 for now. 
+  // TODO: relax the constraint in the expander.
+  if (llvm::any_of(forOp.getBody()->getTerminator()->getOperands(),
+                   [](Value operand) {
+                     Operation *def = operand.getDefiningOp();
+                     return !def;
+                   }))
+    return;
+
   bool foundSchedule = false;
   foundSchedule = preProcessLoopAndGetSchedule(forOp, numStages, options);
 

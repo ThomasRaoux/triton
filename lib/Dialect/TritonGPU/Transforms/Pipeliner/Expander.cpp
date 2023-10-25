@@ -250,7 +250,7 @@ void LoopPipelinerInternal::emitPrologue(RewriterBase &rewriter) {
             auto it = valueMapping.find(newOperand->get());
             if (it != valueMapping.end()) {
               Value replacement = it->second[i - stages[op]];
-              newOperand->set(replacement);
+                newOperand->set(replacement);
             }
           });
       if (predicate) {
