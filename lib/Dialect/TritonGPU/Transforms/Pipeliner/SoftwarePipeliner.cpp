@@ -49,6 +49,9 @@ static void pipelineLoop(scf::ForOp forOp, int numStages) {
   rewriter.setInsertionPoint(forOp);
   FailureOr<scf::ForOp> newForOp =
       mlir::triton::pipelineForLoop(rewriter, forOp, options);
+    
+  if(succeeded(newForOp))
+    mlir::triton::asyncLaunchDots(newForOp.value());
 }
 
 namespace {

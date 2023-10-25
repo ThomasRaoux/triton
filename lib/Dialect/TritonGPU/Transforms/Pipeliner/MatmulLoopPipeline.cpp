@@ -68,7 +68,7 @@ static void createAsyncLoad(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
 }
 
 // Return true if the load is transitively used by a dot operand.
-static Value loadDotOperand(tt::LoadOp loadOp) {
+static Value loadDotOperand(tt::LoadOp loadOp, bool &hasMMAV3) {
   // We only pipeline loads that have one covert_layout (to dot_op) use
   // TODO: lift this constraint in the future
   bool isCandidate = false;
@@ -115,6 +115,7 @@ static Value loadDotOperand(tt::LoadOp loadOp) {
     // TODO: remove this constraint once the LoadOp supports transpose
     // fusion
     if (newOrder[0] == oldOrder[0] || newOrder[1] == oldOrder[1]) {
+      hasMMAV3 = true;
       return preUse->getResult(0);
     }
   }
@@ -132,7 +133,8 @@ struct LoadDotOperand {
 
 /// Collect loads to pipeline. Return success if we can pipeline this loop
 static void collectOpsToPipeline(scf::ForOp forOp,
-                                 SmallVectorImpl<LoadDotOperand> &ops) {
+                                 SmallVectorImpl<LoadDotOperand> &ops,
+                                 bool &hasMMAV3) {
   ModuleOp moduleOp = forOp->getParentOfType<ModuleOp>();
   ModuleAxisInfoAnalysis axisInfoAnalysis(moduleOp);
 
@@ -167,7 +169,7 @@ static void collectOpsToPipeline(scf::ForOp forOp,
       }
       if (!candidate)
         continue;
-      Value dotOperand = loadDotOperand(loadOp);
+      Value dotOperand = loadDotOperand(loadOp, hasMMAV3);
       if (!dotOperand)
         continue;
       ops.emplace_back(loadOp, dotOperand);
@@ -182,14 +184,12 @@ static Value createAlloc(scf::ForOp &forOp, tt::LoadOp loadOp, Value dotOperand,
   if (!loadOp.getResult().hasOneUse())
     return Value();
   Attribute sharedEnc;
-  auto convertLayout = dotOperand.getDefiningOp<ttg::ConvertLayoutOp>();
-  if (!convertLayout)
-    return Value();
-  auto tensorType =
-      convertLayout.getResult().getType().cast<RankedTensorType>();
   auto CTALayout = ttg::getCTALayout(ty.getEncoding());
+  auto tensorType =
+      dotOperand.getType().cast<RankedTensorType>();
   if (auto dotOpEnc =
           tensorType.getEncoding().dyn_cast<ttg::DotOperandEncodingAttr>()) {
+    auto convertLayout = dotOperand.getDefiningOp<ttg::ConvertLayoutOp>();
     bool needTrans = dyn_cast_or_null<tt::TransOp>(
         convertLayout->getOperand(0).getDefiningOp());
     unsigned bitWidth = ty.getElementType().getIntOrFloatBitWidth();
@@ -212,13 +212,18 @@ static Value createAlloc(scf::ForOp &forOp, tt::LoadOp loadOp, Value dotOperand,
 }
 
 static void createAsynOps(scf::ForOp &forOp, ArrayRef<LoadDotOperand> loads,
-                          int numStages) {
+                          int numStages, bool hasMMAV3) {
   struct AsyncLoad {
     AsyncLoad(tt::LoadOp loadOp, Value alloc) : loadOp(loadOp), alloc(alloc) {}
     tt::LoadOp loadOp;
     Value alloc;
   };
   int numBuffers = numStages - 1;
+  // For MMAv3 we need an extra buffer as this is assumed in the wgmma
+  // pipelining post-processing. 
+  // TODO: Improve modeling of wgmma pipelining.
+  if (hasMMAV3)
+    numBuffers++;
   SmallVector<AsyncLoad> asyncLoads;
   SmallVector<Value> newOperands;
   for (const LoadDotOperand& loadOperand : loads) {
@@ -410,11 +415,12 @@ bool mlir::triton::preProcessLoopAndGetSchedule(
   // 1. First collect "interesting" operations with a stage where to schedule
   // them. This gives a coarse scheduling for the loop.
   SmallVector<LoadDotOperand> loads;
-  collectOpsToPipeline(forOp, loads);
+  bool hasMMAV3 = false;
+  collectOpsToPipeline(forOp, loads, hasMMAV3);
   if (loads.empty())
     return false;
   // 2. Convert the loads into async loads and create the allocs.
-  createAsynOps(forOp, loads, numStages);
+  createAsynOps(forOp, loads, numStages, hasMMAV3);
 
   // 3. rewrite the loop using the given schedule, this part of the
   // transformation doesn't take any decision.
@@ -444,4 +450,81 @@ bool mlir::triton::preProcessLoopAndGetSchedule(
   builder.create<ttg::AsyncWaitOp>(forOp.getLoc(), 0);
 
   return true;
+}
+
+void mlir::triton::asyncLaunchDots(scf::ForOp forOp) {
+  Block *loop = forOp.getBody();
+
+  /// XXX(Keren): Clean up the following duplicate code with checkDotOp
+  /// dots to be pipelined
+  SmallVector<tt::DotOp> dots;
+  SmallVector<unsigned> resultNeedSync;
+  for (Operation &op : *loop) {
+    if (auto dotOp = dyn_cast<tt::DotOp>(&op)) {
+      auto resTy = dotOp.getResult().getType().dyn_cast<RankedTensorType>();
+      if (auto resEnc = resTy.getEncoding().dyn_cast<ttg::MmaEncodingAttr>()) {
+        if (resEnc && resEnc.isHopper()) {
+          // Don't pipeline valid dots that depend on ops other than scf.yield
+          // and scf.for
+          auto dot = dotOp.getResult();
+          bool valid = true;
+
+          // all users of dot should be scf.yield
+          if (!dot.hasOneUse())
+            valid = false;
+          if (!isa<scf::YieldOp>(*dot.getUsers().begin()))
+            valid = false;
+
+          // C should be a block argument
+          auto CArg = dotOp.getOperand(2).dyn_cast<BlockArgument>();
+          if (!CArg || !CArg.hasOneUse())
+            valid = false;
+
+          if (valid) {
+            dots.push_back(dotOp);
+            resultNeedSync.push_back(
+                dotOp->getUses().begin()->getOperandNumber());
+          }
+        }
+      }
+    }
+  }
+
+  // Early stop: no need to continue if there is no valid dot in the loop.
+  if (dots.empty())
+    return;
+
+  OpBuilder builder(forOp);
+  // 0. insert dot_wait after the last dot in the loop as we implicitly pipeline
+  // wgmma ops by one stage.
+  // This is needed to prevent shared memory inputs to be overriden before the
+  // operation is completed.
+  // TODO: merge this with the rest of the pipelining transformation and look at
+  // a better representation for async dots.
+  tt::DotOp lastDot = dots.back();
+  builder.setInsertionPointAfter(lastDot);
+  auto dotWait = builder.create<tt::nvidia_gpu::DotWaitOp>(
+      lastDot.getLoc(), lastDot.getResult(), dots.size());
+
+  // 1. replace Dot with DotAsync
+  for (size_t idx = 0; idx < dots.size(); ++idx) {
+    tt::DotOp dotOp = dots[idx];
+    builder.setInsertionPoint(dotOp);
+    auto dotAsync = builder.create<tt::nvidia_gpu::DotAsyncOp>(
+        dotOp.getLoc(), dotOp.getA(), dotOp.getB(), dotOp.getC(),
+        dotOp.getAllowTF32(), dotOp.getMaxNumImpreciseAcc());
+    dotOp.replaceAllUsesWith(dotAsync.getResult());
+    dotOp->erase();
+  }
+
+  // 2. If there's any outstanding DotAsyncOps, we need to wait for them.
+  builder.setInsertionPointAfter(forOp);
+  for (unsigned resultIndex : resultNeedSync) {
+    Value result = forOp->getResult(resultIndex);
+    if (result.use_empty())
+      continue;
+    auto dotWait =
+        builder.create<tt::nvidia_gpu::DotWaitOp>(forOp.getLoc(), result, 0);
+    result.replaceAllUsesExcept(dotWait.getResult(), dotWait);
+  }
 }
