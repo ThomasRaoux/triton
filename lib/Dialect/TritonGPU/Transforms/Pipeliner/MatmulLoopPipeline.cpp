@@ -187,18 +187,21 @@ static Value createAlloc(scf::ForOp &forOp, tt::LoadOp loadOp, Value dotOperand,
     return Value();
   auto tensorType =
       convertLayout.getResult().getType().cast<RankedTensorType>();
+  auto CTALayout = ttg::getCTALayout(ty.getEncoding());
   if (auto dotOpEnc =
           tensorType.getEncoding().dyn_cast<ttg::DotOperandEncodingAttr>()) {
     bool needTrans = dyn_cast_or_null<tt::TransOp>(
         convertLayout->getOperand(0).getDefiningOp());
     unsigned bitWidth = ty.getElementType().getIntOrFloatBitWidth();
-    auto CTALayout = ttg::getCTALayout(ty.getEncoding());
     sharedEnc = ttg::SharedEncodingAttr::get(
         ty.getContext(), dotOpEnc, ty.getShape(),
         ttg::getOrder(ty.getEncoding()), CTALayout, bitWidth, needTrans);
+  } else {
+    // MMAv3
+    sharedEnc = ttg::SharedEncodingAttr::get(ty.getContext(), ty.getShape(),
+                                             ttg::getOrder(ty.getEncoding()),
+                                             CTALayout, ty.getElementType());
   }
-  if (!sharedEnc)
-    return Value();
   SmallVector<int64_t> bufferShape(ty.getShape().begin(), ty.getShape().end());
   bufferShape.insert(bufferShape.begin(), distance);
   Type allocType =
