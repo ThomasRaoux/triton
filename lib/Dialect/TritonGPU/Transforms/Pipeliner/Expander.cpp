@@ -70,6 +70,8 @@ protected:
   /// `idx` of `key` in the epilogue.
   void setValueMapping(Value key, Value el, int64_t idx);
 
+  std::pair<Operation*, int64_t> getDefiningOpAndDistance(Value value);
+
 public:
   /// Initalize the information for the given `op`, return true if it
   /// satisfies the pre-condition to apply pipelining.
@@ -275,6 +277,23 @@ void LoopPipelinerInternal::emitPrologue(RewriterBase &rewriter) {
   }
 }
 
+std::pair<Operation*, int64_t> LoopPipelinerInternal::getDefiningOpAndDistance(Value value) {
+  int64_t distance = 0;
+  if (auto arg = dyn_cast<BlockArgument>(value)){
+    if(arg.getOwner() != forOp.getBody())
+      return {nullptr, 0};
+    // Ignore induction variable.
+    if(arg.getArgNumber() == 0)
+      return {nullptr, 0};
+    distance++;
+    value = forOp.getBody()->getTerminator()->getOperand(arg.getArgNumber() - 1);
+  }
+  Operation *def = value.getDefiningOp();
+  if (!def)
+    return {nullptr, 0};    
+  return {def, distance};
+}
+
 llvm::MapVector<Value, LoopPipelinerInternal::LiverangeInfo>
 LoopPipelinerInternal::analyzeCrossStageValues() {
   llvm::MapVector<Value, LoopPipelinerInternal::LiverangeInfo> crossStageValues;
@@ -282,7 +301,7 @@ LoopPipelinerInternal::analyzeCrossStageValues() {
     unsigned stage = stages[op];
 
     auto analyzeOperand = [&](OpOperand &operand) {
-      Operation *def = operand.get().getDefiningOp();
+      auto [def, distance] = getDefiningOpAndDistance(operand.get());
       if (!def)
         return;
       auto defStage = stages.find(def);
@@ -430,10 +449,9 @@ LogicalResult LoopPipelinerInternal::createKernel(
         rewriter.setInsertionPointAfter(newOp);
         continue;
       }
-      auto arg = dyn_cast<BlockArgument>(operand->get());
+      Value source = operand->get();
+      auto arg = dyn_cast<BlockArgument>(source);
       if (arg && arg.getOwner() == forOp.getBody()) {
-        // If the value is a loop carried value coming from stage N + 1 remap,
-        // it will become a direct use.
         Value ret = forOp.getBody()->getTerminator()->getOperand(
             arg.getArgNumber() - 1);
         Operation *dep = ret.getDefiningOp();
@@ -442,15 +460,19 @@ LogicalResult LoopPipelinerInternal::createKernel(
         auto stageDep = stages.find(dep);
         if (stageDep == stages.end() || stageDep->second == useStage)
           continue;
-        assert(stageDep->second == useStage + 1);
-        nestedNewOp->setOperand(operand->getOperandNumber(),
-                                mapping.lookupOrDefault(ret));
-        continue;
+        // If the value is a loop carried value coming from stage N + 1 remap,
+        // it will become a direct use.          
+        if (stageDep->second == useStage + 1) {
+          nestedNewOp->setOperand(operand->getOperandNumber(),
+                                  mapping.lookupOrDefault(ret));
+          continue;
+        }
+        source = ret;
       }
       // For operands defined in a previous stage we need to remap it to use
       // the correct region argument. We look for the right version of the
       // Value based on the stage where it is used.
-      Operation *def = operand->get().getDefiningOp();
+      Operation *def = source.getDefiningOp();
       if (!def)
         continue;
       auto stageDef = stages.find(def);
