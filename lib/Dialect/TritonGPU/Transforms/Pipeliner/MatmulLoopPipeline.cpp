@@ -67,7 +67,7 @@ static void createAsyncLoad(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
   appendToYield(forOp, {insertOp});
 }
 
-// Return true if the load is transitively used by a dot operand.
+// Return the transitive use of the load which is a dot operand.
 static Value loadDotOperand(tt::LoadOp loadOp, bool &hasMMAV3) {
   // We only pipeline loads that have one covert_layout (to dot_op) use
   // TODO: lift this constraint in the future
