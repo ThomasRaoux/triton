@@ -236,13 +236,15 @@ static void createAsynOps(scf::ForOp &forOp, ArrayRef<LoadDotOperand> loads,
   }
 
   OpBuilder builder(forOp);
+  Location loc = forOp.getLoc();
   // Create two new counters to index into the allocs.
-  Value zero = builder.create<arith::ConstantIntOp>(forOp.getLoc(), 0, 32);
-  Value one = builder.create<arith::ConstantIntOp>(forOp.getLoc(), 1, 32);
-  Value insertIdx = zero;
-  Value extractIdx = zero;
+  Value minusOne = builder.create<arith::ConstantIntOp>(loc, -1, 32);
+  Value zero = builder.create<arith::ConstantIntOp>(loc, 0, 32);
+  Value one = builder.create<arith::ConstantIntOp>(loc, 1, 32);
+  Value insertIdx = minusOne;
+  Value extractIdx = minusOne;
   Value numBuffersVal =
-      builder.create<arith::ConstantIntOp>(forOp.getLoc(), numBuffers, 32);
+      builder.create<arith::ConstantIntOp>(loc, numBuffers, 32);
   newOperands.push_back(insertIdx);
   newOperands.push_back(extractIdx);
   unsigned newOperandIndex = forOp.getBody()->getNumArguments();
@@ -262,7 +264,6 @@ static void createAsynOps(scf::ForOp &forOp, ArrayRef<LoadDotOperand> loads,
   // Create two counters for the insert and extract indices to avoid creating
   // long liverange.
   builder.setInsertionPoint(asyncLoads.front().loadOp);
-  Location loc = forOp.getLoc();
   insertIdx = builder.create<arith::AddIOp>(loc, insertIdx, one);
   Value cndIns = builder.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
                                                insertIdx, numBuffersVal);
