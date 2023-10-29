@@ -305,7 +305,8 @@ LoopPipelinerInternal::analyzeCrossStageValues() {
       if (!def)
         return;
       auto defStage = stages.find(def);
-      if (defStage == stages.end() || defStage->second == stage)
+      if (defStage == stages.end() || defStage->second == stage ||
+          defStage->second == stage + distance)
         return;
       assert(stage > defStage->second);
       LiverangeInfo &info = crossStageValues[operand.get()];
