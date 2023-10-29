@@ -336,7 +336,7 @@ static void setWaitNum(Operation *op,
 }
 
 /// Helper to recursively add dependencies to the same stage.
-static void addDep(Operation *op, DenseSet<Operation *> &deps,
+static void addDep(Operation *op, DenseSet<Operation *> &deps, bool includeArg = true,
                    DenseSet<Operation *> *filter = nullptr) {
   if (filter && filter->count(op))
     return;
@@ -347,6 +347,8 @@ static void addDep(Operation *op, DenseSet<Operation *> &deps,
     int distance = 0;
     llvm::SmallDenseSet<Value> seen;
     while (auto arg = v.dyn_cast<BlockArgument>()) {
+      if(!includeArg)
+        break;
       if (!seen.insert(v).second)
         break;
       if (arg.getArgNumber() > 0 && arg.getOwner() == op->getBlock()) {
@@ -359,7 +361,7 @@ static void addDep(Operation *op, DenseSet<Operation *> &deps,
     }
     Operation *defOp = v.getDefiningOp();
     if (defOp && defOp->getBlock() == op->getBlock()) {
-      addDep(defOp, deps, filter);
+      addDep(defOp, deps, includeArg, filter);
     }
   }
 }
@@ -388,17 +390,51 @@ createSchedule(scf::ForOp forOp, int numStages) {
   }
   DenseSet<Operation *> insertAndDeps;
   for (Operation *op : insertOps) {
-    addDep(op, insertAndDeps);
+    addDep(op, insertAndDeps, false);
   }
+  // Find depenencies with distance of 1.
+  SmallVector<Operation *> distance1Arith;
+  for (Operation *op : insertAndDeps) {
+    for (Value operand : op->getOperands()) {
+      if (auto arg = operand.dyn_cast<BlockArgument>()) {
+        if (arg.getArgNumber() > 0 && arg.getOwner() == op->getBlock()) {
+          auto yieldOp = op->getBlock()->getTerminator();
+          Value v = yieldOp->getOperand(arg.getArgNumber() - 1);
+          Operation *defOp = v.getDefiningOp();
+          if (defOp && insertAndDeps.count(defOp) == 0) {
+            distance1Arith.push_back(defOp);
+          }
+        }
+      }
+    }
+  }
+  // Keep loads at a distance of 1 schedule the rest in stage 1.
+  for (Operation *op : distance1Arith) {
+    if(isa<tt::LoadOp>(op)) {
+      addDep(op, insertAndDeps, true);
+    } 
+  }
+  DenseSet<Operation *> stage1deps;
+  for (Operation *op : distance1Arith) {
+    if(!isa<tt::LoadOp>(op)) {
+      addDep(op, stage1deps, true, &insertAndDeps);
+    } 
+  }
+
   DenseSet<Operation *> extractAndDeps;
   for (Operation *op : extractOps) {
-    addDep(op, extractAndDeps, &insertAndDeps);
+    addDep(op, extractAndDeps, true, &insertAndDeps);
   }
   std::vector<std::pair<Operation *, unsigned>> schedule;
   // Schedule stage `numStage - 1` first.
   addOps(forOp, numStages - 1, schedule, [&](Operation *op) {
-    return insertAndDeps.count(op) == 0 && extractAndDeps.count(op) == 0;
+    return insertAndDeps.count(op) == 0 && stage1deps.count(op) == 0 && extractAndDeps.count(op) == 0;
   });
+
+  // Schedule some dependencies with distance of 1 into stage 1 to reduce
+  // pressure.
+  addOps(forOp, 1, schedule,
+         [&](Operation *op) { return stage1deps.count(op); });
 
   // Then Schedule stage 0.
   addOps(forOp, 0, schedule,
