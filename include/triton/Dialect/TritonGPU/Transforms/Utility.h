@@ -141,6 +141,11 @@ Value linearize(OpBuilder &b, Location loc, ArrayRef<Value> multiDim,
 Value linearize(OpBuilder &b, Location loc, ArrayRef<Value> multiDim,
                 ArrayRef<unsigned> shape);
 
+// Replace ForOp with a new ForOp with extra operands. The YieldOp is not
+// updated and needs to be updated separatly for the loop to be correct.
+scf::ForOp replaceForOpWithNewSignature(OpBuilder &rewriter, scf::ForOp loop,
+                                        ValueRange newIterOperands);
+
 } // namespace mlir
 
 #endif // TRITON_DIALECT_TRITONGPU_TRANSFORMS_UTILITY_H_
