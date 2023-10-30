@@ -489,13 +489,84 @@ bool mlir::triton::preProcessLoopAndGetSchedule(
   return true;
 }
 
+/// MMA V3 post-processing.
+static bool selfDepend(tt::DotOp dotOp, scf::ForOp forOp,
+                              Operation **firstUse) {
+  std::function<bool(Value, int, scf::ForOp)> dependOn =
+      [&dependOn](Value v, int argId, scf::ForOp forOp) {
+        auto op = v.getDefiningOp();
+        if (isa<BlockArgument>(v)) {
+          auto iterArgs = forOp.getRegionIterArgs();
+          auto iter = std::find(iterArgs.begin(), iterArgs.end(), v);
+          if (iter != iterArgs.end())
+            return std::distance(iterArgs.begin(), iter) == argId;
+        } else {
+          if (!op)
+            return false;
+          for (auto operand : op->getOperands()) {
+            if (dependOn(operand, argId, forOp))
+              return true;
+          }
+        }
+        return false;
+      };
+  auto result = dotOp.getResult();
+  auto yieldOp = forOp.getBody()->getTerminator();
+  int argIdx = -1;
+  auto iter = std::find(yieldOp->getOperands().begin(),
+                        yieldOp->getOperands().end(), result);
+  if (iter != yieldOp->getOperands().end())
+    argIdx = std::distance(yieldOp->getOperands().begin(), iter);
+  if (argIdx == -1)
+    return false;
+  for (auto operand : dotOp.getOperands()) {
+    if (dependOn(operand, argIdx, forOp)) {
+      auto iterArgs = forOp.getRegionIterArgs();
+      *firstUse = iterArgs[argIdx].use_begin().getUser();
+      return true;
+    }
+  }
+  return false;
+}
+
+static void removeExtraWait(tt::nvidia_gpu::DotWaitOp dotWaitOp,
+                            bool hasDotWait0) {
+  if (hasDotWait0) {
+    dotWaitOp->erase();
+  }
+}
+
 void mlir::triton::asyncLaunchDots(scf::ForOp forOp) {
   Block *loop = forOp.getBody();
-
+  auto getBlockNumInFor = [](Operation *op, scf::ForOp forOp) {
+    if (!op)
+      return -1l;
+    auto lastOp = op;
+    while (op->getBlock()->getParentOp() != forOp) {
+      lastOp = op;
+      op = op->getBlock()->getParentOp();
+    }
+    return std::distance(lastOp->getBlock()->getParent()->begin(),
+                         lastOp->getBlock()->getIterator());
+  };
   /// XXX(Keren): Clean up the following duplicate code with checkDotOp
   /// dots to be pipelined
+  bool hasSyncDot = false;
+  bool hasDotWait0 = false;
+  SmallVector<tt::DotOp> allDots;
   SmallVector<tt::DotOp> dots;
   SmallVector<unsigned> resultNeedSync;
+  for (Operation &op : *loop) {
+    if (auto dotWaitOp = dyn_cast<tt::nvidia_gpu::DotWaitOp>(&op)) {
+      auto attr = dotWaitOp->getAttrOfType<IntegerAttr>("pendings");
+      auto pendingCount = attr.getInt();
+      if (pendingCount == 0)
+        hasDotWait0 = true;
+    }
+    if (auto dotOp = dyn_cast<tt::DotOp>(&op)) {
+      allDots.push_back(dotOp);
+    }
+  }
   for (Operation &op : *loop) {
     if (auto dotOp = dyn_cast<tt::DotOp>(&op)) {
       auto resTy = dotOp.getResult().getType().dyn_cast<RankedTensorType>();
@@ -512,9 +583,22 @@ void mlir::triton::asyncLaunchDots(scf::ForOp forOp) {
           if (!isa<scf::YieldOp>(*dot.getUsers().begin()))
             valid = false;
 
-          // C should be a block argument
-          auto CArg = dotOp.getOperand(2).dyn_cast<BlockArgument>();
-          if (!CArg || !CArg.hasOneUse())
+          Operation *firstUse = nullptr;
+          selfDepend(dotOp, forOp, &firstUse);
+          bool selfDirectDepend = (dotOp == firstUse);
+          for (auto tempInAll : allDots) {
+            auto iter = std::find(dots.begin(), dots.end(), tempInAll);
+            if (iter != dots.end())
+              continue;
+            auto db = getBlockNumInFor(tempInAll, forOp);
+            auto fb = getBlockNumInFor(firstUse, forOp);
+            if (db < fb ||
+                (db == fb && db >= 0 && tempInAll->isBeforeInBlock(firstUse)))
+              hasSyncDot = true;
+          }
+          auto CArg = dotOp.getOperand(2);
+          if (!(selfDirectDepend || (!selfDirectDepend && hasSyncDot)) ||
+              !CArg.hasOneUse())
             valid = false;
 
           if (valid) {
@@ -539,6 +623,7 @@ void mlir::triton::asyncLaunchDots(scf::ForOp forOp) {
   // TODO: merge this with the rest of the pipelining transformation and look at
   // a better representation for async dots.
   tt::DotOp lastDot = dots.back();
+  auto loc = lastDot.getLoc();
   builder.setInsertionPointAfter(lastDot);
   auto dotWait = builder.create<tt::nvidia_gpu::DotWaitOp>(
       lastDot.getLoc(), lastDot.getResult(), dots.size());
@@ -554,14 +639,38 @@ void mlir::triton::asyncLaunchDots(scf::ForOp forOp) {
     dotOp->erase();
   }
 
+  hasDotWait0 = hasDotWait0 || hasSyncDot;
+
   // 2. If there's any outstanding DotAsyncOps, we need to wait for them.
   builder.setInsertionPointAfter(forOp);
-  for (unsigned resultIndex : resultNeedSync) {
-    Value result = forOp->getResult(resultIndex);
+  SmallVector<Type> resultTypes(resultNeedSync.size());
+  SmallVector<Value> yieldThenValues(resultNeedSync.size());
+  SmallVector<Value> yieldElseValues(resultNeedSync.size());
+  for (int i = 0; i < resultNeedSync.size(); ++i) {
+    resultTypes[i] = forOp->getResult(resultNeedSync[i]).getType();
+    yieldThenValues[i] = forOp->getResult(resultNeedSync[i]);
+    yieldElseValues[i] = forOp->getResult(resultNeedSync[i]);
+  }
+  Value loopNotEmpty = builder.create<arith::CmpIOp>(
+      loc, arith::CmpIPredicate::slt, forOp.getLowerBound(),
+      forOp.getUpperBound());
+  auto ifOp = builder.create<scf::IfOp>(loc, resultTypes, loopNotEmpty,
+                                        /*hasElse*/ true);
+  builder.setInsertionPointToStart(ifOp.thenBlock());
+  for (int i = 0; i < resultNeedSync.size(); ++i) {
+    Value result = forOp->getResult(resultNeedSync[i]);
     if (result.use_empty())
       continue;
     auto dotWait =
         builder.create<tt::nvidia_gpu::DotWaitOp>(forOp.getLoc(), result, 0);
-    result.replaceAllUsesExcept(dotWait.getResult(), dotWait);
+    result.replaceAllUsesExcept(ifOp.getResult(i), dotWait);
+    yieldThenValues[i] = dotWait.getResult();
   }
+  auto yieldOpThen = builder.create<scf::YieldOp>(loc, yieldThenValues);
+  builder.setInsertionPointToEnd(ifOp.elseBlock());
+  auto yieldOpElse = builder.create<scf::YieldOp>(loc, yieldElseValues);
+
+  // 3. potentially remove redundant dot_wait after dot_async if having mutiple
+  // DotOp in the loop
+  removeExtraWait(dotWait, hasDotWait0);
 }
