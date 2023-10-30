@@ -66,11 +66,6 @@ struct PipelinePass : public TritonGPUPipelineBase<PipelinePass> {
   }
 
   void runOnOperation() override {
-    bool mode =
-        computeCapability >= 90 && ::triton::tools::getBoolEnv("ENABLE_TMA");
-    // TODO: handle TMA, this requires untangling a bunch of pieces.
-    if (mode)
-      return;
     if (this->numStages <= 1)
       return;
     SmallVector<scf::ForOp> loops;
