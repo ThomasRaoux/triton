@@ -178,6 +178,13 @@ static Value loadDotOperand(tt::LoadOp loadOp, bool &hasMMAV3) {
                               .dyn_cast<ttg::DotOperandEncodingAttr>()) {
         return convertLayout.getResult();
       }
+      if(auto sharedEnc = tensorType.getEncoding()
+                              .dyn_cast<ttg::SharedEncodingAttr>()) {
+        if (sharedEnc.getHasLeadingOffset()) {
+          hasMMAV3 = true;
+          return convertLayout.getResult();
+        }
+      }
     }
   } else if (preUse && isa<tt::DotOp>(use)) {
     // for MMAv3 whose dot take SharedEncoding as operands directly

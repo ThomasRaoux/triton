@@ -506,7 +506,7 @@ class _attention(torch.autograd.Function):
         dv = torch.empty_like(v)
         BATCH, N_HEAD, N_CTX = q.shape[:3]
         PRE_BLOCK = 128
-        NUM_WARPS, NUM_STAGES = 4, 1
+        NUM_WARPS, NUM_STAGES = 4, 5
         BLOCK_M1, BLOCK_N1, BLOCK_M2, BLOCK_N2 = 32, 128, 128, 32
         BLK_SLICE_FACTOR = 2
         RCP_LN2 = 1.4426950408889634  # = 1.0 / ln(2)
@@ -599,14 +599,14 @@ TORCH_HAS_FP8 = hasattr(torch, 'float8_e5m2')
 BATCH, N_HEADS, N_CTX, D_HEAD = 4, 48, 4096, 64
 # vary seq length for fixed head and batch=4
 configs = []
-for mode in ["fwd", "bwd"]:
+for mode in ["bwd"]:
     for causal in [True, False]:
         if mode == "bwd" and not causal:
             continue
         configs.append(
             triton.testing.Benchmark(
                 x_names=["N_CTX"],
-                x_vals=[2**i for i in range(10, 15)],
+                x_vals=[2**i for i in range(14, 15)],
                 line_arg="provider",
                 line_vals=["triton"] + (["flash"] if HAS_FLASH else []),
                 line_names=["Triton"] + (["Flash-2"] if HAS_FLASH else []),
