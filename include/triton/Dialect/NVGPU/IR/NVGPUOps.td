@@ -48,10 +48,10 @@ def NVGPU_WGMMACommitGroupOp : NVGPU_Op<"wgmma_commit_group", []> {
 def NVGPU_WGMMAWaitGroupOp : NVGPU_Op<"wgmma_wait_group",
 [DeclareOpInterfaceMethods<InferTypeOpInterface>,
  AllTypesMatch<["input", "output"]>]> {
-  let arguments = (ins LLVM_AnyStruct:$input, I32Attr:$pendings);
+  let arguments = (ins LLVM_AnyStruct:$input, Optional<I1>:$pred, I32Attr:$pendings);
   let results = (outs LLVM_AnyStruct:$output);
   let assemblyFormat = "attr-dict";
-  let assemblyFormat = "$input attr-dict `:` type($input)";
+  let assemblyFormat = "$input (`,` $pred^)? attr-dict `:` type($input)";
 }
 
 def NVGPU_MBarrierInitOp : NVGPU_Op<"mbarrier_init", [MemoryEffects<[MemWrite]>]> {

@@ -698,6 +698,9 @@ public:
     OperandsAndConstraints operandsAndConstraints;
     auto input = op.getInput();
     operandsAndConstraints.push_back({input, "0"});
+    Value pred = op.getPred();
+    if(pred) 
+      operandsAndConstraints.push_back({pred, "b"});    
     return operandsAndConstraints;
   }
 
@@ -706,11 +709,18 @@ public:
     uint32_t numCRegs = outputStructType.getBody().size();
     std::string args = "";
     uint32_t asmOpIdx = 0;
+    Value pred = op.getPred();
     for (uint32_t i = 0; i < numCRegs; ++i) {
       args += "$" + std::to_string(asmOpIdx++) + (i == numCRegs - 1 ? "" : ",");
     }
-    auto ptxAsm = "// wait for regs: " + args + "\n\t" +
-                  "wgmma.wait_group.sync.aligned #pendings;";
+    std::string ptxAsm;
+    if (pred) {
+      ptxAsm = "// wait for regs: " + args + "\n\t" +
+               "@$" + std::to_string(2*numCRegs) +" wgmma.wait_group.sync.aligned #pendings;";
+    } else {
+      ptxAsm = "// wait for regs: " + args + "\n\t" +
+               "wgmma.wait_group.sync.aligned #pendings;";
+    }
     return ptxAsm;
   }
 };

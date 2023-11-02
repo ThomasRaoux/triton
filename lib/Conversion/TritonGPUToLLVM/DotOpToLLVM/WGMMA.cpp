@@ -306,7 +306,7 @@ static SmallVector<Value> emitWait(ConversionPatternRewriter &rewriter,
   for (Value v : acc) {
     llvmStruct = insert_val(structTy, llvmStruct, v, i++);
   }
-  Value res = rewriter.create<triton::nvgpu::WGMMAWaitGroupOp>(loc, llvmStruct,
+  Value res = rewriter.create<triton::nvgpu::WGMMAWaitGroupOp>(loc, llvmStruct, Value(),
                                                                pendings);
   SmallVector<Value> results;
   for (int i = 0; i < acc.size(); ++i) {

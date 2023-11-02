@@ -132,7 +132,7 @@ struct DotWaitOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     auto pendings = op.getPendings();
     rewriter.replaceOpWithNewOp<triton::nvgpu::WGMMAWaitGroupOp>(
-        op, adaptor.getInput(), pendings);
+        op, adaptor.getInput(), adaptor.getPred(), pendings);
     return success();
   }
 };
