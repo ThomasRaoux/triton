@@ -571,14 +571,14 @@ TORCH_HAS_FP8 = hasattr(torch, 'float8_e5m2')
 BATCH, N_HEADS, N_CTX, D_HEAD = 4, 48, 4096, 64
 # vary seq length for fixed head and batch=4
 configs = []
-for mode in ["fwd", "bwd"]:
-    for causal in [True, False]:
+for mode in ["fwd"]:
+    for causal in [False]:
         if mode == "bwd" and not causal:
             continue
         configs.append(
             triton.testing.Benchmark(
                 x_names=["N_CTX"],
-                x_vals=[2**i for i in range(10, 15)],
+                x_vals=[2**i for i in range(14, 15)],
                 line_arg="provider",
                 line_vals=["triton"] + (["flash"] if HAS_FLASH else []),
                 line_names=["Triton"] + (["Flash-2"] if HAS_FLASH else []),

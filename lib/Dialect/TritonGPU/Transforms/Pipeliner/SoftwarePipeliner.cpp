@@ -29,6 +29,70 @@ using namespace mlir;
 #define GEN_PASS_CLASSES
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
 
+static void peelLoop(scf::ForOp forOp, int numIterations) {
+  OpBuilder builder(forOp);
+  Value lb = forOp.getLowerBound();
+  Value ub = forOp.getUpperBound();
+  Value step = forOp.getStep();
+  Value newUpperBound = builder.create<arith::SubIOp>(forOp.getLoc(), ub, step);
+  forOp.setUpperBound(newUpperBound);
+  builder.setInsertionPointAfter(forOp);
+  Location loc = forOp.getLoc();
+  Type t = lb.getType();
+  Value minusOne =
+      builder.create<arith::ConstantOp>(loc, builder.getIntegerAttr(t, -1));
+  // number of iterations = ((ub - 1) - lb) / step
+  Value totlaNumIteration = builder.create<arith::DivUIOp>(
+      loc,
+      builder.create<arith::SubIOp>(
+          loc, builder.create<arith::AddIOp>(loc, ub, minusOne), lb),
+      step);
+  // newLastIter = lb + step * ((((ub - 1) - lb) / step))
+  Value newlastIter = builder.create<arith::AddIOp>(
+      loc, lb, builder.create<arith::MulIOp>(loc, step, totlaNumIteration));
+
+  SmallVector<int> escapeIndices;
+  SmallVector<Type> escapeTypes;
+  for (int i = 0; i < forOp.getNumResults(); i++) {
+    if (forOp.getResult(i).use_empty())
+      continue;
+    escapeIndices.push_back(i);
+    escapeTypes.push_back(forOp.getResult(i).getType());
+  }
+
+  IRMapping irMapping;
+  irMapping.map(forOp.getInductionVar(), newlastIter);
+  Value loopNotEmpty =
+      builder.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt, lb, ub);
+  auto ifOp = builder.create<scf::IfOp>(loc, escapeTypes, loopNotEmpty,
+                                        /*hasElse*/ true);
+
+  for (int i = 0; i < escapeIndices.size(); i++) {
+    forOp.getResult(escapeIndices[i])
+        .replaceAllUsesWith(ifOp.getResult(escapeIndices[i]));
+  }
+  builder.setInsertionPointToStart(ifOp.thenBlock());
+  for (int i = 0; i < forOp.getNumResults(); i++) {
+    irMapping.map(forOp.getBody()->getArgument(i + 1), forOp.getResult(i));
+  }
+  for (Operation &op : forOp.getBody()->without_terminator()) {
+    builder.clone(op, irMapping);
+  }
+  SmallVector<Value> ifYiledOperands;
+  for (int i = 0; i < escapeIndices.size(); i++) {
+    ifYiledOperands.push_back(irMapping.lookupOrDefault(
+        forOp.getBody()->getTerminator()->getOperand(escapeIndices[i])));
+  }
+  auto ifYiledOp = builder.create<scf::YieldOp>(loc, ifYiledOperands);
+
+  builder.setInsertionPointToStart(ifOp.elseBlock());
+  SmallVector<Value> elseYieldOperands;
+  for (int i = 0; i < escapeIndices.size(); i++) {
+    elseYieldOperands.push_back(forOp.getResult(escapeIndices[i]));
+  }
+  builder.create<scf::YieldOp>(loc, elseYieldOperands);
+}
+
 static void pipelineLoop(scf::ForOp forOp, int numStages) {
   mlir::triton::PipeliningOption options;
   // Skip loop with distance > 1 for now.
@@ -52,8 +116,11 @@ static void pipelineLoop(scf::ForOp forOp, int numStages) {
   FailureOr<scf::ForOp> newForOp =
       mlir::triton::pipelineForLoop(rewriter, forOp, options);
 
-  if (succeeded(newForOp))
+  if (succeeded(newForOp)) {
+   peelLoop(newForOp.value(), 1);
+
     mlir::triton::asyncLaunchDots(newForOp.value());
+  }
 }
 
 namespace {

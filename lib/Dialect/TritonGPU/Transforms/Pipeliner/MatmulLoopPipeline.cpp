@@ -501,6 +501,43 @@ static void addDep(Operation *op, DenseSet<Operation *> &deps,
   }
 }
 
+static void insertCheckForDynamicEmptyLoop(scf::ForOp forOp) {
+  OpBuilder builder(forOp);
+  Location loc = forOp.getLoc();
+  SmallVector<int> escapeIndices;
+  SmallVector<Type> escapeTypes;
+  for (int i = 0; i < forOp.getNumResults(); i++) {
+    if (forOp.getResult(i).use_empty())
+      continue;
+    escapeIndices.push_back(i);
+    escapeTypes.push_back(forOp.getResult(i).getType());
+  }
+  Value loopNotEmpty = builder.create<arith::CmpIOp>(
+      loc, arith::CmpIPredicate::slt, forOp.getLowerBound(),
+      forOp.getUpperBound());
+  auto ifOp = builder.create<scf::IfOp>(loc, escapeTypes, loopNotEmpty,
+                                        /*hasElse*/ true);
+  builder.setInsertionPointToStart(ifOp.thenBlock());
+  SmallVector<Value> thenYieldOperands;
+  for (int i = 0; i < escapeIndices.size(); i++) {
+    thenYieldOperands.push_back(forOp.getResult(escapeIndices[i]));
+  }
+  Operation *ifYiledOp = builder.create<scf::YieldOp>(loc, thenYieldOperands);
+  forOp->moveBefore(ifYiledOp);
+
+  builder.setInsertionPointToStart(ifOp.elseBlock());
+  SmallVector<Value> elseYieldOperands;
+  for (int i = 0; i < escapeIndices.size(); i++) {
+    elseYieldOperands.push_back(forOp.getInitArgs()[escapeIndices[i]]);
+  }
+  builder.create<scf::YieldOp>(loc, elseYieldOperands);
+
+  for (int i = 0; i < escapeIndices.size(); i++) {
+    forOp.getResult(escapeIndices[i])
+        .replaceAllUsesExcept(ifOp.getResult(escapeIndices[i]), ifYiledOp);
+  }
+}
+
 // Add operations to the shedule with the given stage based on the filter
 // function.
 static void addOps(scf::ForOp forOp, int stage,
@@ -605,6 +642,12 @@ bool mlir::triton::preProcessLoopAndGetSchedule(
   bool hasAsynCp = llvm::any_of(loads, [](LoadDotOperand &load) {
     return !isLoadFromTensorPtr(load.load);
   });
+
+  // 1. Add check for empty loop.
+  if (hasMMAV3) {
+   // insertCheckForDynamicEmptyLoop(forOp);
+  }
+
   // 2. Convert the loads into async loads and create the allocs.
   createAsynOps(forOp, loads, numStages, hasMMAV3);
 
@@ -792,21 +835,21 @@ void mlir::triton::asyncLaunchDots(scf::ForOp forOp) {
 
   // 2. If there's any outstanding DotAsyncOps, we need to wait for them.
   builder.setInsertionPointAfter(forOp);
-  SmallVector<Value> waitOperands;
-  for (int i = 0; i < resultNeedSync.size(); ++i) {
-    Value result = forOp->getResult(resultNeedSync[i]);
-    if (result.use_empty())
-      continue;
-    waitOperands.push_back(result);
-  }
-  if (!waitOperands.empty()) {
-    auto dotWait = builder.create<tt::nvidia_gpu::DotWaitOp>(forOp.getLoc(),
-                                                             waitOperands, 0);
-    for (int i = 0; i < resultNeedSync.size(); ++i) {
-      Value result = forOp->getResult(resultNeedSync[i]);
-      result.replaceAllUsesExcept(dotWait.getResult(i), dotWait);
-    }
-  }
+//  SmallVector<Value> waitOperands;
+//  for (int i = 0; i < resultNeedSync.size(); ++i) {
+//    Value result = forOp->getResult(resultNeedSync[i]);
+//    if (result.use_empty())
+//      continue;
+//    waitOperands.push_back(result);
+//  }
+//  if (!waitOperands.empty()) {
+//    auto dotWait = builder.create<tt::nvidia_gpu::DotWaitOp>(forOp.getLoc(),
+//                                                             waitOperands, 0);
+//    for (int i = 0; i < resultNeedSync.size(); ++i) {
+//      Value result = forOp->getResult(resultNeedSync[i]);
+//      result.replaceAllUsesExcept(dotWait.getResult(i), dotWait);
+//    }
+//  }
 
   // 3. potentially remove redundant dot_wait after dot_async if having mutiple
   // DotOp in the loop
