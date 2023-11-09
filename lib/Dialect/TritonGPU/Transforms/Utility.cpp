@@ -339,6 +339,8 @@ bool canFoldIntoConversion(Operation *op, Attribute targetEncoding) {
     if (targetEncoding.isa<triton::gpu::MmaEncodingAttr>()) {
       auto srcEncoding =
           convert.getOperand().getType().cast<RankedTensorType>().getEncoding();
+      if(srcEncoding.isa<triton::gpu::SharedEncodingAttr>())
+        return true;
       if (targetEncoding != srcEncoding)
         return false;
     }

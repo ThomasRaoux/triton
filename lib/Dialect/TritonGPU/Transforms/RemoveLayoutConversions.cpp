@@ -130,6 +130,7 @@ public:
   void rewriteYieldOp(scf::YieldOp yieldOp);
   void rewriteConditionOp(scf::ConditionOp conditionOp);
   void rewriteReduceToScalar(Operation *reduceOp);
+  void rewriteStoreOp(Operation *store);
   Operation *cloneElementwise(OpBuilder &rewriter, Operation *op,
                               Attribute encoding);
   // Map the original value to the rewritten one.
@@ -195,7 +196,7 @@ static bool hasConvertToMMATransisitiveUse(Operation *op, Attribute encoding) {
 // Return true if the op is an op with a layout we don't want to change. We will
 // propagate the layout starting from anchor ops.
 static bool isLayoutAnchor(Operation *op) {
-  if (isa<triton::LoadOp, triton::StoreOp>(op))
+  if (isa<triton::LoadOp>(op))
     return isExpensiveLoadOrStore(op);
   if (isa<triton::ViewOp, triton::DotOp, triton::AtomicRMWOp,
           triton::AtomicCASOp>(op))
@@ -284,7 +285,7 @@ SmallVector<Value> LayoutPropagation::propagateToUsers(Value value,
     }
     if (user->hasTrait<mlir::OpTrait::SameOperandsAndResultEncoding>() ||
         user->hasTrait<mlir::OpTrait::Elementwise>() ||
-        isa<triton::ReduceOp, triton::ExpandDimsOp,
+        isa<triton::ReduceOp, triton::ExpandDimsOp, triton::StoreOp,
             triton::gpu::ConvertLayoutOp>(user)) {
       setEncoding(user->getResults(), info, changed, user);
       continue;
@@ -388,7 +389,10 @@ void LayoutPropagation::rewriteRegion(Region &region) {
         rewriteConditionOp(conditionOp);
       } else if (reduceToScalar(&op)) {
         rewriteReduceToScalar(&op);
-      } else {
+      } else if (isa<triton::StoreOp>(&op)) {
+        rewriteStoreOp(&op);
+      } 
+      else {
         // If we don't need to rewrite the op we still need to remap the
         // operands.
         for (OpOperand &operand : op.getOpOperands()) {
@@ -630,6 +634,22 @@ void LayoutPropagation::rewriteConditionOp(scf::ConditionOp conditionOp) {
   }
 }
 
+void LayoutPropagation::rewriteStoreOp(Operation *store) {
+  OpBuilder rewriter(store);
+  Value operand = cast<triton::StoreOp>(store).getValue();
+  Attribute srcEncoding = operand.getType().cast<RankedTensorType>().getEncoding();
+  auto it = layouts.find(operand);
+  if (it != layouts.end()) {
+    srcEncoding = it->second.encodings[0];
+  }
+  if (!srcEncoding)
+    return;
+  for (OpOperand &operand : store->getOpOperands()) {
+    Value newOperand = getValueAs(operand.get(), srcEncoding);
+    store->setOperand(operand.getOperandNumber(), newOperand);
+  }
+}
+
 void LayoutPropagation::rewriteReduceToScalar(Operation *reduceOp) {
   OpBuilder rewriter(reduceOp);
   Attribute srcEncoding;
@@ -687,7 +707,7 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
   }
   if (op->hasTrait<mlir::OpTrait::SameOperandsAndResultEncoding>() ||
       op->hasTrait<mlir::OpTrait::Elementwise>() ||
-      isa<triton::ReduceOp, triton::ExpandDimsOp, triton::gpu::ConvertLayoutOp>(
+      isa<triton::ReduceOp, triton::StoreOp, triton::ExpandDimsOp, triton::gpu::ConvertLayoutOp>(
           op)) {
     Operation *newOp = cloneElementwise(rewriter, op, encoding);
     for (auto [oldResult, newResult] :

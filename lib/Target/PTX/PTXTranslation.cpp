@@ -46,6 +46,11 @@ static bool findAndReplace(std::string &str, const std::string &begin,
 
 std::string translateLLVMIRToPTX(llvm::Module &module, int cc, int version,
                                  bool enable_fp_fusion) {
+
+  //std::vector<char*> args;
+  //args.push_back((char *)("triton"));
+  //args.push_back((char *)("-nvptx-sched4reg"));
+  //llvm::cl::ParseCommandLineOptions(args.size(), &args[0]);                                  
   // LLVM version in use may not officially support target hardware.
   // Supported versions for LLVM 14 are here:
   // https://github.com/llvm/llvm-project/blob/f28c006a5895fc0e329fe15fead81e37457cb1d1/clang/include/clang/Basic/BuiltinsNVPTX.def

@@ -56,12 +56,9 @@ static void createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
       SmallVector<OpFoldResult>{int_attr(1), int_attr(sliceType.getShape()[0]),
                                 int_attr(sliceType.getShape()[1])},
       SmallVector<OpFoldResult>{int_attr(1), int_attr(1), int_attr(1)});
-  Operation *user = *loadOp.getResult().getUsers().begin();
-  auto convertLayout = llvm::cast<ttg::ConvertLayoutOp>(user);
   auto newCvt = builder.create<ttg::ConvertLayoutOp>(
-      convertLayout->getLoc(), convertLayout.getType(), extract.getResult());
-  convertLayout->replaceAllUsesWith(newCvt->getResults());
-  convertLayout->erase();
+      loadOp->getLoc(), loadOp.getType(), extract.getResult());
+  loadOp->replaceAllUsesWith(newCvt->getResults());
   loadOp.erase();
 
   // Fix up the yield op.
@@ -127,11 +124,10 @@ static void createTMALoad(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
   builder.create<ttng::MBarrierWaitOp>(loc, barrierWait, phase);
 
   Operation *user = *loadOp.getResult().getUsers().begin();
-  auto convertLayout = llvm::cast<ttg::ConvertLayoutOp>(user);
   auto newCvt = builder.create<ttg::ConvertLayoutOp>(
-      convertLayout->getLoc(), convertLayout.getType(), extract.getResult());
-  convertLayout->replaceAllUsesWith(newCvt->getResults());
-  convertLayout->erase();
+      loadOp->getLoc(), loadOp.getType(), extract.getResult());
+  loadOp->replaceAllUsesWith(newCvt->getResults());
+  //convertLayout->erase();
   loadOp.erase();
 
   // Fix up the yield op.
@@ -155,7 +151,7 @@ static Value loadDotOperand(tt::LoadOp loadOp, bool &hasMMAV3) {
   bool isCandidate = false;
   if (!loadOp.getResult().hasOneUse())
     return Value();
-
+  return loadOp.getResult().getUsers().begin()->getResults().front();
   Operation *use = *loadOp.getResult().getUsers().begin();
   if (auto convertLayout = llvm::dyn_cast<ttg::ConvertLayoutOp>(use)) {
     auto tensorType =
