@@ -274,6 +274,14 @@ tt.func @alloc_m_barrier_scalar() {
   tt.return
 }
 
+// CHECK-LABEL: alloc_ptr_tensor
+tt.func @alloc_ptr_tensor(%arg2: !tt.ptr<f16, 1> {tt.divisibility = 16 : i32}, %dim0: i64, %dim1: i64, %stride0: i64, %stride1: i64) {
+  %c0 = arith.constant 0 : i32
+  // CHECK: offset = 0, size = 8
+  %desc = tt.make_tensor_ptr %arg2, [%dim0, %dim1], [%stride0, %stride1], [%c0, %c0] {order = array<i32: 1, 0>} : <tensor<16x16xf16, #AL>, 1>
+  tt.return
+}
+
 // CHECK-LABEL: scratch
 tt.func @scratch() {
   %cst0 = arith.constant dense<0.000000e+00> : tensor<16x16xf16, #AL>

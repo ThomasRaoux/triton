@@ -34,23 +34,31 @@ struct MakeTensorPtrOpConversion
   matchAndRewrite(triton::MakeTensorPtrOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    // struct { offset0, offset1, shape0, shape1, stride0,
-    // stride1, base_ptr};
+    // struct { offset0, offset1, descriptor_shared_memory_address };
     auto offsets = adaptor.getOffsets();
     auto shapes = adaptor.getShape();
     auto strides = adaptor.getStrides();
     auto base = adaptor.getBase();
     auto result = op.getResult();
 
+    Value smemBase = getSharedMemoryBase(op.getLoc(), rewriter, op.getResult());
+    // Set descriptor
+    //PTXBuilder ptxBuilder;
+    //SmallVector<PTXBuilder::Operand *> outputsAndOperands;
+    //  outputsAndOperands.append(ptxOperands.begin(), ptxOperands.end());
+//    std::string asmStr = R("
+//    tensormap.replace.mode.global_address.shared::cta.b1024.type [$0], $1;
+//    tensormap.replace.mode.global_address.shared::cta.b1024.type [$0], " + shapes.size() - 1 + ";
+//    tensormap.replace.mode.global_address.shared::cta.b1024.type [$0], $3;
+//    ");
+//    auto &ptxInstr = *ptxBuilder.create<PTXInstr>(asmStr);
+//    ptxInstr(outputsAndOperands, /*onlyAttachMLIRArgs=*/true);
+    //auto retTy = void_ty(op.getContext());
+    //.auto res = ptxBuilder.launch(rewriter, op.getLoc(), retTy,
+     //                            /*hasSideEffects*/ true);
     SmallVector<Value> elems;
     for (auto offset : offsets)
       elems.push_back(offset);
-    for (auto shape : shapes)
-      elems.push_back(shape);
-    for (auto stride : strides)
-      elems.push_back(stride);
-
-    elems.push_back(base);
 
     auto newValue = getTypeConverter()->packLLElements(
         op.getLoc(), elems, rewriter, result.getType());
@@ -67,8 +75,7 @@ struct AdvanceOpConversion
   LogicalResult
   matchAndRewrite(triton::AdvanceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // struct { offset0, offset1, shape0, shape1, stride0,
-    // stride1, base_ptr};
+    // struct { offset0, offset1, descriptor_shared_memory_address };
     auto loc = op.getLoc();
     auto ptrType = op.getPtr().getType();
     auto tensorPtr = adaptor.getPtr();

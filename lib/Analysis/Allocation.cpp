@@ -208,12 +208,18 @@ private:
                                                              kAlignment);
       }
     }
+    if (isa<triton::MakeTensorPtrOp>(op)) {
+      // Tensor pointers become TMA descriptors.
+      Value result = op->getResult(0);
+      const size_t kTensorMapSize = 128;
+      allocation->addBuffer<BufferT::BufferKind::Explicit>(result,
+                                                           kTensorMapSize, 8);
+    }
     if (isa<triton::nvidia_gpu::AllocMBarrierOp>(op)) {
       Value result = op->getResult(0);
       if (!result.getType().isa<RankedTensorType>())
         // In case AllocMBarrierOp is allocating scalar mbarriers
-        allocation->addBuffer<BufferT::BufferKind::Explicit>(result, 8,
-                                                             kAlignment);
+        allocation->addBuffer<BufferT::BufferKind::Explicit>(result, 8, 8);
     }
   }
 
@@ -444,9 +450,13 @@ private:
     Liveness liveness(operation);
     auto getValueLivenessRange = [&](Value value) {
       // TODO(Keren): Investigate mbarrier and figure out how to clean this up
-      // Shared memory allocated by mbarrier cannot be reused
+      // Shared memory allocated by mbarrier cannot be reused.
+      // pointer of tensor map to shared memory TMA descriptor. We currently
+      // make them alive across the whole kernel as we can't easily determine
+      // the last use.
       if (value.getDefiningOp() &&
-          isa<triton::nvidia_gpu::AllocMBarrierOp>(value.getDefiningOp()))
+          isa<triton::nvidia_gpu::AllocMBarrierOp, triton::MakeTensorPtrOp>(
+              value.getDefiningOp()))
         return Interval(std::numeric_limits<size_t>::min(),
                         std::numeric_limits<size_t>::max());
 

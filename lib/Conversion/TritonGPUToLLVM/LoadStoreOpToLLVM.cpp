@@ -415,11 +415,9 @@ struct StoreAsyncOpConversion
   StoreAsyncOpConversion(TritonGPUToLLVMTypeConverter &converter,
                          ModuleAllocation &allocation,
                          mlir::triton::gpu::TMAMetadataTy *tmaMetadata,
-                         const TensorPtrMapT *tensorPtrMap,
                          PatternBenefit benefit)
       : ConvertTritonGPUOpToLLVMPattern<triton::nvidia_gpu::StoreAsyncOp>(
-            converter, allocation, tmaMetadata, benefit),
-        tensorPtrMap(tensorPtrMap) {}
+            converter, allocation, tmaMetadata, benefit) {}
 
   LogicalResult
   matchAndRewrite(triton::nvidia_gpu::StoreAsyncOp op, OpAdaptor adaptor,
@@ -441,6 +439,10 @@ struct StoreAsyncOpConversion
 
     auto dst = op.getDst();
     auto src = op.getSrc();
+    auto dstTy = dst.getType()
+                     .cast<PointerType>()
+                     .getPointeeType()
+                     .cast<RankedTensorType>();
     auto srcTy = src.getType().cast<RankedTensorType>();
     auto elemTy = srcTy.getElementType();
 
@@ -453,63 +455,21 @@ struct StoreAsyncOpConversion
     auto moduleOp = op->getParentOfType<ModuleOp>();
     assert(moduleOp && "Parent ModuleOp not found for StoreAsyncOp");
 
-    auto llFuncOp = op->getParentOfType<LLVM::LLVMFuncOp>();
-    assert(llFuncOp && "LLVMFuncOp not found for StoreAsyncOp");
-
-    int numTMADescs = getNumTMADescs(llFuncOp);
-    assert(numTMADescs > 0);
-
+  
     auto sharedLayout = srcTy.getEncoding().dyn_cast<SharedEncodingAttr>();
     assert(sharedLayout && "expected shared encoding");
-
-    mlir::triton::gpu::TMAInfo tmaInfo;
-
-    tmaInfo.tensorDataType = getCUtensorMapDataType(elemTy);
-    tmaInfo.tensorRank = rank;
-    assert(tmaMetadata);
-
-    auto inOrder = sharedLayout.getOrder();
-    unsigned TMADescIdx = tmaMetadata->size();
-    unsigned numFuncArgs = llFuncOp.getBody().front().getNumArguments();
-    auto makeTensorPtr = tensorPtrMap->lookup(op.getOperation());
-    auto dstOrder = makeTensorPtr.getOrder();
-
-    unsigned globalAddressArgIdx = getArgIdx(makeTensorPtr.getBase());
-    tmaInfo.globalAddressArgIdx = globalAddressArgIdx;
-    tmaInfo.TMADescArgIdx = numFuncArgs - numTMADescs + TMADescIdx;
-
-    auto getDimOfOrder = [](ArrayRef<int32_t> order, int32_t i) {
+    auto getDimOfOrder = [](ArrayRef<unsigned> order, int32_t i) {
       auto it = std::find(order.begin(), order.end(), i);
       assert(it != order.end());
       return std::distance(order.begin(), it);
     };
-
-    std::vector<int32_t> globalDimsArgIdx;
-    std::vector<int32_t> globalStridesArgIdx;
-    // constant values are mapped to (-1 - value)
-    for (int i = 0; i < rank; ++i) {
-      int32_t argIdx = -1;
-      auto dim = getDimOfOrder(dstOrder, i);
-      argIdx = getArgIdx(makeTensorPtr.getShape()[dim]);
-      globalDimsArgIdx.emplace_back(argIdx);
-      // handle constant stride
-      argIdx = getArgIdx(makeTensorPtr.getStrides()[dim]);
-      globalStridesArgIdx.emplace_back(argIdx);
-    }
-
-    tmaInfo.globalDimsArgIdx = globalDimsArgIdx;
-    tmaInfo.globalStridesArgIdx = globalStridesArgIdx;
     std::vector<uint32_t> boxDims;
     auto CTAsPerCGA = sharedLayout.getCTALayout().getCTAsPerCGA();
     auto CTAOrder = sharedLayout.getCTALayout().getCTAOrder();
     auto CTASplitNum = sharedLayout.getCTALayout().getCTASplitNum();
-    auto tensorShape = makeTensorPtr.getResult()
-                           .getType()
-                           .cast<triton::PointerType>()
-                           .getPointeeType()
-                           .cast<RankedTensorType>()
-                           .getShape();
+    auto tensorShape = dstTy.getShape();
     auto shapePerCTA = getShapePerCTA(CTASplitNum, tensorShape);
+    auto dstOrder = triton::gpu::getOrder(dstTy.getEncoding());
     const uint32_t bytesPerCacheline = 128;
     uint32_t bytesPerElem = elemTy.getIntOrFloatBitWidth() / 8;
     uint32_t numBox{1};
@@ -522,32 +482,6 @@ struct StoreAsyncOpConversion
       }
       boxDims.emplace_back(tNumElems);
     }
-    std::vector<uint32_t> elementStrides(rank, 1);
-    tmaInfo.boxDims = boxDims;
-    tmaInfo.elementStrides = elementStrides;
-
-    CUtensorMapSwizzle swizzle = CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_NONE;
-    assert(
-        ((elemTy.getIntOrFloatBitWidth() == 16 && sharedLayout.getVec() == 8) or
-         (elemTy.getIntOrFloatBitWidth() == 32 &&
-          sharedLayout.getVec() == 4)) &&
-        "Unexpected shared layout for StoreAsyncOp");
-    if (sharedLayout.getPerPhase() == 4 && sharedLayout.getMaxPhase() == 2)
-      swizzle = CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_32B;
-    else if (sharedLayout.getPerPhase() == 2 && sharedLayout.getMaxPhase() == 4)
-      swizzle = CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_64B;
-    else if (sharedLayout.getPerPhase() == 1 && sharedLayout.getMaxPhase() == 8)
-      swizzle = CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_128B;
-    else
-      llvm::report_fatal_error("Unsupported shared layout for StoreAsyncOp");
-    tmaInfo.swizzle = swizzle;
-    tmaInfo.interleave = CUtensorMapInterleave::CU_TENSOR_MAP_INTERLEAVE_NONE;
-    tmaInfo.l2Promotion =
-        CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_L2_128B;
-    tmaInfo.oobFill =
-        CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE;
-
-    tmaMetadata->emplace_back(tmaInfo);
 
     Value llDst = adaptor.getDst();
     Value llSrc = adaptor.getSrc();
@@ -560,8 +494,6 @@ struct StoreAsyncOpConversion
       offsetVals.emplace_back(i32_val(0));
     }
 
-    Value tmaDesc =
-        llFuncOp.getBody().front().getArgument(tmaInfo.TMADescArgIdx);
     auto ptrSharedTy = LLVM::LLVMPointerType::get(ctx, 3);
 
     auto threadId = getThreadId(rewriter, loc);
@@ -577,7 +509,7 @@ struct StoreAsyncOpConversion
         delinearize(rewriter, loc, clusterCTAId, CTAsPerCGA, CTAOrder);
 
     rewriter.create<triton::nvgpu::FenceAsyncSharedOp>(loc, 0);
-
+    Value tmaDesc = llCoord.back();
     for (uint32_t b = 0; b < numBox; ++b) {
       SmallVector<Value> coord;
       // raw coord
@@ -620,14 +552,12 @@ struct StoreAsyncOpConversion
     auto dst = op.getDst();
     auto src = op.getSrc();
     auto srcTy = src.getType().cast<RankedTensorType>();
-    auto makeTensorPtr = tensorPtrMap->lookup(op.getOperation());
-    auto dstTensorTy = makeTensorPtr.getResult()
-                           .getType()
+    auto dstTensorTy = dst.getType()
                            .cast<triton::PointerType>()
                            .getPointeeType()
                            .cast<RankedTensorType>();
     auto tensorShape = dstTensorTy.getShape();
-    auto dstOrder = makeTensorPtr.getOrder();
+    auto dstOrder = triton::gpu::getOrder(dstTensorTy.getEncoding());
     auto dstElemTy = dstTensorTy.getElementType();
 
     auto rank = srcTy.getRank();
@@ -639,55 +569,21 @@ struct StoreAsyncOpConversion
     auto moduleOp = op->getParentOfType<ModuleOp>();
     assert(moduleOp && "Parent ModuleOp not found for StoreAsyncOp");
 
-    auto llFuncOp = op->getParentOfType<LLVM::LLVMFuncOp>();
-    assert(llFuncOp && "LLVMFuncOp not found for StoreAsyncOp");
-
-    int numTMADescs = getNumTMADescs(llFuncOp);
-    assert(numTMADescs > 0);
-
     auto ctaLayout = getCTALayout(dstTensorTy.getEncoding());
     // The order of smem should be consistent with gmem.
     SmallVector<unsigned> sharedOrder;
-    for (auto o : makeTensorPtr.getOrder()) {
+    for (auto o : dstOrder) {
       sharedOrder.emplace_back(o);
     }
     auto sharedLayout = SharedEncodingAttr::get(ctx, tensorShape, sharedOrder,
                                                 ctaLayout, dstElemTy);
 
-    mlir::triton::gpu::TMAInfo tmaInfo;
-
-    tmaInfo.tensorDataType = getCUtensorMapDataType(dstElemTy);
-    tmaInfo.tensorRank = rank;
-    assert(tmaMetadata);
-
-    unsigned TMADescIdx = tmaMetadata->size();
-    unsigned numFuncArgs = llFuncOp.getBody().front().getNumArguments();
-
-    unsigned globalAddressArgIdx = getArgIdx(makeTensorPtr.getBase());
-    tmaInfo.globalAddressArgIdx = globalAddressArgIdx;
-    tmaInfo.TMADescArgIdx = numFuncArgs - numTMADescs + TMADescIdx;
-
-    auto getDimOfOrder = [](ArrayRef<int32_t> order, int32_t i) {
+    auto getDimOfOrder = [](ArrayRef<unsigned> order, int32_t i) {
       auto it = std::find(order.begin(), order.end(), i);
       assert(it != order.end());
       return std::distance(order.begin(), it);
     };
 
-    std::vector<int32_t> globalDimsArgIdx;
-    std::vector<int32_t> globalStridesArgIdx;
-    // constant values are mapped to (-1 - value)
-    for (int i = 0; i < rank; ++i) {
-      int32_t argIdx = -1;
-      auto dim = getDimOfOrder(dstOrder, i);
-      argIdx = getArgIdx(makeTensorPtr.getShape()[dim]);
-      globalDimsArgIdx.emplace_back(argIdx);
-      // handle constant stride
-      argIdx = getArgIdx(makeTensorPtr.getStrides()[dim]);
-      globalStridesArgIdx.emplace_back(argIdx);
-    }
-
-    tmaInfo.globalDimsArgIdx = globalDimsArgIdx;
-    tmaInfo.globalStridesArgIdx = globalStridesArgIdx;
     std::vector<uint32_t> boxDims;
     auto CTAsPerCGA = sharedLayout.getCTALayout().getCTAsPerCGA();
     auto CTAOrder = sharedLayout.getCTALayout().getCTAOrder();
@@ -721,31 +617,6 @@ struct StoreAsyncOpConversion
       boxDims.emplace_back(tNumElems);
     }
     std::vector<uint32_t> elementStrides(rank, 1);
-    tmaInfo.boxDims = boxDims;
-    tmaInfo.elementStrides = elementStrides;
-
-    CUtensorMapSwizzle swizzle = CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_NONE;
-    assert(((dstElemTy.getIntOrFloatBitWidth() == 16 &&
-             sharedLayout.getVec() == 8) or
-            (dstElemTy.getIntOrFloatBitWidth() == 32 &&
-             sharedLayout.getVec() == 4)) &&
-           "Unexpected shared layout for StoreAsyncOp");
-    if (sharedLayout.getPerPhase() == 4 && sharedLayout.getMaxPhase() == 2)
-      swizzle = CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_32B;
-    else if (sharedLayout.getPerPhase() == 2 && sharedLayout.getMaxPhase() == 4)
-      swizzle = CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_64B;
-    else if (sharedLayout.getPerPhase() == 1 && sharedLayout.getMaxPhase() == 8)
-      swizzle = CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_128B;
-    else
-      llvm::report_fatal_error("Unsupported shared layout for StoreAsyncOp");
-    tmaInfo.swizzle = swizzle;
-    tmaInfo.interleave = CUtensorMapInterleave::CU_TENSOR_MAP_INTERLEAVE_NONE;
-    tmaInfo.l2Promotion =
-        CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_L2_128B;
-    tmaInfo.oobFill =
-        CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE;
-
-    tmaMetadata->emplace_back(tmaInfo);
 
     Value llDst = adaptor.getDst();
     Value llSrc = adaptor.getSrc();
@@ -759,8 +630,6 @@ struct StoreAsyncOpConversion
       offsetVals.emplace_back(i32_val(0));
     }
 
-    Value tmaDesc =
-        llFuncOp.getBody().front().getArgument(tmaInfo.TMADescArgIdx);
     auto ptrSharedTy = LLVM::LLVMPointerType::get(ctx, 3);
 
     auto threadId = getThreadId(rewriter, loc);
@@ -768,6 +637,7 @@ struct StoreAsyncOpConversion
 
     auto llCoord = getTypeConverter()->unpackLLElements(loc, llDst, rewriter,
                                                         dst.getType());
+    Value tmaDesc = llCoord.back();
     uint32_t boxStride = std::accumulate(boxDims.begin(), boxDims.end(), 1,
                                          std::multiplies<uint32_t>());
     boxStride = boxStride * repM * warpsPerCTA[0];
@@ -874,57 +744,6 @@ struct StoreAsyncOpConversion
     rewriter.eraseOp(op);
     return success();
   }
-
-private:
-  unsigned getArgIdx(Value v) const {
-    if (auto op = v.getDefiningOp<mlir::arith::ConstantOp>()) {
-      return -1 -
-             op.getValue().dyn_cast<IntegerAttr>().getValue().getZExtValue();
-    }
-    if (!isa<BlockArgument>(v) &&
-        !isa<mlir::UnrealizedConversionCastOp, arith::ExtSIOp>(
-            v.getDefiningOp()))
-      llvm::report_fatal_error(
-          "Operand of `MakeTensorPtrOp` is not the function's argument");
-    if (v.getDefiningOp() &&
-        isa<mlir::UnrealizedConversionCastOp>(v.getDefiningOp())) {
-      return getArgIdx(v.getDefiningOp()->getOperand(0));
-    } else if (v.getParentBlock()->isEntryBlock() && v.isa<BlockArgument>()) {
-      // in entryblock and is BlockArgument; Because argument of func are
-      // arugments of entryblock bb0 in MLIR
-      return v.cast<BlockArgument>().getArgNumber();
-    } else if (v.getParentBlock()->isEntryBlock() &&
-               (!v.isa<BlockArgument>())) {
-      // in entryblock but not BlockArgument
-      return getArgIdx(v.getDefiningOp()->getOperand(0));
-    } else if (!v.getParentBlock()->isEntryBlock()) {
-      // in non-entryblock
-      return getArgIdx(v.getDefiningOp()->getOperand(0));
-    } else {
-      llvm::report_fatal_error(
-          "Operand of `MakeTensorPtrOp` is not the function's argument");
-      return 0;
-    }
-  }
-
-  int getNumTMADescs(LLVM::LLVMFuncOp func) const {
-    if (!func->hasAttr(kAttrNumTMALoadDescsName)) {
-      llvm::report_fatal_error("TritonGPU module should contain a "
-                               "triton_gpu.num-tma-load attribute");
-      return -1;
-    }
-    if (!func->hasAttr(kAttrNumTMAStoreDescsName)) {
-      llvm::report_fatal_error("TritonGPU module should contain a "
-                               "triton_gpu.num-tma-store attribute");
-      return -1;
-    }
-    return func->getAttr(kAttrNumTMAStoreDescsName)
-               .cast<IntegerAttr>()
-               .getInt() +
-           func->getAttr(kAttrNumTMALoadDescsName).cast<IntegerAttr>().getInt();
-  }
-
-  const TensorPtrMapT *tensorPtrMap;
 };
 
 namespace {
@@ -1469,12 +1288,10 @@ struct InsertSliceAsyncV2OpConversion
 
                                  ModuleAllocation &allocation,
                                  mlir::triton::gpu::TMAMetadataTy *tmaMetadata,
-                                 const TensorPtrMapT *tensorPtrMap,
                                  PatternBenefit benefit)
       : ConvertTritonGPUOpToLLVMPattern<
             triton::nvidia_gpu::InsertSliceAsyncV2Op>(converter, allocation,
-                                                      tmaMetadata, benefit),
-        tensorPtrMap(tensorPtrMap) {}
+                                                      tmaMetadata, benefit) {}
 
   LogicalResult
   matchAndRewrite(triton::nvidia_gpu::InsertSliceAsyncV2Op op,
@@ -1495,60 +1312,21 @@ struct InsertSliceAsyncV2OpConversion
     auto axis = op->getAttrOfType<IntegerAttr>("axis").getInt();
     auto moduleOp = op->getParentOfType<ModuleOp>();
     assert(moduleOp && "Parent ModuleOp not found for InsertSliceAsyncV2Op");
-    auto llFuncOp = op->getParentOfType<LLVM::LLVMFuncOp>();
-    assert(llFuncOp && "LLVMFuncOp not found for InsertSliceAsyncV2Op");
-    int numTMADescs = getNumTMADescs(llFuncOp);
-    assert(numTMADescs > 0);
     auto sharedLayout = resultTy.getEncoding().dyn_cast<SharedEncodingAttr>();
     assert(sharedLayout && "unexpected layout of InsertSliceAsyncV2Op");
     auto CTAsPerCGA = sharedLayout.getCTALayout().getCTAsPerCGA();
     auto CTAOrder = sharedLayout.getCTALayout().getCTAOrder();
     auto CTASplitNum = sharedLayout.getCTALayout().getCTASplitNum();
+    auto srcTy = op.getSrc().getType().cast<PointerType>().getPointeeType().cast<RankedTensorType>();
+    std::vector<uint32_t> boxDims;
+    auto tensorShape = srcTy.getShape();
+    auto inOrder = triton::gpu::getOrder(srcTy.getEncoding());
 
-    mlir::triton::gpu::TMAInfo tmaInfo;
-
-    tmaInfo.tensorDataType = getCUtensorMapDataType(elemTy);
-    tmaInfo.tensorRank = rank;
-
-    assert(tmaMetadata);
-    unsigned TMADescIdx = tmaMetadata->size();
-    unsigned numFuncArgs = llFuncOp.getBody().front().getNumArguments();
-    auto makeTensorPtr = tensorPtrMap->lookup(op.getOperation());
-    auto inOrder = makeTensorPtr.getOrder();
-    unsigned globalAddressArgIdx = getArgIdx(makeTensorPtr.getBase());
-    tmaInfo.globalAddressArgIdx = globalAddressArgIdx;
-    tmaInfo.TMADescArgIdx = numFuncArgs - numTMADescs + TMADescIdx;
-
-    auto getDimOfOrder = [](ArrayRef<int32_t> order, int32_t i) {
+    auto getDimOfOrder = [](ArrayRef<unsigned> order, int32_t i) {
       auto it = std::find(order.begin(), order.end(), i);
       assert(it != order.end());
       return std::distance(order.begin(), it);
     };
-
-    std::vector<int32_t> globalDimsArgIdx;
-    std::vector<int32_t> globalStridesArgIdx;
-    // constant values are mapped to (-1 - value)
-    for (int i = 0; i < rank; ++i) {
-      int32_t argIdx = -1;
-      auto dim = getDimOfOrder(inOrder, i);
-      argIdx = getArgIdx(makeTensorPtr.getShape()[dim]);
-      globalDimsArgIdx.emplace_back(argIdx);
-      // handle constant stride
-      argIdx = getArgIdx(makeTensorPtr.getStrides()[dim]);
-      globalStridesArgIdx.emplace_back(argIdx);
-    }
-
-    tmaInfo.globalDimsArgIdx = globalDimsArgIdx;
-    tmaInfo.globalStridesArgIdx = globalStridesArgIdx;
-
-    std::vector<uint32_t> boxDims;
-    auto tensorShape = makeTensorPtr.getResult()
-                           .getType()
-                           .cast<triton::PointerType>()
-                           .getPointeeType()
-                           .cast<RankedTensorType>()
-                           .getShape();
-
     SmallVector<unsigned> numMcast(rank);
     unsigned accNumMcast = 1;
     for (unsigned i = 0; i < rank; ++i) {
@@ -1569,39 +1347,14 @@ struct InsertSliceAsyncV2OpConversion
         boxDims.emplace_back(shapePerCTA[dim]);
       }
     }
-
-    std::vector<uint32_t> elementStrides(rank, 1);
-    tmaInfo.elementStrides = elementStrides;
-
-    CUtensorMapSwizzle swizzle = CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_NONE;
-    if (sharedLayout.getPerPhase() == 4 && sharedLayout.getMaxPhase() == 2)
-      swizzle = CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_32B;
-    else if (sharedLayout.getPerPhase() == 2 && sharedLayout.getMaxPhase() == 4)
-      swizzle = CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_64B;
-    else if (sharedLayout.getPerPhase() == 1 && sharedLayout.getMaxPhase() == 8)
-      swizzle = CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_128B;
-    else
-      llvm::report_fatal_error(
-          "Unsupported shared layout for InsertSliceAsyncV2Op");
-
-    tmaInfo.swizzle = swizzle;
-    tmaInfo.interleave = CUtensorMapInterleave::CU_TENSOR_MAP_INTERLEAVE_NONE;
-    tmaInfo.l2Promotion =
-        CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_L2_128B;
-    tmaInfo.oobFill =
-        CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE;
-
     uint32_t numBoxes = 1;
     uint32_t elemSizeOfBytes = elemTy.getIntOrFloatBitWidth() / 8;
-    if (swizzle == CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_128B) {
+    if (sharedLayout.getPerPhase() == 1 && sharedLayout.getMaxPhase() == 8) {
       while (elemSizeOfBytes * boxDims[0] > 128) {
         boxDims[0] = boxDims[0] / 2;
         numBoxes *= 2;
       }
     }
-    tmaInfo.boxDims = boxDims;
-    tmaMetadata->emplace_back(tmaInfo);
-
     uint32_t elemsPerBox =
         std::accumulate(boxDims.begin(), boxDims.end(), 1, std::multiplies{});
 
@@ -1651,8 +1404,6 @@ struct InsertSliceAsyncV2OpConversion
         add(dstOffsetCommon, mul(sliceCoord, i32_val(boxDims[0])));
     auto dstPtrTy = ptr_ty(rewriter.getContext(), 3);
 
-    Value tmaDesc =
-        llFuncOp.getBody().front().getArgument(tmaInfo.TMADescArgIdx);
     // TODO: sink this logic into Triton::NVGPU dialect and support more
     // cache-policy modes
     Value l2Desc = int_val(64, 0x1000000000000000ll);
@@ -1695,6 +1446,8 @@ struct InsertSliceAsyncV2OpConversion
 
     Value mcastMask = getMCastMask(sharedLayout, rewriter, loc, clusterCTAId);
 
+
+    Value tmaDesc = llCoord.back();
     for (size_t i = 0; i < numBoxes; ++i) {
       Value dstOffset =
           add(dstOffsetCommon, i32_val(i * elemsPerBox * accNumMcast));
@@ -1826,8 +1579,6 @@ private:
                .getInt() +
            func->getAttr(kAttrNumTMALoadDescsName).cast<IntegerAttr>().getInt();
   }
-
-  const TensorPtrMapT *tensorPtrMap;
 };
 
 void populateLoadStoreOpToLLVMPatterns(
@@ -1835,8 +1586,7 @@ void populateLoadStoreOpToLLVMPatterns(
     int numWarps, ModuleAxisInfoAnalysis &axisInfoAnalysis,
     ModuleAllocation &allocation,
     ConvertTritonGPUOpToLLVMPatternBase::IndexCacheInfo &indexCacheInfo,
-    mlir::triton::gpu::TMAMetadataTy *tmaMetadata,
-    const TensorPtrMapT *tensorPtrMap, PatternBenefit benefit) {
+    mlir::triton::gpu::TMAMetadataTy *tmaMetadata, PatternBenefit benefit) {
   patterns.add<LoadOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<StoreOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<AtomicCASOpConversion>(typeConverter, allocation,
@@ -1847,8 +1597,8 @@ void populateLoadStoreOpToLLVMPatterns(
                                         indexCacheInfo, benefit);
   patterns.add<InsertSliceAsyncOpConversion>(
       typeConverter, allocation, indexCacheInfo, axisInfoAnalysis, benefit);
-  patterns.add<InsertSliceAsyncV2OpConversion>(
-      typeConverter, allocation, tmaMetadata, tensorPtrMap, benefit);
+  patterns.add<InsertSliceAsyncV2OpConversion>(typeConverter, allocation,
+                                               tmaMetadata, benefit);
   patterns.add<StoreAsyncOpConversion>(typeConverter, allocation, tmaMetadata,
-                                       tensorPtrMap, benefit);
+                                       benefit);
 }

@@ -193,18 +193,6 @@ struct FuncOpConversion : public FuncOpConversionBase {
     if (!allocation.isRoot(funcOp))
       amendedFuncOp = amendFuncOp(funcOp, rewriter);
 
-    // Collect TMA informations.
-    unsigned numTMALoad = 0;
-    funcOp.walk(
-        [&numTMALoad](triton::nvidia_gpu::InsertSliceAsyncV2Op insertSliceOp) {
-          numTMALoad++;
-        });
-    unsigned numTMAStore = 0;
-    funcOp.walk([&numTMAStore](triton::nvidia_gpu::StoreAsyncOp storeAsyncOp) {
-      numTMAStore++;
-    });
-    unsigned numTMA = numTMALoad + numTMAStore;
-
     auto newFuncOp = convertFuncOpToLLVMFuncOp(amendedFuncOp, rewriter);
     if (!newFuncOp) {
       return failure();
@@ -229,29 +217,6 @@ struct FuncOpConversion : public FuncOpConversionBase {
     newFuncOp->setAttr("nvvm.maxntid", rewriter.getI32ArrayAttr(32 * numWarps));
     // The call graph is updated by mapping the old function to the new one.
     allocation.mapFuncOp(funcOp, newFuncOp);
-
-    // Append arguments to receive TMADesc in global memory in the runtime
-    auto ptrTy = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
-    auto numArgs = newFuncOp.getBody().front().getNumArguments();
-    auto funcTy = newFuncOp.getFunctionType().cast<LLVM::LLVMFunctionType>();
-    SmallVector<Type> newInputsTy(funcTy.getParams().begin(),
-                                  funcTy.getParams().end());
-    for (unsigned i = 0; i < numTMA; ++i) {
-      newFuncOp.getBody().front().addArgument(ptrTy, funcOp.getLoc());
-      newInputsTy.push_back(ptrTy);
-    }
-    newFuncOp.setType(
-        LLVM::LLVMFunctionType::get(funcTy.getReturnType(), newInputsTy));
-    // required by AxisInfoAnalysis
-    for (unsigned i = 0; i < numTMA; ++i) {
-      newFuncOp.setArgAttr(numArgs + i, "tt.divisibility",
-                           rewriter.getIntegerAttr(i32_ty, 1));
-    }
-
-    newFuncOp->setAttr(kAttrNumTMALoadDescsName,
-                       rewriter.getIntegerAttr(i32_ty, numTMALoad));
-    newFuncOp->setAttr(kAttrNumTMAStoreDescsName,
-                       rewriter.getIntegerAttr(i32_ty, numTMAStore));
 
     rewriter.eraseOp(funcOp);
     return success();
@@ -428,27 +393,6 @@ struct ConvertTritonGPUToLLVM
     ModuleMembarAnalysis membarPass(&allocation);
     membarPass.run();
 
-    /* Get tensorPtrMap before conversion */
-    TensorPtrMapT tensorPtrMap;
-    mod.walk([&tensorPtrMap](
-                 mlir::triton::nvidia_gpu::InsertSliceAsyncV2Op insertOp) {
-      auto src = insertOp.getSrc();
-      auto ptrTy = src.getType().dyn_cast<triton::PointerType>();
-      if (ptrTy && ptrTy.getPointeeType().isa<RankedTensorType>()) {
-        auto makeTensorPtrOp = getMakeTensorPtrOp(insertOp.getSrc());
-        tensorPtrMap[insertOp.getOperation()] = makeTensorPtrOp;
-      }
-    });
-
-    mod.walk([&tensorPtrMap](mlir::triton::nvidia_gpu::StoreAsyncOp storeOp) {
-      auto dst = storeOp.getDst();
-      auto ptrTy = dst.getType().dyn_cast<triton::PointerType>();
-      if (ptrTy && ptrTy.getPointeeType().isa<RankedTensorType>()) {
-        auto makeTensorPtrOp = getMakeTensorPtrOp(storeOp.getDst());
-        tensorPtrMap[storeOp.getOperation()] = makeTensorPtrOp;
-      }
-    });
-
     // Hack: cleanup
     {
       RewritePatternSet patterns(context);
@@ -512,12 +456,6 @@ struct ConvertTritonGPUToLLVM
       indexCacheInfo = {nullptr, nullptr, nullptr};
     }
 
-    // tmaMetadata is absent in a triton-opt unit test, in this case, create a
-    // local one and dump it after this pass is done.
-    mlir::triton::gpu::TMAMetadataTy tmaMetaDataDebug;
-    if (tmaMetadata == nullptr)
-      tmaMetadata = &tmaMetaDataDebug;
-
     RewritePatternSet patterns(context);
 
     auto populatePatterns1 = [&](auto populateFunc) {
@@ -533,7 +471,7 @@ struct ConvertTritonGPUToLLVM
 
     auto populatePatterns3 = [&](auto populateFunc) {
       populateFunc(typeConverter, patterns, numWarps, axisInfoAnalysis,
-                   allocation, indexCacheInfo, tmaMetadata, &tensorPtrMap,
+                   allocation, indexCacheInfo, tmaMetadata,
                    /*benefit*/ 10);
     };
 

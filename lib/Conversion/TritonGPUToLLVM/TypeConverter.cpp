@@ -48,20 +48,15 @@ Type TritonGPUToLLVMTypeConverter::convertTritonPointerType(
   auto pointeeType = type.getPointeeType();
   if (pointeeType.isa<RankedTensorType>()) {
     auto rankedTensorType = pointeeType.cast<RankedTensorType>();
-    // struct { offset0, offset1, shape0, shape1, stride0,
-    // stride1, base_ptr};
+    // struct { offset0, offset1, descriptor_shared_memory_address };
     auto eleType = rankedTensorType.getElementType();
     auto shape = rankedTensorType.getShape();
     SmallVector<Type, 4> types;
     // offsets
     for (size_t i = 0; i < shape.size(); ++i)
       types.push_back(IntegerType::get(ctx, 32));
-    // shapes, strides
-    for (size_t i = 0; i < 2 * shape.size(); ++i)
-      types.push_back(IntegerType::get(ctx, 64));
-
-    types.push_back(LLVM::LLVMPointerType::get(ctx, type.getAddressSpace()));
-
+    // Shared memory pointer to the TMA descriptor.
+    types.push_back(LLVM::LLVMPointerType::get(ctx, 3));
     return LLVM::LLVMStructType::getLiteral(ctx, types);
   }
   return LLVM::LLVMPointerType::get(ctx, type.getAddressSpace());
