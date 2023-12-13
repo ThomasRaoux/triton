@@ -56,7 +56,7 @@ Type TritonGPUToLLVMTypeConverter::convertTritonPointerType(
     for (size_t i = 0; i < shape.size(); ++i)
       types.push_back(IntegerType::get(ctx, 32));
     // Shared memory pointer to the TMA descriptor.
-    types.push_back(LLVM::LLVMPointerType::get(ctx, 3));
+    types.push_back(LLVM::LLVMPointerType::get(ctx));
     return LLVM::LLVMStructType::getLiteral(ctx, types);
   }
   return LLVM::LLVMPointerType::get(ctx, type.getAddressSpace());

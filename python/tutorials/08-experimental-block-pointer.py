@@ -146,14 +146,15 @@ def matmul_kernel_with_block_pointers(
                                     order=(1, 0))
     a = tl.load(a_block_ptr, boundary_check=(0, 1))
     b = tl.load(b_block_ptr, boundary_check=(0, 1))
-    
+    offs_k = tl.arange(0, BLOCK_SIZE_K)
+    c = (offs_k[:, None] * BLOCK_SIZE_K + offs_k[None, :]).to(a.dtype)
     # ----------------------------------------------------------------
     # Write back the block of the output matrix C with boundary checks.
     # See above `Load/Store a Block Pointer` section for details.
     c_block_ptr = tl.make_block_ptr(base=c_ptr, shape=(M, N), strides=(stride_cm, stride_cn),
                                     offsets=(pid_m * BLOCK_SIZE_M, pid_n * BLOCK_SIZE_N),
                                     block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N), order=(1, 0))
-    tl.store(c_block_ptr, a + b, boundary_check=(0, 1))
+    tl.store(c_block_ptr, c, boundary_check=(0, 1))
 
 
 # We can now create a convenience wrapper function that only takes two input tensors,

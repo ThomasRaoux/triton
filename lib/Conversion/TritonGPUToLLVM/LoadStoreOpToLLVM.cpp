@@ -482,7 +482,7 @@ struct StoreAsyncOpConversion
     auto ptrSharedTy = LLVM::LLVMPointerType::get(ctx, 3);
 
     auto threadId = getThreadId(rewriter, loc);
-    Value pred = icmp_eq(threadId, i32_val(0));
+    Value pred = icmp_eq(threadId, i32_val(1));
 
     auto llCoord = getTypeConverter()->unpackLLElements(loc, llDst, rewriter,
                                                         dst.getType());

@@ -21,7 +21,9 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "TensorPtrOpsToLLVM.h"
+
 using namespace mlir;
 using namespace mlir::triton;
 
@@ -121,9 +123,12 @@ struct MakeTensorPtrOpConversion
     auto retTy = void_ty(op.getContext());
     auto res = ptxBuilder.launch(rewriter, op.getLoc(), retTy,
                                  /*hasSideEffects*/ true);
+    rewriter.create<NVVM::Barrier0Op>(op.getLoc());
     SmallVector<Value> elems;
     for (auto offset : offsets)
       elems.push_back(offset);
+    smemBase = rewriter.create<LLVM::AddrSpaceCastOp>(
+        op.getLoc(), LLVM::LLVMPointerType::get(op.getContext()), smemBase);
     elems.push_back(smemBase);
     auto newValue = getTypeConverter()->packLLElements(
         op.getLoc(), elems, rewriter, result.getType());
