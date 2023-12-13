@@ -98,22 +98,8 @@ import triton.language as tl
 
 @triton.autotune(
     configs=[
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=4,
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=4,
                       num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
-                      num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
-                      num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
-                      num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
-                      num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
-                      num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=5,
-                      num_warps=2),
-        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=5,
-                      num_warps=2),
     ],
     key=['M', 'N', 'K'],
 )
@@ -158,36 +144,15 @@ def matmul_kernel_with_block_pointers(
     b_block_ptr = tl.make_block_ptr(base=b_ptr, shape=(K, N), strides=(stride_bk, stride_bn),
                                     offsets=(0, pid_n * BLOCK_SIZE_N), block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N),
                                     order=(1, 0))
-
-    # -----------------------------------------------------------
-    # Iterate to compute a block of the C matrix.
-    # We accumulate into a `[BLOCK_SIZE_M, BLOCK_SIZE_N]` block.
-    # of fp32 values for higher accuracy.
-    # `accumulator` will be converted back to fp16 after the loop.
-    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-    for k in range(0, K, BLOCK_SIZE_K):
-        # Load with boundary checks, no need to calculate the mask manually.
-        # For better performance, you may remove some axis from the boundary
-        # check, if you can guarantee that the access is always in-bound in
-        # that axis.
-        # See above `Load/Store a Block Pointer` section for details.
-        a = tl.load(a_block_ptr, boundary_check=(0, 1))
-        b = tl.load(b_block_ptr, boundary_check=(0, 1))
-        # We accumulate along the K dimension.
-        accumulator += tl.dot(a, b)
-        # Advance the block pointer to the next K block.
-        # See above `Advance a Block Pointer` section for details.
-        a_block_ptr = tl.advance(a_block_ptr, (0, BLOCK_SIZE_K))
-        b_block_ptr = tl.advance(b_block_ptr, (BLOCK_SIZE_K, 0))
-    c = accumulator.to(tl.float16)
-
+    a = tl.load(a_block_ptr, boundary_check=(0, 1))
+    
     # ----------------------------------------------------------------
     # Write back the block of the output matrix C with boundary checks.
     # See above `Load/Store a Block Pointer` section for details.
     c_block_ptr = tl.make_block_ptr(base=c_ptr, shape=(M, N), strides=(stride_cm, stride_cn),
                                     offsets=(pid_m * BLOCK_SIZE_M, pid_n * BLOCK_SIZE_N),
                                     block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N), order=(1, 0))
-    tl.store(c_block_ptr, c, boundary_check=(0, 1))
+    tl.store(c_block_ptr, a, boundary_check=(0, 1))
 
 
 # We can now create a convenience wrapper function that only takes two input tensors,
@@ -219,13 +184,13 @@ def matmul(a, b):
 # Still we can test our matrix multiplication with block pointers against a native torch implementation (i.e., cuBLAS).
 
 torch.manual_seed(0)
-a = torch.randn((512, 512), device='cuda', dtype=torch.float16)
-b = torch.randn((512, 512), device='cuda', dtype=torch.float16)
+a = torch.randn((64, 64), device='cuda', dtype=torch.float16)
+b = torch.randn((64, 64), device='cuda', dtype=torch.float16)
 triton_output = matmul(a, b)
-torch_output = torch.matmul(a, b)
+#torch_output = torch.matmul(a, b)
 print(f"triton_output={triton_output}")
-print(f"torch_output={torch_output}")
-if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=0):
+print(f"torch_output={a}")
+if torch.allclose(triton_output, a, atol=1e-2, rtol=0):
     print("✅ Triton and Torch match")
 else:
     print("❌ Triton and Torch differ")

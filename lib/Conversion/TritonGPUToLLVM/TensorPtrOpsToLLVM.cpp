@@ -25,6 +25,21 @@
 using namespace mlir;
 using namespace mlir::triton;
 
+static CUtensorMapDataType getCUtensorMapDataType(Type ty) {
+  if (ty.isF16()) {
+    return CUtensorMapDataType::CU_TENSOR_MAP_DATA_TYPE_FLOAT16;
+  } else if (ty.isBF16()) {
+    return CUtensorMapDataType::CU_TENSOR_MAP_DATA_TYPE_BFLOAT16;
+  } else if (ty.isF32()) {
+    return CUtensorMapDataType::CU_TENSOR_MAP_DATA_TYPE_FLOAT32;
+  } else if (ty.getIntOrFloatBitWidth() == 8) {
+    return CUtensorMapDataType::CU_TENSOR_MAP_DATA_TYPE_UINT8;
+  } else {
+    llvm::report_fatal_error("Unsupported elemTy for InsertSliceAsyncV2Op");
+    return CUtensorMapDataType::CU_TENSOR_MAP_DATA_TYPE_FLOAT16;
+  }
+}
+
 struct MakeTensorPtrOpConversion
     : public ConvertTritonGPUOpToLLVMPattern<triton::MakeTensorPtrOp> {
   using ConvertTritonGPUOpToLLVMPattern<
@@ -43,23 +58,74 @@ struct MakeTensorPtrOpConversion
 
     Value smemBase = getSharedMemoryBase(op.getLoc(), rewriter, op.getResult());
     // Set descriptor
-    //PTXBuilder ptxBuilder;
-    //SmallVector<PTXBuilder::Operand *> outputsAndOperands;
-    //  outputsAndOperands.append(ptxOperands.begin(), ptxOperands.end());
-//    std::string asmStr = R("
-//    tensormap.replace.mode.global_address.shared::cta.b1024.type [$0], $1;
-//    tensormap.replace.mode.global_address.shared::cta.b1024.type [$0], " + shapes.size() - 1 + ";
-//    tensormap.replace.mode.global_address.shared::cta.b1024.type [$0], $3;
-//    ");
-//    auto &ptxInstr = *ptxBuilder.create<PTXInstr>(asmStr);
-//    ptxInstr(outputsAndOperands, /*onlyAttachMLIRArgs=*/true);
-    //auto retTy = void_ty(op.getContext());
-    //.auto res = ptxBuilder.launch(rewriter, op.getLoc(), retTy,
-     //                            /*hasSideEffects*/ true);
+    PTXBuilder ptxBuilder;
+    SmallVector<PTXBuilder::Operand *> operands;
+    std::string asmStr;
+
+    std::vector<uint32_t> boxDims;
+    auto tensorTy = result.getType()
+                        .cast<triton::PointerType>()
+                        .getPointeeType()
+                        .cast<RankedTensorType>();
+    auto tensorShape = tensorTy.getShape();
+    auto inOrder = triton::gpu::getOrder(tensorTy.getEncoding());
+
+    auto elTy = tensorTy.getElementType();
+    int rank = shapes.size();
+    auto shapePerCTA = mlir::triton::gpu::getShapePerCTA(tensorTy);
+    auto getDimOfOrder = [](ArrayRef<unsigned> order, int32_t i) {
+      auto it = std::find(order.begin(), order.end(), i);
+      assert(it != order.end());
+      return std::distance(order.begin(), it);
+    };
+    for (size_t i = 0; i < rank; ++i) {
+      auto dim = getDimOfOrder(inOrder, i);
+      boxDims.emplace_back(shapePerCTA[dim]);
+    }
+
+    operands.push_back(ptxBuilder.newOperand(smemBase, "r"));
+    operands.push_back(ptxBuilder.newOperand(base, "l"));
+    asmStr.append("tensormap.replace.mode.global_address.shared::cta.b1024.b64 "
+                  "[$0], $1;");
+    asmStr.append("tensormap.replace.mode.rank.shared::cta.b1024.b32 [$0], " +
+                  std::to_string(rank - 1) + ";");
+    for (size_t i = 0; i < rank; ++i) {
+      operands.push_back(ptxBuilder.newOperand(shapes[i], "r"));
+      asmStr.append(
+          "tensormap.replace.mode.global_dim.shared::cta.b1024.b32 [$0], " +
+          std::to_string(i) + ", $" + std::to_string(operands.size() - 1) +
+          ";");
+      operands.push_back(ptxBuilder.newOperand(strides[i], "r"));
+      asmStr.append(
+          "tensormap.replace.mode.global_stride.shared::cta.b1024.b64 [$0], " +
+          std::to_string(i) + ", $" + std::to_string(operands.size() - 1) +
+          ";");
+      asmStr.append(
+          "tensormap.replace.mode.box_dim.shared::cta.b1024.b32 [$0], " +
+          std::to_string(i) + ", " + std::to_string(boxDims[i]) + ";");
+      asmStr.append("tensormap.replace.mode.element_stride.shared::cta.b1024."
+                    "type [$0], " +
+                    std::to_string(i) + ", 1;");
+    }
+    asmStr.append(
+        "tensormap.replace.mode.elemtype.shared::cta.b1024.b32 [$0], " +
+        std::to_string(getCUtensorMapDataType(elTy)) + ";");
+    asmStr.append(
+        "tensormap.replace.mode.interleave_layout.shared::cta.b1024.b32 [$0], 0;");
+    asmStr.append(
+        "tensormap.replace.mode.swizzle_mode.shared::cta.b1024.b32 [$0], 0;");
+    asmStr.append(
+        "tensormap.replace.mode.fill_mode.shared::cta.b1024.b32 [$0], 0;");        
+
+    auto &ptxInstr = *ptxBuilder.create<PTXInstr>(asmStr);
+    ptxInstr(operands, /*onlyAttachMLIRArgs=*/true);
+    auto retTy = void_ty(op.getContext());
+    auto res = ptxBuilder.launch(rewriter, op.getLoc(), retTy,
+                                 /*hasSideEffects*/ true);
     SmallVector<Value> elems;
     for (auto offset : offsets)
       elems.push_back(offset);
-
+    elems.push_back(smemBase);
     auto newValue = getTypeConverter()->packLLElements(
         op.getLoc(), elems, rewriter, result.getType());
     rewriter.replaceOp(op, newValue);

@@ -291,6 +291,7 @@ def matmul(a, b, activation=""):
         c.stride(0), c.stride(1),  #
         ACTIVATION=activation  #
     )
+    matmul_kernel.best_config
     return c
 
 
