@@ -145,6 +145,7 @@ def matmul_kernel_with_block_pointers(
                                     offsets=(0, pid_n * BLOCK_SIZE_N), block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N),
                                     order=(1, 0))
     a = tl.load(a_block_ptr, boundary_check=(0, 1))
+    b = tl.load(b_block_ptr, boundary_check=(0, 1))
     
     # ----------------------------------------------------------------
     # Write back the block of the output matrix C with boundary checks.
@@ -152,7 +153,7 @@ def matmul_kernel_with_block_pointers(
     c_block_ptr = tl.make_block_ptr(base=c_ptr, shape=(M, N), strides=(stride_cm, stride_cn),
                                     offsets=(pid_m * BLOCK_SIZE_M, pid_n * BLOCK_SIZE_N),
                                     block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N), order=(1, 0))
-    tl.store(c_block_ptr, a, boundary_check=(0, 1))
+    tl.store(c_block_ptr, a + b, boundary_check=(0, 1))
 
 
 # We can now create a convenience wrapper function that only takes two input tensors,
@@ -186,11 +187,12 @@ def matmul(a, b):
 torch.manual_seed(0)
 a = torch.randn((64, 64), device='cuda', dtype=torch.float16)
 b = torch.randn((64, 64), device='cuda', dtype=torch.float16)
+c = a + b
 triton_output = matmul(a, b)
 #torch_output = torch.matmul(a, b)
 print(f"triton_output={triton_output}")
-print(f"torch_output={a}")
-if torch.allclose(triton_output, a, atol=1e-2, rtol=0):
+print(f"torch_output={c}")
+if torch.allclose(triton_output, c, atol=1e-2, rtol=0):
     print("✅ Triton and Torch match")
 else:
     print("❌ Triton and Torch differ")

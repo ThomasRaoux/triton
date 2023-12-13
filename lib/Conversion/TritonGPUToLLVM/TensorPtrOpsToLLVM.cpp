@@ -85,37 +85,36 @@ struct MakeTensorPtrOpConversion
 
     operands.push_back(ptxBuilder.newOperand(smemBase, "r"));
     operands.push_back(ptxBuilder.newOperand(base, "l"));
-    asmStr.append("tensormap.replace.mode.global_address.shared::cta.b1024.b64 "
-                  "[$0], $1;");
-    asmStr.append("tensormap.replace.mode.rank.shared::cta.b1024.b32 [$0], " +
-                  std::to_string(rank - 1) + ";");
+    asmStr.append("tensormap.replace.tile.global_address.shared::cta.b1024.b64 "
+                  "[$0], $1;\n\t");
+    asmStr.append("tensormap.replace.tile.rank.shared::cta.b1024.b32 [$0], " +
+                  std::to_string(rank - 1) + ";\n\t");
     for (size_t i = 0; i < rank; ++i) {
       operands.push_back(ptxBuilder.newOperand(shapes[i], "r"));
       asmStr.append(
-          "tensormap.replace.mode.global_dim.shared::cta.b1024.b32 [$0], " +
+          "tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [$0], " +
           std::to_string(i) + ", $" + std::to_string(operands.size() - 1) +
-          ";");
-      operands.push_back(ptxBuilder.newOperand(strides[i], "r"));
+          ";\n\t");
+      operands.push_back(ptxBuilder.newOperand(strides[i], "l"));
       asmStr.append(
-          "tensormap.replace.mode.global_stride.shared::cta.b1024.b64 [$0], " +
+          "tensormap.replace.tile.global_stride.shared::cta.b1024.b64 [$0], " +
           std::to_string(i) + ", $" + std::to_string(operands.size() - 1) +
-          ";");
+          ";\n\t");
       asmStr.append(
-          "tensormap.replace.mode.box_dim.shared::cta.b1024.b32 [$0], " +
-          std::to_string(i) + ", " + std::to_string(boxDims[i]) + ";");
-      asmStr.append("tensormap.replace.mode.element_stride.shared::cta.b1024."
-                    "type [$0], " +
-                    std::to_string(i) + ", 1;");
+          "tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [$0], " +
+          std::to_string(i) + ", " + std::to_string(boxDims[i]) + ";\n\t");
+      asmStr.append("tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [$0], " +
+                    std::to_string(i) + ", 1;\n\t");
     }
     asmStr.append(
-        "tensormap.replace.mode.elemtype.shared::cta.b1024.b32 [$0], " +
-        std::to_string(getCUtensorMapDataType(elTy)) + ";");
+        "tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [$0], " +
+        std::to_string(getCUtensorMapDataType(elTy)) + ";\n\t");
     asmStr.append(
-        "tensormap.replace.mode.interleave_layout.shared::cta.b1024.b32 [$0], 0;");
+        "tensormap.replace.tile.interleave_layout.shared::cta.b1024.b32 [$0], 0;\n\t");
     asmStr.append(
-        "tensormap.replace.mode.swizzle_mode.shared::cta.b1024.b32 [$0], 0;");
+        "tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [$0], 0;\n\t");
     asmStr.append(
-        "tensormap.replace.mode.fill_mode.shared::cta.b1024.b32 [$0], 0;");        
+        "tensormap.replace.tile.fill_mode.shared::cta.b1024.b32 [$0], 0;\n\t");        
 
     auto &ptxInstr = *ptxBuilder.create<PTXInstr>(asmStr);
     ptxInstr(operands, /*onlyAttachMLIRArgs=*/true);
@@ -171,7 +170,7 @@ void populateTensorPtrOpsToLLVMPatterns(
     TritonGPUToLLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     int numWarps, ModuleAxisInfoAnalysis &axisInfoAnalysis,
     ModuleAllocation &allocation, PatternBenefit benefit) {
-  patterns.add<MakeTensorPtrOpConversion>(typeConverter, benefit);
+  patterns.add<MakeTensorPtrOpConversion>(typeConverter, allocation, benefit);
   patterns.add<AdvanceOpConversion>(typeConverter, benefit);
   return;
 }

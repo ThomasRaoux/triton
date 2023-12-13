@@ -90,13 +90,13 @@ def NVGPU_NamedBarrierWaitOp : NVGPU_Op<"bar_wait", []> {
 }
 
 def NVGPU_TMALoadTiledOp : NVGPU_Op<"tma_load_tiled", [AttrSizedOperandSegments]> {
-  let arguments = (ins LLVM_PointerShared:$dst, LLVM_PointerShared:$mbarrier, LLVM_PointerGlobal:$tmaDesc, I64:$l2Desc,
+  let arguments = (ins LLVM_PointerShared:$dst, LLVM_PointerShared:$mbarrier, LLVM_PointerShared:$tmaDesc, I64:$l2Desc,
                        I1:$pred, Variadic<I32>:$coords, Optional<I16>:$mcastMask);
   let assemblyFormat = "operands attr-dict `:` type(operands)";
 }
 
 def NVGPU_TMALoadIm2colOp : NVGPU_Op<"tma_load_im2col", []> {
-  let arguments = (ins LLVM_PointerShared:$dst, LLVM_PointerShared:$mbarrier, LLVM_PointerGlobal:$tmaDesc, I64:$l2Desc, LLVM_AnyStruct:$im2colOffsets, I1:$pred, Variadic<I32>:$coords, I16Attr:$mcastMask);
+  let arguments = (ins LLVM_PointerShared:$dst, LLVM_PointerShared:$mbarrier, LLVM_PointerShared:$tmaDesc, I64:$l2Desc, LLVM_AnyStruct:$im2colOffsets, I1:$pred, Variadic<I32>:$coords, I16Attr:$mcastMask);
   let assemblyFormat = "operands attr-dict `:` type(operands)";
 }
 
@@ -191,7 +191,7 @@ def NVGPU_ClusterWaitOp : NVGPU_Op<"cluster_wait", []> {
 }
 
 def NVGPU_TMAStoreTiledOp : NVGPU_Op<"tma_store_tiled", [MemoryEffects<[MemWrite]>]> {
-  let arguments = (ins LLVM_PointerGlobal:$tmaDesc, LLVM_PointerShared:$src, I1:$pred, Variadic<I32>:$coords);
+  let arguments = (ins LLVM_PointerShared:$tmaDesc, LLVM_PointerShared:$src, I1:$pred, Variadic<I32>:$coords);
   let assemblyFormat = "operands attr-dict `:` type(operands)";
 }
 

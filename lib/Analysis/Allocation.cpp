@@ -213,7 +213,7 @@ private:
       Value result = op->getResult(0);
       const size_t kTensorMapSize = 128;
       allocation->addBuffer<BufferT::BufferKind::Explicit>(result,
-                                                           kTensorMapSize, 8);
+                                                           kTensorMapSize, 128);
     }
     if (isa<triton::nvidia_gpu::AllocMBarrierOp>(op)) {
       Value result = op->getResult(0);
