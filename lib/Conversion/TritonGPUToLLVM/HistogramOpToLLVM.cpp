@@ -23,6 +23,8 @@ computeWarpLevelHistogram(Location loc, SmallVector<Value> srcValues,
   Value zero = i32_val(0);
   int numBits = log2Int(numBins);
   int numBitsLaneId = log2Int(numThreadPerWarp);
+  // The histogram is distributed across threads, each thread owns `numBins /
+  // numThreadPerWarp` bins.
   SmallVector<Value> warpLevelHistogram(numBins / numThreadPerWarp, zero);
   for (Value value : srcValues) {
     SmallVector<Value> ballotBits;
@@ -41,20 +43,64 @@ computeWarpLevelHistogram(Location loc, SmallVector<Value> srcValues,
       mask =
           and_(mask, xor_(ballotBits[i + numBits - numBitsLaneId], updateMask));
     }
-    // at this point, 'mask' tells you which elements are in a bin owned by this thread.
-    for (int k =0; k < warpLevelHistogram.size(); k++) {
-        Value binMask = mask;
-        for (int j = 0; j < numBits - numBitsLaneId; j++) {
-            Value updateMask = i32_val(((k & (1 << j)) ? 0 : 0xffffffff));
-            binMask = and_(binMask, xor_(ballotBits[j], updateMask));
-        }
-        // at this point, 'bin_mask' tells you which elements are in the kth bin
-        // owned by this thread.
-        Value bitCount = rewriter.create<LLVM::CtPopOp>(loc, i32_ty, binMask);
-        warpLevelHistogram[k] = add(warpLevelHistogram[k], bitCount);
+    // at this point, 'mask' tells you which elements are in a bin owned by this
+    // thread.
+    for (int k = 0; k < warpLevelHistogram.size(); k++) {
+      Value binMask = mask;
+      for (int j = 0; j < numBits - numBitsLaneId; j++) {
+        Value updateMask = i32_val(((k & (1 << j)) ? 0 : 0xffffffff));
+        binMask = and_(binMask, xor_(ballotBits[j], updateMask));
+      }
+      // at this point, 'bin_mask' tells you which elements are in the kth bin
+      // owned by this thread.
+      Value bitCount = rewriter.create<LLVM::CtPopOp>(loc, i32_ty, binMask);
+      warpLevelHistogram[k] = add(warpLevelHistogram[k], bitCount);
     }
   }
   return warpLevelHistogram;
+}
+
+static void atomicAdd(Value ptr, Value val, Location loc,
+                      ConversionPatternRewriter &rewriter) {
+  rewriter.create<LLVM::AtomicRMWOp>(loc, LLVM::AtomicBinOp::add, ptr, val,
+                                     LLVM::AtomicOrdering::monotonic);
+}
+
+static SmallVector<Value> computeCrossWarpHistogram(
+    Location loc, ConversionPatternRewriter &rewriter, Value baseSharedMemPtr,
+    const SmallVector<Value> &warpLevelHistogram, int numBins,
+    int numThreadPerWarp, const SmallVector<Value> &indices, Value threadId,
+    int numWarps) {
+  SmallVector<Value> histogramValues;
+  Value laneId = and_(threadId, i32_val(numThreadPerWarp - 1));
+  // Initialize the shared memory with zeros.
+  int64_t numElementPerThread = ceil<int64_t>(numBins, numThreadPerWarp * numWarps);
+  for (int i = 0; i < numElementPerThread; ++i) {
+    Value offset = add(threadId, i32_val((i * numWarps * numThreadPerWarp)));
+    offset = urem(offset, i32_val(numBins));
+    Value sharedMemPtr =
+        gep(baseSharedMemPtr.getType(), i32_ty, baseSharedMemPtr, offset);
+    store(i32_val(0), sharedMemPtr);
+  }
+  barrier();
+  // Apply atomic add to update the histogram in shared memory.
+  for (int i = 0; i < warpLevelHistogram.size(); ++i) {
+    Value warpLevelHistogramValue = warpLevelHistogram[i];
+    Value offset =
+        add(mul(laneId, i32_val(warpLevelHistogram.size())), i32_val(i));
+    Value sharedMemPtr =
+        gep(baseSharedMemPtr.getType(), i32_ty, baseSharedMemPtr, offset);
+    atomicAdd(sharedMemPtr, warpLevelHistogramValue, loc, rewriter);
+  }
+  barrier();
+  // load the histogram to register with the right layout.
+  for (Value index : indices) {
+    Value sharedMemPtr =
+        gep(baseSharedMemPtr.getType(), i32_ty, baseSharedMemPtr, index);
+    Value val = load(i32_ty, sharedMemPtr);
+    histogramValues.push_back(val);
+  }
+  return histogramValues;
 }
 
 namespace {
@@ -78,11 +124,27 @@ public:
     // First compute a warp local histogram based on values owned by each warps.
     SmallVector<Value> warpLevelHistogram = computeWarpLevelHistogram(
         loc, srcValues, numBins, numThreadsPerWarp, threadId, rewriter);
-    
+
     // Then use atomic to update the histogram in shared memory.
+    // TODO: we could skip this for cases with num_warps=1 as long as we can
+    // generate the right layout. Currently the warp level histogram generates
+    // data in the default blocked layout.
+    Value baseSharedMemPtr =
+        getSharedMemoryBase(loc, rewriter, op.getOperation());
+    auto dstType = op.getResult().getType().cast<RankedTensorType>();
+    auto mod = op->getParentOfType<ModuleOp>();
+    int numWarps = triton::gpu::TritonGPUDialect::getNumWarps(mod);
+    Attribute dstEncoding = dstType.getEncoding();
+    auto indices = emitIndices(op.getLoc(), rewriter, dstEncoding, dstType);
+    SmallVector<Value> innerDimIndices;
+    for(int i = 0; i < indices.size(); ++i)
+      innerDimIndices.push_back(indices[i][0]);
+    SmallVector<Value> histogramValue = computeCrossWarpHistogram(
+        loc, rewriter, baseSharedMemPtr, warpLevelHistogram, numBins,
+        numThreadsPerWarp, innerDimIndices, threadId, numWarps);
 
     Value results = getTypeConverter()->packLLElements(
-        loc, warpLevelHistogram, rewriter, op.getResult().getType());
+        loc, histogramValue, rewriter, op.getResult().getType());
     rewriter.replaceOp(op, results);
     return success();
   }

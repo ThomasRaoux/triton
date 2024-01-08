@@ -244,6 +244,12 @@ private:
       unsigned bytes = helper.getScratchSizeInBytes();
       maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(op, bytes,
                                                           scratchAlignment);
+    } else if (auto histogram = dyn_cast<triton::HistogramOp>(op)) {
+      auto dstTy = histogram.getResult().getType().cast<RankedTensorType>();
+      auto bytes = dstTy.getNumElements() *
+                   std::max<int>(8, dstTy.getElementTypeBitWidth()) / 8;
+      maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(op, bytes,
+                                                          scratchAlignment);
     } else if (auto cvtLayout = dyn_cast<triton::gpu::ConvertLayoutOp>(op)) {
       auto srcTy = cvtLayout.getSrc().getType().cast<RankedTensorType>();
       auto dstTy = cvtLayout.getResult().getType().cast<RankedTensorType>();

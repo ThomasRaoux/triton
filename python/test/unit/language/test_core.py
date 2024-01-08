@@ -1874,11 +1874,12 @@ def test_histogram(device):
         tl.store(z_ptr + offset2, z)
 
     M = 512
-    N = 64
+    N = 128
+    torch.manual_seed(17)
     x = torch.randint(0, N, (M, ), device=device, dtype=torch.int32)
     z = torch.empty(N, dtype=torch.int32, device=device)
     z_torch = torch.histc(x, bins=N, min=0, max=N - 1)
-    histogram_kernel[(1,)](x, z, M=M, N=N, num_warps=1)
+    histogram_kernel[(1,)](x, z, M=M, N=N, num_warps=4)
     print(z_torch)
     print(z)
     assert (z_torch == z).all()
