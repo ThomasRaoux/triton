@@ -15,21 +15,27 @@ static int log2Int(int64_t num) { return (num > 1) ? 1 + log2Int(num / 2) : 0; }
 // the indicator functions for the bins owned by this particular thread, and
 // only popcount those.
 static SmallVector<Value>
-computeWarpLevelHistogram(Location loc, SmallVector<Value> srcValues,
-                          int numBins, int numThreadPerWarp, Value threadId,
+computeWarpLevelHistogram(Location loc, RankedTensorType srcType,
+                          SmallVector<Value>& srcValues, int numBins,
+                          int numThreadPerWarp, Value threadId,
                           ConversionPatternRewriter &rewriter) {
   assert(numBins % numThreadPerWarp == 0 &&
          "numBins must be divisible by numThreadPerWarp");
   Value zero = i32_val(0);
   int numBits = log2Int(numBins);
   int numBitsLaneId = log2Int(numThreadPerWarp);
+  unsigned numElementsPerThreads = triton::gpu::getTotalElemsPerThread(srcType);
+  unsigned numThreadWithUniqueData =
+      triton::gpu::getThreadsPerWarpWithUniqueData(srcType.getEncoding(),
+                                                   srcType.getShape())[0];
   // The histogram is distributed across threads, each thread owns `numBins /
   // numThreadPerWarp` bins.
   SmallVector<Value> warpLevelHistogram(numBins / numThreadPerWarp, zero);
-  for (Value value : srcValues) {
+  for (int i = 0; i < numElementsPerThreads; ++i) {
+    Value value = srcValues[i];
     SmallVector<Value> ballotBits;
-    for (int i = 0; i < numBits; ++i) {
-      Value bitSet = and_(value, i32_val(1 << i));
+    for (int j = 0; j < numBits; ++j) {
+      Value bitSet = and_(value, i32_val(1 << j));
       Value threadMask = i32_val(-1);
       Value bit = rewriter.create<NVVM::VoteBallotOp>(loc, i32_ty, threadMask,
                                                       icmp_ne(bitSet, zero));
@@ -51,6 +57,10 @@ computeWarpLevelHistogram(Location loc, SmallVector<Value> srcValues,
         Value updateMask = i32_val(((k & (1 << j)) ? 0 : 0xffffffff));
         binMask = and_(binMask, xor_(ballotBits[j], updateMask));
       }
+      // If not all threads have unique data, mask out the redundant ones.
+      if (numThreadWithUniqueData < numThreadPerWarp) {
+        binMask = and_(binMask, i32_val((1 << numThreadWithUniqueData) - 1));
+      }
       // at this point, 'bin_mask' tells you which elements are in the kth bin
       // owned by this thread.
       Value bitCount = rewriter.create<LLVM::CtPopOp>(loc, i32_ty, binMask);
@@ -67,11 +77,14 @@ static void atomicAdd(Value ptr, Value val, Location loc,
 }
 
 static SmallVector<Value> computeCrossWarpHistogram(
-    Location loc, ConversionPatternRewriter &rewriter, Value baseSharedMemPtr,
-    const SmallVector<Value> &warpLevelHistogram, int numBins,
-    int numThreadPerWarp, const SmallVector<Value> &indices, Value threadId,
-    int numWarps) {
+    Location loc, ConversionPatternRewriter &rewriter, RankedTensorType srcType,
+    Value baseSharedMemPtr, const SmallVector<Value> &warpLevelHistogram,
+    int numBins, int numThreadPerWarp, const SmallVector<Value> &indices,
+    Value threadId, int numWarps) {
   SmallVector<Value> histogramValues;
+  unsigned numWarpsWithUniqueData =
+      mlir::triton::gpu::getWarpsPerCTAWithUniqueData(srcType.getEncoding(),
+                                                      srcType.getShape())[0];
   Value laneId = and_(threadId, i32_val(numThreadPerWarp - 1));
   // Initialize the shared memory with zeros.
   int64_t numElementPerThread = ceil<int64_t>(numBins, numThreadPerWarp * numWarps);
@@ -83,6 +96,18 @@ static SmallVector<Value> computeCrossWarpHistogram(
     store(i32_val(0), sharedMemPtr);
   }
   barrier();
+  Block *afterAtomics = nullptr;
+  // If some warps have replicated data we need to skip those warps when accumulating.
+  if (numWarpsWithUniqueData < numWarps) {
+    Block *currentBlock = rewriter.getInsertionBlock();
+    afterAtomics =
+        rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
+    Block* atomicBlock = rewriter.createBlock(afterAtomics);
+    rewriter.setInsertionPointToEnd(currentBlock);
+    Value cond = icmp_ult(threadId, i32_val(numWarpsWithUniqueData * numThreadPerWarp));
+    rewriter.create<LLVM::CondBrOp>(loc, cond, atomicBlock, afterAtomics);
+    rewriter.setInsertionPointToStart(atomicBlock);
+  }
   // Apply atomic add to update the histogram in shared memory.
   for (int i = 0; i < warpLevelHistogram.size(); ++i) {
     Value warpLevelHistogramValue = warpLevelHistogram[i];
@@ -91,6 +116,10 @@ static SmallVector<Value> computeCrossWarpHistogram(
     Value sharedMemPtr =
         gep(baseSharedMemPtr.getType(), i32_ty, baseSharedMemPtr, offset);
     atomicAdd(sharedMemPtr, warpLevelHistogramValue, loc, rewriter);
+  }
+  if (afterAtomics) {
+    rewriter.create<LLVM::BrOp>(loc, afterAtomics);
+    rewriter.setInsertionPointToStart(afterAtomics);
   }
   barrier();
   // load the histogram to register with the right layout.
@@ -123,9 +152,10 @@ public:
     // Pad out the bins so that we have at least one bin per thread within a warp.
     numBins = std::max(numBins, numThreadsPerWarp);
     Value threadId = getThreadId(rewriter, loc);
+    auto srcType = op.getInput().getType().cast<RankedTensorType>();
     // First compute a warp local histogram based on values owned by each warps.
     SmallVector<Value> warpLevelHistogram = computeWarpLevelHistogram(
-        loc, srcValues, numBins, numThreadsPerWarp, threadId, rewriter);
+        loc, srcType, srcValues, numBins, numThreadsPerWarp, threadId, rewriter);
 
     // Then use atomic to update the histogram in shared memory.
     // TODO: we could skip this for cases with num_warps=1 as long as we can
@@ -142,7 +172,7 @@ public:
     for(int i = 0; i < indices.size(); ++i)
       innerDimIndices.push_back(indices[i][0]);
     SmallVector<Value> histogramValue = computeCrossWarpHistogram(
-        loc, rewriter, baseSharedMemPtr, warpLevelHistogram, numBins,
+        loc, rewriter, srcType, baseSharedMemPtr, warpLevelHistogram, numBins,
         numThreadsPerWarp, innerDimIndices, threadId, numWarps);
 
     Value results = getTypeConverter()->packLLElements(

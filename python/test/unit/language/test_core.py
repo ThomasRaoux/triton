@@ -1864,7 +1864,7 @@ scan_layouts = [
 # test histogram
 # ---------------
 
-@pytest.mark.parametrize("M, N", [[2048, 2], [1024, 8], [1024, 128], [256, 512]])
+@pytest.mark.parametrize("M, N", [[2048, 2], [1024, 8], [1024, 128], [256, 512], [32, 512], [8, 512], [8, 2]])
 def test_histogram(M, N, device):
     @triton.jit
     def histogram_kernel(x_ptr, z_ptr, M: tl.constexpr, N: tl.constexpr):
