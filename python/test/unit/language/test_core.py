@@ -1863,8 +1863,9 @@ scan_layouts = [
 # ---------------
 # test histogram
 # ---------------
-def test_histogram(device):
 
+@pytest.mark.parametrize("M, N", [[2048, 2], [1024, 8], [1024, 128], [256, 512]])
+def test_histogram(M, N, device):
     @triton.jit
     def histogram_kernel(x_ptr, z_ptr, M: tl.constexpr, N: tl.constexpr):
         offset1 = tl.arange(0, M)
@@ -1873,13 +1874,11 @@ def test_histogram(device):
         z = tl.histogram(x, N)
         tl.store(z_ptr + offset2, z)
 
-    M = 512
-    N = 128
     torch.manual_seed(17)
     x = torch.randint(0, N, (M, ), device=device, dtype=torch.int32)
     z = torch.empty(N, dtype=torch.int32, device=device)
     z_torch = torch.histc(x, bins=N, min=0, max=N - 1)
-    histogram_kernel[(1,)](x, z, M=M, N=N, num_warps=4)
+    histogram_kernel[(1,)](x, z, M=M, N=N)
     print(z_torch)
     print(z)
     assert (z_torch == z).all()

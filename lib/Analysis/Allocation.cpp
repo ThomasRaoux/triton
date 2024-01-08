@@ -246,7 +246,9 @@ private:
                                                           scratchAlignment);
     } else if (auto histogram = dyn_cast<triton::HistogramOp>(op)) {
       auto dstTy = histogram.getResult().getType().cast<RankedTensorType>();
-      auto bytes = dstTy.getNumElements() *
+      int threadsPerWarp = triton::gpu::TritonGPUDialect::getThreadsPerWarp(
+          op->getParentOfType<ModuleOp>());
+      auto bytes = std::max<int>(dstTy.getNumElements(), threadsPerWarp) *
                    std::max<int>(8, dstTy.getElementTypeBitWidth()) / 8;
       maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(op, bytes,
                                                           scratchAlignment);

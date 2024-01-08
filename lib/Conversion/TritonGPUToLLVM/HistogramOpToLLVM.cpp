@@ -120,6 +120,8 @@ public:
     int numBins =
         op.getResult().getType().cast<RankedTensorType>().getDimSize(0);
     int numThreadsPerWarp = 32;
+    // Pad out the bins so that we have at least one bin per thread within a warp.
+    numBins = std::max(numBins, numThreadsPerWarp);
     Value threadId = getThreadId(rewriter, loc);
     // First compute a warp local histogram based on values owned by each warps.
     SmallVector<Value> warpLevelHistogram = computeWarpLevelHistogram(
