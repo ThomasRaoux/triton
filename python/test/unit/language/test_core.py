@@ -1879,8 +1879,6 @@ def test_histogram(M, N, device):
     z = torch.empty(N, dtype=torch.int32, device=device)
     z_torch = torch.histc(x, bins=N, min=0, max=N - 1)
     histogram_kernel[(1,)](x, z, M=M, N=N)
-    print(z_torch)
-    print(z)
     assert (z_torch == z).all()
 
 
