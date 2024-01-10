@@ -1047,7 +1047,7 @@ public:
           "}";
     } else {
       ptxAsm = "{\n"
-               ".reg .u64 a<5>;      \n"
+               ".reg .u32 a<5>;      \n"
                "div.u32 a0, $2, 4; \n"          // iterOfCol = udiv(elemIdx,
                                                 // i32_val(4))
                "and.b32 a1, $1, 0xf; \n"        // myRow = and_(threadId,
@@ -1059,7 +1059,7 @@ public:
                                                 // i32_val(0x1))
                "mul.lo.u32 a2, a2, 8; \n"       // myCol = mul(myCol,
                                                 // i32_val(8))
-               "mul.u32 a3, a1, #rowStride; \n" // offset = myRow * rowStride
+               "mul.lo.u32 a3, a1, #rowStride; \n" // offset = myRow * rowStride
                "mad.lo.u32 $0, a2, 2, a3; \n"   // result = add(mul(myCol,
                                                 // i32_val(2)), offset)
                "}\n";

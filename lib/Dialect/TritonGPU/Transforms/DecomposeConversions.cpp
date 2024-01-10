@@ -62,6 +62,36 @@ public:
       cvtOp.replaceAllUsesWith(newConvert.getResult());
       cvtOp.erase();
     });
+
+    // FIX by moving into patterns.
+    //mod.walk([&](triton::gpu::ConvertLayoutOp cvtOp) -> void {
+    //  OpBuilder builder(cvtOp);
+    //  auto srcType = cvtOp.getOperand().getType().cast<RankedTensorType>();
+    //  auto dstType = cvtOp.getType().cast<RankedTensorType>();
+    //  auto srcEncoding = srcType.getEncoding();
+    //  auto mmaEncoding =
+    //      srcEncoding.dyn_cast<triton::gpu::NvidiaMmaEncodingAttr>();
+    //  if (!mmaEncoding)
+    //    return;
+    //  if (!mmaEncoding.isHopper())
+    //    return;
+    //  auto blockEncoding =
+    //      dstType.getEncoding().dyn_cast<triton::gpu::BlockedEncodingAttr>();
+    //  if (!blockEncoding)
+    //    return;
+//
+    //  auto tmpType = RankedTensorType::get(
+    //      dstType.getShape(), dstType.getElementType(),
+    //      triton::gpu::SharedEncodingAttr::get(mod.getContext(), 1, 1, 1,
+    //                                           blockEncoding.getOrder(),
+    //                                           blockEncoding.getCTALayout()));
+    //  auto tmp = builder.create<triton::gpu::ConvertLayoutOp>(
+    //      cvtOp.getLoc(), tmpType, cvtOp.getOperand());
+    //  auto newConvert = builder.create<triton::gpu::ConvertLayoutOp>(
+    //      cvtOp.getLoc(), dstType, tmp);
+    //  cvtOp.replaceAllUsesWith(newConvert.getResult());
+    //  cvtOp.erase();
+    //});
   }
 };
 
