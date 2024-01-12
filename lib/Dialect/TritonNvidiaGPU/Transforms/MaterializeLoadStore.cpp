@@ -105,8 +105,6 @@ void MaterializeLoadStorePass::materializeLoadTilePtr(mlir::triton::LoadOp load,
                                                       Value mBarrier) {
   if (computeCapability < 90)
     return;
-  if (!::triton::tools::getBoolEnv("ENABLE_TMA"))
-    return;
   auto loc = load.getLoc();
   OpBuilder b(load);
   auto loadTy = load.getType().dyn_cast<RankedTensorType>();
@@ -160,7 +158,7 @@ void MaterializeLoadStorePass::materializeLoadTilePtr(mlir::triton::LoadOp load,
 
 void MaterializeLoadStorePass::materializeStoreTilePtr(
     mlir::triton::StoreOp store) {
-  if (computeCapability < 90 || !::triton::tools::getBoolEnv("ENABLE_TMA"))
+  if (computeCapability < 90)
     return;
   auto loc = store.getLoc();
   OpBuilder builder(store);
@@ -218,7 +216,7 @@ void MaterializeLoadStorePass::materializeStoreTilePtr(
 
 void MaterializeLoadStorePass::immutableMbarrierAlloc(Operation *entryOp,
                                                       unsigned loadNum) {
-  if (computeCapability < 90 || !::triton::tools::getBoolEnv("ENABLE_TMA"))
+  if (computeCapability < 90)
     return;
   OpBuilder builder(entryOp);
   Location loc = entryOp->getLoc();

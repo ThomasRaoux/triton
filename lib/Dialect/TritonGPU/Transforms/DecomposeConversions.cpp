@@ -62,6 +62,32 @@ public:
       cvtOp.replaceAllUsesWith(newConvert.getResult());
       cvtOp.erase();
     });
+
+    mod.walk([&](triton::StoreOp storeOp) -> void {
+      OpBuilder builder(storeOp);
+      auto cvtSrc =
+          storeOp.getValue().getDefiningOp<triton::gpu::ConvertLayoutOp>();
+      if (!cvtSrc)
+        return;
+      auto storeTy = storeOp.getValue().getType().cast<RankedTensorType>();
+     // if (storeTy.getElementType().getIntOrFloatBitWidth() != 16)
+     //   return;
+      Location loc = storeOp.getLoc();
+      auto encoding =
+          cvtSrc.getSrc().getType().cast<RankedTensorType>().getEncoding();
+      auto order = triton::gpu::getOrder(encoding);
+      auto ctaLayout = triton::gpu::getCTALayout(encoding);
+      auto sharedEncoding = triton::gpu::SharedEncodingAttr::get(
+          mod.getContext(), 1, 1, 1, order, ctaLayout);
+      auto tmpTy = RankedTensorType::get(
+          storeTy.getShape(), storeTy.getElementType(), sharedEncoding);
+      Value cvt = builder.create<triton::gpu::ConvertLayoutOp>(
+          loc, tmpTy, cvtSrc.getOperand());
+      builder.create<triton::nvidia_gpu::StoreAsyncOp>(loc, storeOp.getPtr(),
+                                                       cvt);
+      builder.create<mlir::triton::gpu::AsyncBulkCommitGroupOp>(loc);
+      builder.create<mlir::triton::gpu::AsyncBulkWaitOp>(loc, 0);
+    });
   }
 };
 
