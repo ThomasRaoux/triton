@@ -61,6 +61,8 @@ public:
     // sink conversion after the last dealloc
     // before the first use ancestor in its block
     m.walk([&](triton::gpu::ConvertLayoutOp op) {
+      if(op->use_empty())
+        return;
       auto curr = mlir::Block::iterator(op);
       for (; &*curr != getFirstUse(op); curr++)
         if (isa<triton::gpu::DeallocTensorOp>(&*curr))

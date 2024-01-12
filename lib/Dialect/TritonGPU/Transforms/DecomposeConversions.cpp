@@ -27,6 +27,10 @@ class TritonGPUDecomposeConversionsPass
 public:
   TritonGPUDecomposeConversionsPass() = default;
 
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<triton::nvidia_gpu::TritonNvidiaGPUDialect>();
+  }
+
   void runOnOperation() override {
     ModuleOp mod = getOperation();
     mod.walk([&](triton::gpu::ConvertLayoutOp cvtOp) -> void {
@@ -63,6 +67,7 @@ public:
       cvtOp.erase();
     });
 
+    SmallVector<Operation *> toErase;
     mod.walk([&](triton::StoreOp storeOp) -> void {
       OpBuilder builder(storeOp);
       auto cvtSrc =
@@ -87,7 +92,10 @@ public:
                                                        cvt);
       builder.create<mlir::triton::gpu::AsyncBulkCommitGroupOp>(loc);
       builder.create<mlir::triton::gpu::AsyncBulkWaitOp>(loc, 0);
+      toErase.push_back(storeOp);
     });
+    for (auto op : toErase)
+      op->erase();
   }
 };
 

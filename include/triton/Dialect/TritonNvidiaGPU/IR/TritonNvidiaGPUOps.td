@@ -296,7 +296,7 @@ def TTNG_DotWaitOp : TTNG_Op<"dot_wait", [DeclareOpInterfaceMethods<InferTypeOpI
 def TTNG_StoreAsyncTMAOp : TTNG_Op<"store_async_tma",
                               [MemoryEffects<[MemWrite]>]> {
   let summary = "store asynchronous by a tensor pointer";
-  let arguments = (ins TT_TensorPtr:$dst, TT_Tensor:$src,
+  let arguments = (ins TT_PtrTensor:$dst, TT_Tensor:$src,
                        DefaultValuedAttr<TT_CacheModifierAttr, "triton::CacheModifier::NONE">:$cache);
   let assemblyFormat = "operands attr-dict `:` type(operands)";
 }
