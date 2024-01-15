@@ -920,6 +920,135 @@ private:
   const TensorPtrMapT *tensorPtrMap;
 };
 
+struct StoreAsyncOpConversion
+    : public ConvertTritonGPUOpToLLVMPattern<triton::nvidia_gpu::StoreAsyncOp>,
+      LoadStoreConversionBase {
+  using ConvertTritonGPUOpToLLVMPattern<
+      triton::nvidia_gpu::StoreAsyncTMAOp>::ConvertTritonGPUOpToLLVMPattern;
+
+  StoreAsyncOpConversion(TritonGPUToLLVMTypeConverter &converter,
+                         ModuleAllocation &allocation,
+                         ModuleAxisInfoAnalysis &axisAnalysisPass,
+                         PatternBenefit benefit)
+      : ConvertTritonGPUOpToLLVMPattern<triton::nvidia_gpu::StoreAsyncOp>(
+            converter, allocation, benefit),
+        LoadStoreConversionBase(axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::nvidia_gpu::StoreAsyncOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value ptr = op.getDst();
+    Value src = op.getSrc();
+    Location loc = op.getLoc();
+    Value llPtr = adaptor.getDst();
+    Value llShared = adaptor.getSrc();
+    auto elemTy = src.getType().cast<RankedTensorType>().getElementType();
+    auto smemObj =
+        getSharedMemoryObjectFromStruct(loc, llShared, elemTy, rewriter);
+
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    unsigned vec = getVectorSize(ptr);
+    unsigned elemsPerThread = getTotalElemsPerThread(ptr.getType());
+
+    auto ptrElems = getTypeConverter()->unpackLLElements(loc, llPtr, rewriter);
+    auto sharedPtrElems =
+        getTypeConverter()->unpackLLElements(loc, llShared, rewriter);
+    assert(ptrElems.size() == valueElems.size());
+
+    // Determine the vectorization size
+    SmallVector<Value> maskElems;
+    if (llMask) {
+      Value mask = op.getMask();
+      maskElems = getTypeConverter()->unpackLLElements(loc, llMask, rewriter);
+      assert(valueElems.size() == maskElems.size());
+
+      unsigned maskAlign = getMaskAlignment(mask);
+      vec = std::min(vec, maskAlign);
+    }
+
+    Value mask = getMask(valueTy, rewriter, loc);
+    const size_t dtsize =
+        std::max<int>(1, valueElemTy.getIntOrFloatBitWidth() / 8);
+    const size_t valueElemNBits = dtsize * 8;
+
+    const int numVecs = elemsPerThread / vec;
+    for (size_t vecStart = 0; vecStart < elemsPerThread; vecStart += vec) {
+      // TODO: optimization when ptr is AddPtr with constant offset
+      size_t in_off = 0;
+
+      const size_t maxWordWidth = std::max<size_t>(32, valueElemNBits);
+      const size_t totalWidth = valueElemNBits * vec;
+      const size_t width = std::min(totalWidth, maxWordWidth);
+      const size_t nWords = std::max<size_t>(1, totalWidth / width);
+      const size_t wordNElems = width / valueElemNBits;
+      assert(wordNElems * nWords * numVecs == elemsPerThread);
+
+      // TODO(Superjomn) Add cache policy fields to StoreOp.
+      // TODO(Superjomn) Deal with cache policy here.
+
+      Type valArgTy = IntegerType::get(ctx, width);
+      auto wordTy = vec_ty(valueElemTy, wordNElems);
+
+      SmallVector<std::pair<Value, std::string>> asmArgs;
+      for (size_t wordIdx = 0; wordIdx < nWords; ++wordIdx) {
+        // llWord is a width-len composition
+        Value llWord = undef(wordTy);
+        // Insert each value element to the composition
+        for (size_t elemIdx = 0; elemIdx < wordNElems; ++elemIdx) {
+          const size_t elemOffset = vecStart + wordIdx * wordNElems + elemIdx;
+          assert(elemOffset < valueElems.size());
+          Value elem = valueElems[elemOffset];
+          if (elem.getType().isInteger(1))
+            elem = sext(i8_ty, elem);
+          elem = bitcast(elem, valueElemTy);
+
+          llWord = insert_element(wordTy, llWord, elem, i32_val(elemIdx));
+        }
+        llWord = bitcast(llWord, valArgTy);
+        std::string constraint =
+            (width == 64) ? "l" : ((width == 32) ? "r" : "c");
+        asmArgs.emplace_back(llWord, constraint);
+      }
+
+      // Prepare the PTX inline asm.
+      PTXBuilder ptxBuilder;
+      auto *asmArgList = ptxBuilder.newListOperand(asmArgs);
+
+      Value maskVal = llMask ? and_(mask, maskElems[vecStart]) : mask;
+
+      auto *asmAddr =
+          ptxBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
+
+      auto &ptxStoreInstr =
+          ptxBuilder.create<>("st")
+              ->global()
+              .o("wb", op.getCache() == triton::CacheModifier::WB)
+              .o("cg", op.getCache() == triton::CacheModifier::CG)
+              .o("cs", op.getCache() == triton::CacheModifier::CS)
+              .o("wt", op.getCache() == triton::CacheModifier::WT)
+              .o("L1::evict_first",
+                 op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
+              .o("L1::evict_last",
+                 op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
+              .v(nWords)
+              .b(width);
+      ptxStoreInstr(asmAddr, asmArgList).predicate(maskVal, "b");
+
+      Type boolTy = getTypeConverter()->convertType(rewriter.getIntegerType(1));
+      llvm::SmallVector<Type> argTys({boolTy, ptr.getType()});
+      argTys.insert(argTys.end(), nWords, valArgTy);
+
+      auto asmReturnTy = void_ty(ctx);
+
+      ptxBuilder.launch(rewriter, loc, asmReturnTy);
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 namespace {
 void createBarrier(ConversionPatternRewriter &rewriter, Location loc,
                    int numCTAs) {
@@ -1838,4 +1967,5 @@ void mlir::triton::populateLoadStoreOpToLLVMPatterns(
                                            tmaMetadata, tensorPtrMap, benefit);
   patterns.add<StoreAsyncTMAOpConversion>(typeConverter, allocation,
                                           tmaMetadata, tensorPtrMap, benefit);
+  patterns.add<StoreAsyncOpConversion>(typeConverter, allocation, axisInfoAnalysis, benefit);
 }
