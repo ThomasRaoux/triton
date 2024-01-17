@@ -857,11 +857,21 @@ private:
     int32_t elemSize = elemTy.getIntOrFloatBitWidth();
     auto mmaLayout = srcLayout.dyn_cast<NvidiaMmaEncodingAttr>();
     unsigned numElems = triton::gpu::getTotalElemsPerThread(srcTy);
-    auto dstStrides =
-        getStridesFromShapeAndOrder(dstShapePerCTA, outOrd, loc, rewriter);
-    auto srcIndices = emitIndices(loc, rewriter, srcLayout, srcTy, false);
-    storeDistributedToShared(src, adaptor.getSrc(), dstStrides, srcIndices, dst,
-                             smemBase, elemTy, loc, rewriter);
+    if (mmaLayout && mmaLayout.isHopper() && elemSize == 16 &&
+        inOrd == outOrd && numElems >= 8) {
+      SmallVector<unsigned> srcShape;
+      for (int64_t dim : triton::gpu::getShapePerCTA(srcTy))
+        srcShape.push_back((unsigned)dim);
+      storeDistributedToSharedWithStMatrix(
+          src.getType().cast<RankedTensorType>(), adaptor.getSrc(), smemBase,
+            srcShape, srcShape, loc, rewriter);
+    } else {
+      auto dstStrides =
+          getStridesFromShapeAndOrder(dstShapePerCTA, outOrd, loc, rewriter);
+      auto srcIndices = emitIndices(loc, rewriter, srcLayout, srcTy, false);
+      storeDistributedToShared(src, adaptor.getSrc(), dstStrides, srcIndices,
+                               dst, smemBase, elemTy, loc, rewriter);
+    }
     auto smemObj = SharedMemoryObject(smemBase, elemTy, dstShapePerCTA, outOrd,
                                       loc, rewriter);
     auto retVal = getStructFromSharedMemoryObject(loc, smemObj, rewriter);

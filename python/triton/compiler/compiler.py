@@ -1,17 +1,9 @@
 from __future__ import annotations
 import hashlib
 import json
-<<<<<<< HEAD
 from .._C.libtriton import get_env_vars, ir
 from ..backends import backends
 from .. import __version__
-=======
-import os
-
-from .._C.libtriton.triton import (get_env_vars, ir)
-# from ..runtime import driver, jit, JITFunction
-# TODO: runtime.errors
->>>>>>> afe01131b ([FRONTEND] Add back kernel override instrumentation)
 from ..runtime.autotuner import OutOfResources
 from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager
 from ..runtime.driver import driver

@@ -983,7 +983,7 @@ struct StoreAsyncOpConversion
       auto *size = ptxBuilder.newConstantOperand((int64_t)vec * dtsize);
       auto &ptxStoreInstr =
           *ptxBuilder.create<>("cp.async.bulk.global.shared::cta.bulk_group");
-      ptxStoreInstr(sharedAddr, globalAddr, size);
+      ptxStoreInstr(globalAddr, sharedAddr, size);
       auto asmReturnTy = void_ty(ctx);
       ptxBuilder.launch(rewriter, loc, asmReturnTy);
     }
