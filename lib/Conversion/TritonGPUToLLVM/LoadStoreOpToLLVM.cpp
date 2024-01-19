@@ -953,37 +953,62 @@ struct StoreAsyncOpConversion
 
     auto srcTensorType = ptr.getType().cast<RankedTensorType>();
     auto srcEncoding = srcTensorType.getEncoding();
+    auto order = triton::gpu::getOrder(srcEncoding);
+
+    auto uniqueContigPerThread =
+      triton::gpu::getUniqueContigPerThread(srcEncoding, srcTensorType.getShape());
+    unsigned innerDimSizePerThread = uniqueContigPerThread[order[0]];
+    unsigned innerDimThreadsPerWarp = triton::gpu::getThreadsPerWarp(srcEncoding)[order[0]];
+    unsigned contiguity = axisAnalysisPass.getAxisInfo(ptr)->getContiguity(order[0]);
+    unsigned warpContiguity = std::min(contiguity, innerDimSizePerThread * innerDimThreadsPerWarp);
+
+
     auto ptrElems = getTypeConverter()->unpackLLElements(loc, llPtr, rewriter);
-    auto indices = emitIndices(loc, rewriter, srcEncoding, srcTensorType);
-    assert(indices.size() == ptrElems.size());
+    Value warpId = udiv(getThreadId(rewriter, loc), i32_val(32));
+    Value laneId = urem(getThreadId(rewriter, loc), i32_val(32));
+    Value isLane0 = icmp_eq(laneId, i32_val(0));
     const size_t dtsize =
         std::max<int>(1, elemTy.getIntOrFloatBitWidth() / 8);
-    const size_t valueElemNBits = dtsize * 8;
-    const int numVecs = elemsPerThread / vec;
-    const size_t width = valueElemNBits * vec;
-    const size_t wordNElems = width / valueElemNBits;
-    assert(width % 16 == 0);
+    int numWarps = triton::gpu::getNumWarpsPerCTA(srcEncoding);
 
-    for (size_t vecStart = 0; vecStart < elemsPerThread; vecStart += vec) {
+    rewriter.create<triton::nvgpu::FenceAsyncSharedOp>(loc, 0);
+
+    unsigned blockId = 0;
+    for (size_t vecStart = 0; vecStart < elemsPerThread; vecStart += innerDimSizePerThread) {
       size_t in_off = 0;
-      SmallVector<Value>& index = indices[vecStart];
+      
       Value sharedOffset = i32_val(0);
-      for (size_t i = 0; i < index.size(); ++i) {
-        sharedOffset = add(sharedOffset, mul(index[i], smemObj.strides[i]));
-      }
+
+      sharedOffset =
+          add(sharedOffset, mul(add(warpId, i32_val(blockId++ * numWarps)),
+                                add(smemObj.strides[0], i32_val(8))));
+      //    for (size_t i = 0; i < index.size(); ++i) {
+      //      sharedOffset = add(sharedOffset, mul(index[i],
+      //      smemObj.strides[i]));
+      //    }
       Value sharedPtr =
           gep(ptr_ty(ctx, 3), getTypeConverter()->convertType(elemTy),
               smemObj.base, sharedOffset);
       // Prepare the PTX inline asm.
       PTXBuilder ptxBuilder;
+    //  sharedPtr = ptrtoint(i32_ty, sharedPtr);
+    //  sharedPtr = mlir::LLVM::shflIdxSync(loc, rewriter, sharedPtr, 0);
+    //  sharedPtr = inttoptr(ptr_ty(ctx, 3), sharedPtr);
+
       auto *sharedAddr = 
         ptxBuilder.newAddrOperand(sharedPtr, "r", in_off);
+
+      Value globalPtr = ptrElems[vecStart];
+    //  globalPtr = ptrtoint(i64_ty, globalPtr);
+    //  globalPtr = mlir::LLVM::shflIdxSync(loc, rewriter, globalPtr, 0);
+    //  globalPtr = inttoptr(ptr_ty(ctx, 1), globalPtr);
+
       auto *globalAddr =
-          ptxBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
-      auto *size = ptxBuilder.newConstantOperand((int64_t)vec * dtsize);
+          ptxBuilder.newAddrOperand(globalPtr, "l", in_off);
+      auto *size = ptxBuilder.newConstantOperand((int64_t)warpContiguity * dtsize);
       auto &ptxStoreInstr =
           *ptxBuilder.create<>("cp.async.bulk.global.shared::cta.bulk_group");
-      ptxStoreInstr(globalAddr, sharedAddr, size);
+      ptxStoreInstr(globalAddr, sharedAddr, size).predicate(isLane0);
       auto asmReturnTy = void_ty(ctx);
       ptxBuilder.launch(rewriter, loc, asmReturnTy);
     }

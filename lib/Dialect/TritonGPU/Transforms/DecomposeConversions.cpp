@@ -88,6 +88,23 @@ public:
           storeTy.getShape(), storeTy.getElementType(), sharedEncoding);
       Value cvt = builder.create<triton::gpu::ConvertLayoutOp>(
           loc, tmpTy, cvtSrc.getOperand());
+     // auto ptrTy = storeOp.getPtr().getType().cast<RankedTensorType>();
+//
+     // int numWarps = triton::gpu::getNumWarpsPerCTA(encoding);
+     // std::array<unsigned, 2> sizePerThreads = {1, (unsigned)ptrTy.getShape()[1]};
+     // std::array<unsigned, 2> threadsPerWarp = {1, 32};
+     // std::array<unsigned, 2> warpsPerThreads = {(unsigned)numWarps, 1};
+     // auto newPtrEncoding = triton::gpu::BlockedEncodingAttr::get(
+     //     mod.getContext(), sizePerThreads, threadsPerWarp, warpsPerThreads,
+     //     order, ctaLayout);
+     // auto cvtPtrTy = RankedTensorType::get(
+     //     ptrTy.getShape(), ptrTy.getElementType(), newPtrEncoding);
+     // Value cvtPtr = builder.create<triton::gpu::ConvertLayoutOp>(
+     //     loc, cvtPtrTy, storeOp.getPtr());          
+     // builder.create<triton::nvidia_gpu::StoreAsyncOp>(loc, cvtPtr,
+     //                                                  cvt);
+//
+
       builder.create<triton::nvidia_gpu::StoreAsyncOp>(loc, storeOp.getPtr(),
                                                        cvt);
       builder.create<mlir::triton::gpu::AsyncBulkCommitGroupOp>(loc);

@@ -198,10 +198,23 @@ private:
     size_t kAlignment = 8;
     for (Value result : op->getResults()) {
       if (triton::gpu::hasSharedEncoding(result)) {
+
+        bool padd = false;
+        // hack padding
+        if (auto cvt = dyn_cast<triton::gpu::ConvertLayoutOp>(op)) {
+          auto srcTy = cvt.getSrc().getType().cast<RankedTensorType>();
+          if (srcTy.getEncoding().isa<NvidiaMmaEncodingAttr>())
+            padd = true;
+        }
+
+
         // Bytes could be a different value once we support padding or other
         // allocation policies.
         auto tensorType = result.getType().dyn_cast<RankedTensorType>();
+        auto order = getOrder(tensorType.getEncoding());
         auto shapePerCTA = triton::gpu::getShapePerCTA(tensorType);
+        if (padd)
+          shapePerCTA[order[0]] += 8;
         auto bytes = product<int64_t>(shapePerCTA) *
                      tensorType.getElementTypeBitWidth() / 8;
 

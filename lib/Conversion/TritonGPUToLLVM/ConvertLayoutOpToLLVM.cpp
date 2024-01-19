@@ -862,9 +862,11 @@ private:
       SmallVector<unsigned> srcShape;
       for (int64_t dim : triton::gpu::getShapePerCTA(srcTy))
         srcShape.push_back((unsigned)dim);
+      SmallVector<unsigned> paddedShape = srcShape;
+      paddedShape[1] += 8;
       storeDistributedToSharedWithStMatrix(
           src.getType().cast<RankedTensorType>(), adaptor.getSrc(), smemBase,
-            srcShape, srcShape, loc, rewriter);
+          paddedShape, srcShape, loc, rewriter);
     } else {
       auto dstStrides =
           getStridesFromShapeAndOrder(dstShapePerCTA, outOrd, loc, rewriter);
