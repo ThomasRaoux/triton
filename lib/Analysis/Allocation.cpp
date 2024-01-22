@@ -214,7 +214,7 @@ private:
         auto order = getOrder(tensorType.getEncoding());
         auto shapePerCTA = triton::gpu::getShapePerCTA(tensorType);
         if (padd)
-          shapePerCTA[order[0]] += 8;
+          shapePerCTA[order[0]] += 16;
         auto bytes = product<int64_t>(shapePerCTA) *
                      tensorType.getElementTypeBitWidth() / 8;
 

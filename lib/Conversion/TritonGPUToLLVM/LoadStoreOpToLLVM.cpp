@@ -965,6 +965,7 @@ struct StoreAsyncOpConversion
 
     auto ptrElems = getTypeConverter()->unpackLLElements(loc, llPtr, rewriter);
     Value warpId = udiv(getThreadId(rewriter, loc), i32_val(32));
+    warpId = mlir::LLVM::shflIdxSync(loc, rewriter, warpId, 0);
     Value laneId = urem(getThreadId(rewriter, loc), i32_val(32));
     Value isLane0 = icmp_eq(laneId, i32_val(0));
     const size_t dtsize =
@@ -974,14 +975,20 @@ struct StoreAsyncOpConversion
     rewriter.create<triton::nvgpu::FenceAsyncSharedOp>(loc, 0);
 
     unsigned blockId = 0;
+    Value globalAddrBase = ptrElems[0];
+
+    globalAddrBase = ptrtoint(i64_ty, globalAddrBase);
+    globalAddrBase = mlir::LLVM::shflIdxSync(loc, rewriter, globalAddrBase, 0);
+    globalAddrBase = inttoptr(ptr_ty(ctx, 1), globalAddrBase);
+
     for (size_t vecStart = 0; vecStart < elemsPerThread; vecStart += innerDimSizePerThread) {
       size_t in_off = 0;
       
       Value sharedOffset = i32_val(0);
 
       sharedOffset =
-          add(sharedOffset, mul(add(warpId, i32_val(blockId++ * numWarps)),
-                                add(smemObj.strides[0], i32_val(8))));
+          add(sharedOffset, mul(add(warpId, i32_val(blockId * numWarps)),
+                                add(smemObj.strides[0], i32_val(16))));
       //    for (size_t i = 0; i < index.size(); ++i) {
       //      sharedOffset = add(sharedOffset, mul(index[i],
       //      smemObj.strides[i]));
@@ -998,11 +1005,19 @@ struct StoreAsyncOpConversion
       auto *sharedAddr = 
         ptxBuilder.newAddrOperand(sharedPtr, "r", in_off);
 
-      Value globalPtr = ptrElems[vecStart];
-    //  globalPtr = ptrtoint(i64_ty, globalPtr);
-    //  globalPtr = mlir::LLVM::shflIdxSync(loc, rewriter, globalPtr, 0);
-    //  globalPtr = inttoptr(ptr_ty(ctx, 1), globalPtr);
+      //Value globalPtr = ptrElems[vecStart];
+      //globalPtr = ptrtoint(i64_ty, globalPtr);
+      //globalPtr = mlir::LLVM::shflIdxSync(loc, rewriter, globalPtr, 0);
+      //globalPtr = inttoptr(ptr_ty(ctx, 1), globalPtr);
 
+      Value globalOffset = i32_val(blockId * numWarps * 4096);
+
+      Value globalPtr =
+          gep(ptr_ty(ctx, 1), getTypeConverter()->convertType(elemTy),
+              globalAddrBase, globalOffset);
+
+
+      blockId++;
       auto *globalAddr =
           ptxBuilder.newAddrOperand(globalPtr, "l", in_off);
       auto *size = ptxBuilder.newConstantOperand((int64_t)warpContiguity * dtsize);

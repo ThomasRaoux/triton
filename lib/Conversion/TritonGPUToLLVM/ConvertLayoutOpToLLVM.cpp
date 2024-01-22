@@ -863,7 +863,7 @@ private:
       for (int64_t dim : triton::gpu::getShapePerCTA(srcTy))
         srcShape.push_back((unsigned)dim);
       SmallVector<unsigned> paddedShape = srcShape;
-      paddedShape[1] += 8;
+      paddedShape[1] += 16;
       storeDistributedToSharedWithStMatrix(
           src.getType().cast<RankedTensorType>(), adaptor.getSrc(), smemBase,
           paddedShape, srcShape, loc, rewriter);
