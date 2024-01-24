@@ -20,7 +20,7 @@ function(add_triton_ut)
           gmock
           ${__LIBS})
 
-  gtest_discover_tests(${__NAME})
+  gtest_discover_tests(${__NAME} PROPERTIES TEST_DISCOVERY_TIMEOUT 120)
 endfunction()
 
 add_subdirectory(Analysis)

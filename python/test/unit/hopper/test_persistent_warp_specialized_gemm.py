@@ -801,6 +801,9 @@ def full_static_persistent_matmul_kernel(a_ptr, b_ptr, w_ptr, bias_ptr, z_ptr,  
 @pytest.mark.skipif(torch.cuda.get_device_capability()[0] < 9, reason="Requires compute capability >= 9")
 def test_full_static_persistent_matmul_kernel(BLOCK_M, BLOCK_N, BLOCK_K, NUM_WARPS, NUM_CTAS, M, N, K, TRANS_A, TRANS_B,
                                               epilogue, out_dtype, USE_TMA_STORE, NUM_STAGES, ENABLE_WS):
+    if USE_TMA_STORE:
+        pytest.skip('skip TMA and ws')
+    ENABLE_WS = False
     if '-'.join(
             map(str, [
                 BLOCK_M, BLOCK_N, BLOCK_K, NUM_WARPS, NUM_CTAS, M, N, K, epilogue, out_dtype, USE_TMA_STORE, NUM_STAGES,

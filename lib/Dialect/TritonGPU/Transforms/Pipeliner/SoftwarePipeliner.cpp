@@ -30,7 +30,7 @@ using namespace mlir;
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
 
 // Return true if the preconditions for pipelining the loop are met.
-bool preCondition(scf::ForOp forOp) {
+static bool preCondition(scf::ForOp forOp) {
   // Skip loop with distance > 1 for now.
   // TODO: relax the constraint in the expander.
   if (llvm::any_of(forOp.getBody()->getTerminator()->getOperands(),
@@ -53,25 +53,39 @@ bool preCondition(scf::ForOp forOp) {
   return true;
 }
 
-static void pipelineLoop(scf::ForOp forOp, int numStages) {
+static void tryAndPipelineOuterLoop(scf::ForOp forOp) {
+  mlir::triton::PipeliningOption options;
+  bool foundSchedule = false;
+  foundSchedule = getOuterLoopSchedule(forOp, /*numStage=*/1, options);
+  if (!foundSchedule)
+    return;
+  IRRewriter rewriter(forOp->getContext());
+  rewriter.setInsertionPoint(forOp);
+  FailureOr<scf::ForOp> newForOp =
+      mlir::triton::pipelineForLoop(rewriter, forOp, options);
+}
+
+static bool pipelineLoop(scf::ForOp forOp, int numStages) {
   mlir::triton::PipeliningOption options;
   if (!preCondition(forOp))
-    return;
+    return false;
 
   bool foundSchedule = false;
   foundSchedule = preProcessLoopAndGetSchedule(forOp, numStages, options);
 
   // TODO: add more pipelines strategy.
   if (!foundSchedule)
-    return;
-
+    return false;
+  
   IRRewriter rewriter(forOp->getContext());
   rewriter.setInsertionPoint(forOp);
   FailureOr<scf::ForOp> newForOp =
       mlir::triton::pipelineForLoop(rewriter, forOp, options);
 
-  if (succeeded(newForOp))
-    mlir::triton::asyncLaunchDots(newForOp.value());
+  if (failed(newForOp))
+    return false;
+  mlir::triton::asyncLaunchDots(newForOp.value());
+  return true;
 }
 
 namespace {
@@ -90,9 +104,18 @@ struct PipelinePass : public TritonGPUPipelineBase<PipelinePass> {
       return;
     SmallVector<scf::ForOp> loops;
     getOperation()->walk([&](scf::ForOp forOp) { loops.push_back(forOp); });
+
+    SmallVector<scf::ForOp> outerLoops;
     for (scf::ForOp forOp : loops) {
-      pipelineLoop(forOp, numStages);
+      auto outerLoop = dyn_cast<scf::ForOp>(forOp->getParentOp());
+      bool pipelined = pipelineLoop(forOp, numStages);
+      if (pipelined && outerLoop)
+        outerLoops.push_back(outerLoop);
     }
+
+    // Try to pipeline the outer loop to overlap the prologue and epilogue of the inner loop.
+    for (scf::ForOp outerLoop : outerLoops)
+      tryAndPipelineOuterLoop(outerLoop);
   }
 };
 } // anonymous namespace

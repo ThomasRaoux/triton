@@ -16,6 +16,9 @@ namespace triton {
 bool preProcessLoopAndGetSchedule(scf::ForOp &forOp, int numStages,
                                   mlir::triton::PipeliningOption &options);
 
+bool getOuterLoopSchedule(scf::ForOp &forOp, int numStages,
+                          mlir::triton::PipeliningOption &options);
+
 /// This does post-processing on the pipelined loop to try to pipeline wgmma
 /// ops.
 // TODO: this should be included as part of the pipeline but currently the wgmma
