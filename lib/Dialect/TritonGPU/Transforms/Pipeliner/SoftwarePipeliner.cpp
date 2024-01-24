@@ -114,8 +114,8 @@ struct PipelinePass : public TritonGPUPipelineBase<PipelinePass> {
     }
 
     // Try to pipeline the outer loop to overlap the prologue and epilogue of the inner loop.
-    for (scf::ForOp outerLoop : outerLoops)
-      tryAndPipelineOuterLoop(outerLoop);
+//    for (scf::ForOp outerLoop : outerLoops)
+//      tryAndPipelineOuterLoop(outerLoop);
   }
 };
 } // anonymous namespace

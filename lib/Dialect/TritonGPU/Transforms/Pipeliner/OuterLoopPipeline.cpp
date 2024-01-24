@@ -79,30 +79,91 @@ static Operation *predicateOp(RewriterBase &rewriter, Operation *op,
   return op;
 }
 
+
+/// Helper to recursively add dependencies to the same stage.
+static void addDep(Operation *op, DenseSet<Operation *> &deps,
+                   bool includeArg = true,
+                   DenseSet<Operation *> *filter = nullptr) {
+  if (filter && filter->count(op))
+    return;
+  if (!deps.insert(op).second)
+    return;
+  for (Value operand : op->getOperands()) {
+    Value v = operand;
+    llvm::SmallDenseSet<Value> seen;
+    while (auto arg = v.dyn_cast<BlockArgument>()) {
+      if (!includeArg)
+        break;
+      if (!seen.insert(v).second)
+        break;
+      if (arg.getArgNumber() > 0 && arg.getOwner() == op->getBlock()) {
+        auto yieldOp = op->getBlock()->getTerminator();
+        v = yieldOp->getOperand(arg.getArgNumber() - 1);
+        continue;
+      }
+      break;
+    }
+    Operation *defOp = v.getDefiningOp();
+    if (defOp && defOp->getBlock() == op->getBlock()) {
+      addDep(defOp, deps, includeArg, filter);
+    }
+  }
+}
+
+// Add operations to the schedule with the given stage based on the filter
+// function.
+static void addOps(scf::ForOp forOp, int stage,
+                   std::vector<std::pair<Operation *, unsigned>> &schedule,
+                   std::function<bool(Operation *)> filter) {
+  for (Operation &op : forOp.getBody()->without_terminator()) {
+    if (!filter(&op))
+      continue;
+    schedule.emplace_back(&op, stage);
+  }
+}
+
 // create the schedule for a matmul loop. This is ad hoc based on how we know
 // matmul loops should be pipelined and is not a generic scheduler.
 static std::vector<std::pair<Operation *, unsigned>>
 createSchedule(scf::ForOp forOp, int numStages) {
-  std::vector<Operation *> prologue;
-  std::vector<Operation *> loopAndEpilogue;
+  SmallVector<Operation *> insertOps;
+  for (Operation &op : forOp.getBody()->without_terminator()) {
+    if (isa<ttg::InsertSliceAsyncOp, ttg::AsyncCommitGroupOp>(op))
+      insertOps.emplace_back(&op);
+  }
+  DenseSet<Operation *> insertAndDeps;
+  for (Operation *op : insertOps) {
+    addDep(op, insertAndDeps, true);
+  }
 
+  DenseSet<Operation *> epilogue;
   bool foundLoop = false;
   for (Operation &op : forOp.getBody()->without_terminator()) {
+    if (insertAndDeps.count(&op))
+      continue;
     if (isa<scf::ForOp>(op))
       foundLoop = true;
     if (foundLoop)
-      loopAndEpilogue.push_back(&op);
-    else
-      prologue.push_back(&op);
+      epilogue.insert(&op);
+  }
+
+  for (Operation *op : insertAndDeps) {
+    op->dump();
   }
 
   std::vector<std::pair<Operation *, unsigned>> schedule;
-  for (Operation *op : loopAndEpilogue) {
-    schedule.push_back({op, 1});
-  }
-  for (Operation *op : prologue) {
-    schedule.push_back({op, 0});
-  }
+  // Schedule stage `numStage - 1` first.
+  addOps(forOp, 1, schedule, [&](Operation *op) {
+    return insertAndDeps.count(op) == 0;
+  });
+
+  // Then Schedule stage 0.
+  addOps(forOp, 0, schedule,
+         [&](Operation *op) { return insertAndDeps.count(op); });
+
+  // Then schedule the epilogue in stage `numStage - 1`.
+  //addOps(forOp, numStages - 1, schedule,
+   //      [&](Operation *op) { return epilogue.count(op); });
   return schedule;
 }
 
@@ -123,6 +184,7 @@ static void hoistAllocs(scf::ForOp forOp) {
     }
   }
 }
+
 
 bool mlir::triton::getOuterLoopSchedule(
     scf::ForOp &forOp, int numStages, mlir::triton::PipeliningOption &options) {
