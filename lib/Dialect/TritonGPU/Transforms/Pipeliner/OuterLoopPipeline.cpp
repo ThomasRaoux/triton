@@ -143,27 +143,25 @@ createSchedule(scf::ForOp forOp, int numStages) {
       continue;
     if (isa<scf::ForOp>(op))
       foundLoop = true;
+    if (isa<scf::ForOp, ttg::AsyncWaitOp>(op))
+      continue;
     if (foundLoop)
       epilogue.insert(&op);
   }
 
-  for (Operation *op : insertAndDeps) {
-    op->dump();
-  }
-
   std::vector<std::pair<Operation *, unsigned>> schedule;
-  // Schedule stage `numStage - 1` first.
+  // Schedule stage 1 first.
   addOps(forOp, 1, schedule, [&](Operation *op) {
-    return insertAndDeps.count(op) == 0;
+    return insertAndDeps.count(op) == 0 && epilogue.count(op) == 0;
   });
 
   // Then Schedule stage 0.
   addOps(forOp, 0, schedule,
          [&](Operation *op) { return insertAndDeps.count(op); });
 
-  // Then schedule the epilogue in stage `numStage - 1`.
-  //addOps(forOp, numStages - 1, schedule,
-   //      [&](Operation *op) { return epilogue.count(op); });
+  // Then schedule the epilogue in stage 1
+  addOps(forOp, 1, schedule,
+         [&](Operation *op) { return epilogue.count(op); });
   return schedule;
 }
 
@@ -185,10 +183,34 @@ static void hoistAllocs(scf::ForOp forOp) {
   }
 }
 
+static bool preConddition(scf::ForOp forOp) {
+  // Check if there is a dependency from the loop to the async copy op. In this
+  // case we cannot pipeline the async copy.
+  SmallVector<Operation *> insertOps;
+  for (Operation &op : forOp.getBody()->without_terminator()) {
+    if (isa<ttg::InsertSliceAsyncOp, ttg::AsyncCommitGroupOp>(op))
+      insertOps.emplace_back(&op);
+  }
+  if (insertOps.empty())
+    return false;
+  DenseSet<Operation *> insertAndDeps;
+  for (Operation *op : insertOps) {
+    addDep(op, insertAndDeps, true);
+  }
+  for (Operation *op : insertAndDeps) {
+    if (isa<scf::ForOp>(op))
+      return false;
+  }
+  return true;
+}
 
 bool mlir::triton::getOuterLoopSchedule(
     scf::ForOp &forOp, int numStages, mlir::triton::PipeliningOption &options) {
-  // 1. pre-process the loop by hosting allocations.
+
+  // 1. Check precondition, we cannot have a recurrence involving async cp ops
+  if (!preConddition(forOp))
+    return false;
+  // 2. pre-process the loop by hosting allocations.
   hoistAllocs(forOp);
   // 3. Create the final schedule for the kernel loop. This will dictate the
   // stages and order of operations to the pipeline expander.

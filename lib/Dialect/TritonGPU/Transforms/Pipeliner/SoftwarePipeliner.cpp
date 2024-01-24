@@ -56,7 +56,7 @@ static bool preCondition(scf::ForOp forOp) {
 static void tryAndPipelineOuterLoop(scf::ForOp forOp) {
   mlir::triton::PipeliningOption options;
   bool foundSchedule = false;
-  foundSchedule = getOuterLoopSchedule(forOp, /*numStage=*/1, options);
+  foundSchedule = getOuterLoopSchedule(forOp, /*numStage=*/2, options);
   if (!foundSchedule)
     return;
   IRRewriter rewriter(forOp->getContext());
@@ -114,8 +114,8 @@ struct PipelinePass : public TritonGPUPipelineBase<PipelinePass> {
     }
 
     // Try to pipeline the outer loop to overlap the prologue and epilogue of the inner loop.
-//    for (scf::ForOp outerLoop : outerLoops)
-//      tryAndPipelineOuterLoop(outerLoop);
+    for (scf::ForOp outerLoop : outerLoops)
+      tryAndPipelineOuterLoop(outerLoop);
   }
 };
 } // anonymous namespace

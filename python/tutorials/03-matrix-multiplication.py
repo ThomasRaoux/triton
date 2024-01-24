@@ -299,6 +299,7 @@ def matmul(a, b, activation=""):
         ACTIVATION=activation,  #
         NUM_SMS=NUM_SMS
     )
+    #print(matmul_kernel.best_config)
     return c
 
 
@@ -309,8 +310,8 @@ def matmul(a, b, activation=""):
 # We can test our custom matrix multiplication operation against a native torch implementation (i.e., cuBLAS).
 
 torch.manual_seed(0)
-a = torch.randn((512, 512), device='cuda', dtype=torch.float16)
-b = torch.randn((512, 512), device='cuda', dtype=torch.float16)
+a = torch.randn((8192, 512), device='cuda', dtype=torch.float16)
+b = torch.randn((512, 8192), device='cuda', dtype=torch.float16)
 triton_output = matmul(a, b)
 torch_output = torch.matmul(a, b)
 print(f"triton_output={triton_output}")
@@ -333,7 +334,7 @@ else:
 
 @triton.testing.perf_report(
     triton.testing.Benchmark(
-        x_names=['M', 'N', 'K'],  # Argument names to use as an x-axis for the plot
+        x_names=['K'],  # Argument names to use as an x-axis for the plot
         x_vals=[128 * i for i in range(2, 33)],  # Different possible values for `x_name`
         line_arg='provider',  # Argument name whose value corresponds to a different line in the plot
         # Possible values for `line_arg`
@@ -346,7 +347,9 @@ else:
         plot_name="matmul-performance",  # Name for the plot, used also as a file name for saving the plot.
         args={},
     ))
-def benchmark(M, N, K, provider):
+def benchmark(K, provider):
+    M = 8192
+    N = 8192
     a = torch.randn((M, K), device='cuda', dtype=torch.float16)
     b = torch.randn((K, N), device='cuda', dtype=torch.float16)
     quantiles = [0.5, 0.2, 0.8]
