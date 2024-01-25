@@ -737,7 +737,6 @@ def test_full_static_persistent_matmul_kernel(BLOCK_M, BLOCK_N, BLOCK_K, NUM_WAR
                                               epilogue, out_dtype, USE_TMA_STORE, NUM_STAGES, ENABLE_WS):
     if USE_TMA_STORE:
         pytest.skip('skip TMA and ws')
-    ENABLE_WS = False
     if '-'.join(
             map(str, [
                 BLOCK_M, BLOCK_N, BLOCK_K, NUM_WARPS, NUM_CTAS, M, N, K, epilogue, out_dtype, USE_TMA_STORE, NUM_STAGES,
