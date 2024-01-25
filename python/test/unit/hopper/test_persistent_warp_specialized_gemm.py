@@ -409,29 +409,29 @@ def static_persistent_tma_warp_specialized_matmul_kernel(  #
 
 @pytest.mark.parametrize('M,N,K,BLOCK_M,BLOCK_N,BLOCK_K,NUM_CTAS,TRANS_A,TRANS_B,USE_TMA',
                          [(*shape, use_tma) for shape in [
-                             [2048, 2048, 64, 64, 64, 16, 1, False, True],
-                             [4096, 4096, 64, 64, 64, 16, 1, False, True],
-                             [128, 4096, 64, 64, 64, 16, 1, False, True],
-                             [4096, 128, 64, 64, 64, 16, 1, False, True],
-                             [4096, 4096, 64, 64, 64, 32, 1, False, True],
-                             [4096, 4096, 256, 128, 128, 16, 1, False, True],
-                             [4096, 4096, 320, 128, 64, 64, 1, False, True],
-                             [4096, 4096, 320, 64, 128, 64, 1, False, True],
-                             [4096, 4096, 320, 128, 128, 64, 1, False, True],
-                             [4096, 4096, 256, 256, 64, 16, 1, False, True],
-                             [4096, 4096, 256, 256, 64, 64, 1, False, True],
-                             [4096, 4096, 256, 64, 256, 16, 1, False, True],
-                             [4096, 4096, 256, 64, 256, 64, 1, False, True],
-                             [4096, 4096, 256, 256, 128, 16, 1, False, True],
-                             [4096, 4096, 256, 256, 128, 64, 1, False, True],
-                             [4096, 4096, 256, 128, 256, 16, 1, False, True],
-                             [4096, 4096, 256, 128, 256, 64, 1, False, True],
+                             [8192, 8192, 512, 64, 64, 16, 1, False, True],
+                             [8192, 8192, 512, 64, 64, 16, 1, False, True],
+                             [8192, 8192, 512, 64, 64, 16, 1, False, True],
+                             [8192, 8192, 512, 64, 64, 16, 1, False, True],
+                             [8192, 8192, 512, 64, 64, 32, 1, False, True],
+                             [8192, 8192, 512, 128, 128, 16, 1, False, True],
+                             [8192, 8192, 512, 128, 64, 64, 1, False, True],
+                             [8192, 8192, 512, 64, 128, 64, 1, False, True],
+                             [8192, 8192, 512, 128, 128, 64, 1, False, True],
+                             [8192, 8192, 512, 256, 64, 16, 1, False, True],
+                             [8192, 8192, 512, 256, 64, 64, 1, False, True],
+                             [8192, 8192, 512, 64, 256, 16, 1, False, True],
+                             [8192, 8192, 512, 64, 256, 64, 1, False, True],
+                             [8192, 8192, 512, 256, 128, 16, 1, False, True],
+                             [8192, 8192, 512, 256, 128, 64, 1, False, True],
+                             [8192, 8192, 512, 128, 256, 16, 1, False, True],
+                             [8192, 8192, 512, 128, 256, 64, 1, False, True],
                              # numCTAs > 1
-                             [2048, 2048, 64, 128, 128, 64, 2, False, True],
-                             [2048, 2048, 128, 256, 128, 64, 4, False, True],
-                             [4096, 4096, 128, 256, 128, 64, 4, False, True],
-                             [4096, 4096, 256, 128, 256, 64, 4, False, True],
-                             [4096, 4096, 256, 256, 256, 64, 4, False, True],
+                             [8192, 8192, 512, 128, 128, 64, 2, False, True],
+                             [8192, 8192, 512, 256, 128, 64, 4, False, True],
+                             [8192, 8192, 512, 256, 128, 64, 4, False, True],
+                             [8192, 8192, 512, 128, 256, 64, 4, False, True],
+                             [8192, 8192, 512, 256, 256, 64, 4, False, True],
                          ] for use_tma in [False, True]])
 @pytest.mark.skipif(torch.cuda.get_device_capability()[0] < 9, reason="Requires compute capability >= 9")
 def test_user_defined_persistent_warp_specialized_gemm(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_CTAS, TRANS_A, TRANS_B,
@@ -656,7 +656,6 @@ def full_static_persistent_matmul_kernel(a_ptr, b_ptr, w_ptr, bias_ptr, z_ptr,  
         #     a_tile_ptr = tl.advance(a_tile_ptr, [(pid_m - pre_pid_m) * BLOCK_M, -tl.cdiv(K, BLOCK_K) * BLOCK_K])
         #     b_tile_ptr = tl.advance(b_tile_ptr, [-tl.cdiv(K, BLOCK_K) * BLOCK_K, (pid_n - pre_pid_n) * BLOCK_N])
 
-        a_tile_base_ptr = a_ptr + block_offset_m * stride_am + block_offset_n * stride_ak
         a_tile_ptr = tl.advance(a_tile_ptr, [(pid_m - pre_pid_m) * BLOCK_M, 0])
         b_tile_ptr = tl.advance(b_tile_ptr, [0, (pid_n - pre_pid_n) * BLOCK_N])
         z = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)

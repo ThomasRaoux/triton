@@ -156,15 +156,65 @@ import triton
 import triton.language as tl
 
 
-# `triton.jit`'ed functions can be auto-tuned by using the `triton.autotune` decorator, which consumes:
-#   - A list of `triton.Config` objects that define different configurations of
-#       meta-parameters (e.g., `BLOCK_SIZE_M`) and compilation options (e.g., `num_warps`) to try
-#   - An auto-tuning *key* whose change in values will trigger evaluation of all the
-#       provided configs
+
+@triton.jit
+def static_persistent_tma_warp_specialized_matmul_kernel(  #
+        a_ptr, b_ptr, c_ptr,  #
+        M, N, K,  #
+        stride_am, stride_ak,  #
+        stride_bk, stride_bn,  #
+        stride_cm, stride_cn,  #
+        BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,  #
+        NUM_SMS: tl.constexpr  #
+):
+    start_tile = tl.program_id(axis=0)
+    m_tiles = tl.cdiv(M, BLOCK_M)
+    n_tiles = tl.cdiv(N, BLOCK_N)
+    k_tiles = tl.cdiv(K, BLOCK_K)
+    num_tiles = m_tiles * n_tiles
+
+    pre_pid_m = start_tile // n_tiles
+    pre_pid_n = start_tile % n_tiles
+
+    block_offset_m = pre_pid_m * BLOCK_M
+    block_offset_n = pre_pid_n * BLOCK_N
+    a_tile_ptr = tl.make_block_ptr(base=a_ptr, shape=(M, K), strides=(stride_am, stride_ak),
+                                   offsets=(block_offset_m, 0), block_shape=(BLOCK_M, BLOCK_K), order=(1, 0))
+    b_tile_ptr = tl.make_block_ptr(base=b_ptr, shape=(K, N), strides=(stride_bk, stride_bn),
+                                   offsets=(0, block_offset_n), block_shape=(BLOCK_K, BLOCK_N), order=(0, 1))
+    for tile_id in range(start_tile, num_tiles, NUM_SMS):
+        pid_m = tile_id // n_tiles
+        pid_n = tile_id % n_tiles
+        accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+        if tile_id >= NUM_SMS:
+            a_tile_ptr = tl.advance(a_tile_ptr, [(pid_m - pre_pid_m) * BLOCK_M, -k_tiles * BLOCK_K])
+            b_tile_ptr = tl.advance(b_tile_ptr, [-k_tiles * BLOCK_K, (pid_n - pre_pid_n) * BLOCK_N])
+
+        for k in range(0, K, BLOCK_K):
+            a = tl.load(a_tile_ptr)
+            b = tl.load(b_tile_ptr)
+            accumulator += tl.dot(a, b)
+            a_tile_ptr = tl.advance(a_tile_ptr, [0, BLOCK_K])
+            b_tile_ptr = tl.advance(b_tile_ptr, [BLOCK_K, 0])
+
+        offs_m = tl.arange(0, BLOCK_M) + pid_m * BLOCK_M
+        offs_n = tl.arange(0, BLOCK_N) + pid_n * BLOCK_N
+
+        c_ptrs = c_ptr + offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn
+        tl.store(c_ptrs, accumulator)
+        pre_pid_m = pid_m
+        pre_pid_n = pid_n
+
 @triton.autotune(
     configs=[
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=3,
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=4,
                       num_warps=8),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=7,
+                      num_warps=8),                      
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=7,
+                      num_warps=4),                      
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=7,
+                      num_warps=4),                      
         triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
                       num_warps=4),
         triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
@@ -179,6 +229,78 @@ import triton.language as tl
                       num_warps=2),
         triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=5,
                       num_warps=2),
+    ],
+    key=['M', 'N', 'K'],
+)
+@triton.jit
+def matmul_kernel_tma(a_ptr, b_ptr, c_ptr,  #
+                  M, N, K,  #
+                  stride_am, stride_ak,  #
+                  stride_bk, stride_bn,  #
+                  stride_cm, stride_cn,  #
+                  BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,  #
+                  GROUP_SIZE_M: tl.constexpr  #
+                  ):
+    pid = tl.program_id(axis=0)
+    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    num_pid_in_group = GROUP_SIZE_M * num_pid_n
+    group_id = pid // num_pid_in_group
+    first_pid_m = group_id * GROUP_SIZE_M
+    group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
+    pid_m = first_pid_m + (pid % group_size_m)
+    pid_n = (pid % num_pid_in_group) // group_size_m
+    block_offset_m = pid_m * BLOCK_SIZE_M
+    block_offset_n = pid_n * BLOCK_SIZE_N
+
+    a_tile_ptr = tl.make_block_ptr(base=a_ptr, shape=(M, K), strides=(stride_am, stride_ak),
+                                   offsets=(block_offset_m, 0), block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_K), order=(1, 0))
+    b_tile_ptr = tl.make_block_ptr(base=b_ptr, shape=(K, N), strides=(stride_bk, stride_bn),
+                                   offsets=(0, block_offset_n), block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N), order=(0, 1))
+    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+
+    for k in range(0, K, BLOCK_SIZE_K):
+        a = tl.load(a_tile_ptr)
+        b = tl.load(b_tile_ptr)
+        accumulator += tl.dot(a, b)
+        a_tile_ptr = tl.advance(a_tile_ptr, [0, BLOCK_SIZE_K])
+        b_tile_ptr = tl.advance(b_tile_ptr, [BLOCK_SIZE_K, 0])
+
+    c_block_ptr = tl.make_block_ptr(base=c_ptr, shape=(M, N), strides=(stride_cm, stride_cn),
+                                    offsets=(block_offset_m, block_offset_n), block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N),
+                                    order=(1, 0))
+    c = accumulator.to(tl.float16)
+    tl.store(c_block_ptr, c)
+
+# `triton.jit`'ed functions can be auto-tuned by using the `triton.autotune` decorator, which consumes:
+#   - A list of `triton.Config` objects that define different configurations of
+#       meta-parameters (e.g., `BLOCK_SIZE_M`) and compilation options (e.g., `num_warps`) to try
+#   - An auto-tuning *key* whose change in values will trigger evaluation of all the
+#       provided configs
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=4,
+                      num_warps=8),
+#        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=7,
+#                      num_warps=8),                      
+#        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=7,
+#                      num_warps=4),                      
+#        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=7,
+#                      num_warps=4),                      
+#        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
+#                      num_warps=4),
+#        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
+#                      num_warps=4),
+#        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
+#                      num_warps=4),
+#        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
+#                      num_warps=4),
+#        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
+#                      num_warps=4),
+#        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=5,
+#                      num_warps=2),
+#        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=5,
+#                      num_warps=2),
     ],
     key=['M', 'N', 'K'],
 )
@@ -289,17 +411,27 @@ def matmul(a, b, activation=""):
     # Allocates output.
     c = torch.empty((M, N), device=a.device, dtype=a.dtype)
     # 1D launch kernel where each block gets its own program.
-    grid = lambda META: (min(NUM_SMS, triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N'])), )
-    matmul_kernel[grid](
+#    grid = lambda META: (min(NUM_SMS, triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N'])), )
+#    matmul_kernel[grid](
+#        a, b, c,  #
+#        M, N, K,  #
+#        a.stride(0), a.stride(1),  #
+#        b.stride(0), b.stride(1),  #
+#        c.stride(0), c.stride(1),  #
+#        ACTIVATION=activation,  #
+#        NUM_SMS=NUM_SMS
+#    )
+#    print(matmul_kernel.best_config)
+
+
+    grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), )
+    matmul_kernel_tma[grid](
         a, b, c,  #
         M, N, K,  #
         a.stride(0), a.stride(1),  #
         b.stride(0), b.stride(1),  #
         c.stride(0), c.stride(1),  #
-        ACTIVATION=activation,  #
-        NUM_SMS=NUM_SMS
-    )
-    #print(matmul_kernel.best_config)
+    )    
     return c
 
 
