@@ -279,7 +279,7 @@ def matmul_kernel_tma(a_ptr, b_ptr, c_ptr,  #
 #       provided configs
 @triton.autotune(
     configs=[
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=4,
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=3,
                       num_warps=8),
 #        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=7,
 #                      num_warps=8),                      
@@ -411,27 +411,27 @@ def matmul(a, b, activation=""):
     # Allocates output.
     c = torch.empty((M, N), device=a.device, dtype=a.dtype)
     # 1D launch kernel where each block gets its own program.
-#    grid = lambda META: (min(NUM_SMS, triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N'])), )
-#    matmul_kernel[grid](
-#        a, b, c,  #
-#        M, N, K,  #
-#        a.stride(0), a.stride(1),  #
-#        b.stride(0), b.stride(1),  #
-#        c.stride(0), c.stride(1),  #
-#        ACTIVATION=activation,  #
-#        NUM_SMS=NUM_SMS
-#    )
-#    print(matmul_kernel.best_config)
-
-
-    grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), )
-    matmul_kernel_tma[grid](
+    grid = lambda META: (min(NUM_SMS, triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N'])), )
+    matmul_kernel[grid](
         a, b, c,  #
         M, N, K,  #
         a.stride(0), a.stride(1),  #
         b.stride(0), b.stride(1),  #
         c.stride(0), c.stride(1),  #
-    )    
+        ACTIVATION=activation,  #
+        NUM_SMS=NUM_SMS
+    )
+    print(matmul_kernel.best_config)
+
+
+#    grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), )
+#    matmul_kernel_tma[grid](
+#        a, b, c,  #
+#        M, N, K,  #
+#        a.stride(0), a.stride(1),  #
+#        b.stride(0), b.stride(1),  #
+#        c.stride(0), c.stride(1),  #
+#    )    
     return c
 
 
