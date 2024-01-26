@@ -596,10 +596,10 @@ def test_static_persistent_matmul_no_scf_kernel(M, N, K, NUM_CTAS, NUM_WARPS, TR
 @triton.jit
 def full_static_persistent_matmul_kernel(a_ptr, b_ptr, w_ptr, bias_ptr, z_ptr,  #
                                          M, N, K,  #
-                                         stride_am, stride_ak,  #
-                                         stride_bk, stride_bn,  #
-                                         stride_wm, stride_wn,  #
-                                         stride_zm, stride_zn,  #
+                                         stride_am: tl.constexpr, stride_ak: tl.constexpr,  #
+                                         stride_bk: tl.constexpr, stride_bn: tl.constexpr,  #
+                                         stride_wm: tl.constexpr, stride_wn: tl.constexpr,  #
+                                         stride_zm: tl.constexpr, stride_zn: tl.constexpr,  #
                                          BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
                                          GROUP_SIZE_M: tl.constexpr,  #
                                          out_dtype: tl.constexpr, USE_TMA_STORE: tl.constexpr,  #
@@ -622,10 +622,10 @@ def full_static_persistent_matmul_kernel(a_ptr, b_ptr, w_ptr, bias_ptr, z_ptr,  
 
     pre_block_offset_m = pre_pid_m * BLOCK_M
     pre_block_offset_n = pre_pid_n * BLOCK_N
-    a_tile_ptr = tl.make_block_ptr(base=a_ptr, shape=(M, K), strides=(stride_am, stride_ak),
+    a_tile_ptr_base = tl.make_block_ptr(base=a_ptr, shape=(M, K), strides=(stride_am, stride_ak),
                                    offsets=(pre_block_offset_m, 0), block_shape=(BLOCK_M, BLOCK_K),
                                    order=(A_ORDER_0, A_ORDER_1))
-    b_tile_ptr = tl.make_block_ptr(base=b_ptr, shape=(K, N), strides=(stride_bk, stride_bn),
+    b_tile_ptr_base = tl.make_block_ptr(base=b_ptr, shape=(K, N), strides=(stride_bk, stride_bn),
                                    offsets=(0, pre_block_offset_n), block_shape=(BLOCK_K, BLOCK_N),
                                    order=(B_ORDER_0, B_ORDER_1))
     w_tile_ptr = tl.make_block_ptr(base=w_ptr, shape=(N, N), strides=(stride_wm, stride_wn),
@@ -635,7 +635,6 @@ def full_static_persistent_matmul_kernel(a_ptr, b_ptr, w_ptr, bias_ptr, z_ptr,  
         z_block_ptr = tl.make_block_ptr(base=z_ptr, shape=(M, N), strides=(stride_zm, stride_zn),
                                         offsets=(pre_block_offset_m, pre_block_offset_n),
                                         block_shape=(BLOCK_M, BLOCK_N), order=(1, 0))
-
     for tile_id in range(start_pid, num_tiles, NUM_SMS):
         group_id = tile_id // num_pid_in_group
         first_pid_m = group_id * GROUP_SIZE_M
@@ -655,18 +654,28 @@ def full_static_persistent_matmul_kernel(a_ptr, b_ptr, w_ptr, bias_ptr, z_ptr,  
         # if tile_id >= NUM_SMS:
         #     a_tile_ptr = tl.advance(a_tile_ptr, [(pid_m - pre_pid_m) * BLOCK_M, -tl.cdiv(K, BLOCK_K) * BLOCK_K])
         #     b_tile_ptr = tl.advance(b_tile_ptr, [-tl.cdiv(K, BLOCK_K) * BLOCK_K, (pid_n - pre_pid_n) * BLOCK_N])
+        offs_am = (pid_m * BLOCK_M + tl.arange(0, BLOCK_M))
+        offs_bn = (pid_n * BLOCK_N + tl.arange(0, BLOCK_N))
+        offs_k = tl.arange(0, BLOCK_K)
+        a_ptrs = a_ptr + pid_m * BLOCK_M * stride_am
+        b_ptrs = b_ptr + pid_n * BLOCK_N * stride_bn
+  
 
-        a_tile_ptr = tl.advance(a_tile_ptr, [(pid_m - pre_pid_m) * BLOCK_M, 0])
-        b_tile_ptr = tl.advance(b_tile_ptr, [0, (pid_n - pre_pid_n) * BLOCK_N])
+      #  a_tile_ptr_base = tl.advance(a_tile_ptr_base, [(pid_m - pre_pid_m) * BLOCK_M, 0])
+      #  b_tile_ptr_base = tl.advance(b_tile_ptr_base, [0, (pid_n - pre_pid_n) * BLOCK_N])
+      #  a_tile_ptr = a_tile_ptr_base
+      #  b_tile_ptr = b_tile_ptr_base
         z = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
         for k in range(0, K, BLOCK_K):
-            a = tl.load(a_tile_ptr, boundary_check=(0, 1))
-            b = tl.load(b_tile_ptr, boundary_check=(0, 1))
+            a_pts_final = a_ptrs + offs_k[None, :] * stride_ak + tl.arange(0, BLOCK_M)[:, None] * stride_am
+            b_pts_final = b_ptrs + offs_k[:, None] * stride_bk + tl.arange(0, BLOCK_N)[None, :] * stride_bn
+            a = tl.load(a_pts_final)
+            b = tl.load(b_pts_final)
             z += tl.dot(a, b)
-            a_tile_ptr = tl.advance(a_tile_ptr, [0, BLOCK_K])
-            b_tile_ptr = tl.advance(b_tile_ptr, [BLOCK_K, 0])
-        a_tile_ptr = tl.advance(a_tile_ptr, [0, -tl.cdiv(K, BLOCK_K) * BLOCK_K])
-        b_tile_ptr = tl.advance(b_tile_ptr, [-tl.cdiv(K, BLOCK_K) * BLOCK_K, 0])
+#            a_tile_ptr = tl.advance(a_tile_ptr, [0, BLOCK_K])
+#            b_tile_ptr = tl.advance(b_tile_ptr, [BLOCK_K, 0])
+            a_ptrs += BLOCK_K * stride_ak
+            b_ptrs += BLOCK_K * stride_bk
 
         if (out_dtype == tl.constexpr(tl.float16)):
             z = z.to(tl.float16)

@@ -22,10 +22,16 @@ static Value getPredMask(RewriterBase &rewriter, Type typeLike,
   Type maskType = tt::getI1SameShape(typeLike);
   Location loc = pred.getLoc();
   Value mask = pred;
+    bool scalarMask = false;
+  if (auto s = currentMask.getDefiningOp<tt::SplatOp>()) {
+    mask = rewriter.create<arith::AndIOp>(loc, s.getSrc(), pred);
+    scalarMask = true;
+  }
   if (maskType.isa<RankedTensorType>()) {
     mask = rewriter.create<tt::SplatOp>(loc, maskType, pred);
   }
-  if (currentMask) {
+
+  if (!scalarMask && currentMask) {
     mask = rewriter.create<arith::AndIOp>(loc, mask, currentMask);
   }
   return mask;
@@ -49,19 +55,19 @@ static Operation *predicateOp(RewriterBase &rewriter, Operation *op,
     return op;
   }
   if (auto insertOp = dyn_cast<ttng::InsertSliceTMAOp>(op)) {
-    rewriter.setInsertionPoint(insertOp);
-    Value mask = getPredMask(
-        rewriter,
-        insertOp.getSrc().getType().cast<tt::PointerType>().getPointeeType(),
-        insertOp.getMask(), pred);
-    insertOp.getMaskMutable().assign(mask);
+//    rewriter.setInsertionPoint(insertOp);
+//    Value mask = getPredMask(
+//        rewriter,
+//        insertOp.getSrc().getType().cast<tt::PointerType>().getPointeeType(),
+//        insertOp.getMask(), pred);
+//    insertOp.getMaskMutable().assign(mask);
     return op;
   }
   if (auto arriveOp = dyn_cast<ttng::MBarrierArriveOp>(op)) {
-    rewriter.setInsertionPoint(arriveOp);
-    Value mask = getPredMask(rewriter, rewriter.getIntegerType(1),
-                             arriveOp.getPred(), pred);
-    arriveOp.getPredMutable().assign(mask);
+  //  rewriter.setInsertionPoint(arriveOp);
+  //  Value mask = getPredMask(rewriter, rewriter.getIntegerType(1),
+  //                           arriveOp.getPred(), pred);
+  //  arriveOp.getPredMutable().assign(mask);
     return op;
   }
   if (isa<ttng::MBarrierWaitOp>(op)) {
@@ -128,7 +134,8 @@ static std::vector<std::pair<Operation *, unsigned>>
 createSchedule(scf::ForOp forOp, int numStages) {
   SmallVector<Operation *> insertOps;
   for (Operation &op : forOp.getBody()->without_terminator()) {
-    if (isa<ttg::InsertSliceAsyncOp, ttg::AsyncCommitGroupOp>(op))
+    if (isa<ttg::InsertSliceAsyncOp, ttg::AsyncCommitGroupOp,
+            ttng::MBarrierArriveOp, ttng::InsertSliceTMAOp>(op))
       insertOps.emplace_back(&op);
   }
   DenseSet<Operation *> insertAndDeps;
@@ -170,7 +177,7 @@ static void hoistAllocs(scf::ForOp forOp) {
   // loop.
   SmallVector<Operation *> allocs;
   for (Operation &op : forOp.getBody()->without_terminator()) {
-    if (isa<ttg::AllocTensorOp>(op))
+    if (isa<ttg::AllocTensorOp, ttng::AllocMBarrierOp>(op))
       allocs.push_back(&op);
   }
   for (Operation *allocOp : allocs) {
@@ -188,7 +195,8 @@ static bool preConddition(scf::ForOp forOp) {
   // case we cannot pipeline the async copy.
   SmallVector<Operation *> insertOps;
   for (Operation &op : forOp.getBody()->without_terminator()) {
-    if (isa<ttg::InsertSliceAsyncOp, ttg::AsyncCommitGroupOp>(op))
+    if (isa<ttg::InsertSliceAsyncOp, ttg::AsyncCommitGroupOp,
+            ttng::MBarrierArriveOp, ttng::InsertSliceTMAOp>(op))
       insertOps.emplace_back(&op);
   }
   if (insertOps.empty())
