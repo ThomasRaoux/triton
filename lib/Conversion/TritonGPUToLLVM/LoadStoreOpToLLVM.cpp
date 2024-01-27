@@ -1400,7 +1400,10 @@ struct InsertSliceAsyncOpConversion
     // On the column dimension, if inVec > outVec, it means we have to divide
     // single vector read into multiple ones
     auto numVecCols = std::max<unsigned>(inVec / outVec, 1);
+    Value baseSharedPtr = sharedPtrs[0];
 
+    Value baseGlobal = srcElems[0];
+    auto order = triton::gpu::getOrder(srcLayout);
     for (unsigned elemIdx = 0; elemIdx < numElems; elemIdx += minVec) {
       // 16 * 8 = 128bits
       auto maxBitWidth =
@@ -1416,17 +1419,22 @@ struct InsertSliceAsyncOpConversion
           byteWidth == 16 ? CacheModifier::CG : CacheModifier::CA;
       assert(byteWidth == 16 || byteWidth == 8 || byteWidth == 4);
       auto resByteWidth = resElemTy.getIntOrFloatBitWidth() / 8;
+      int numWarps = triton::gpu::getNumWarpsPerCTA(srcLayout);
 
-      Value basePtr = sharedPtrs[elemIdx];
+      int64_t offset = elemIdx * numWarps * 32;
+      int64_t idx0 = offset % srcShape[order[0]];
+      int64_t idx1 = offset / srcShape[order[0]];
+      int64_t sharedOffset = (idx0 + idx1 * srcShape[order[0]]) * resByteWidth;
+      int64_t globalOffset = (idx0 + idx1 * 512) * resByteWidth;
       for (size_t wordIdx = 0; wordIdx < numWords; ++wordIdx) {
         PTXBuilder ptxBuilder;
         auto wordElemIdx = wordIdx * numWordElems;
         auto &copyAsyncOp =
             *ptxBuilder.create<PTXCpAsyncLoadInstr>(srcCacheModifier);
         auto *dstOperand =
-            ptxBuilder.newAddrOperand(basePtr, "r", wordElemIdx * resByteWidth);
+            ptxBuilder.newAddrOperand(baseSharedPtr, "r", sharedOffset);
         auto *srcOperand =
-            ptxBuilder.newAddrOperand(srcElems[elemIdx + wordElemIdx], "l");
+            ptxBuilder.newAddrOperand(baseGlobal, "l", globalOffset);
         auto *copySize = ptxBuilder.newConstantOperand(byteWidth);
         auto *srcSize = copySize;
         if (op.getMask()) {

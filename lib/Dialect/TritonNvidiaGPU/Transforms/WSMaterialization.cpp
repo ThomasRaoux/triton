@@ -624,8 +624,8 @@ void materializeMutexOperations(ModuleOp parentOp) {
 
 // TODO: may also not support 8-warp kernel.
 void tryRegisterRealloc(ModuleOp mod) {
-  constexpr int LoadRegisterRequirement = 48 + 8;
-  constexpr int MmaRegisterRequirement = 232 - 8 - 8;
+  constexpr int LoadRegisterRequirement = 40;
+  constexpr int MmaRegisterRequirement = 232;
   OpBuilderWithAgentIds builder(mod.getContext());
 
   auto isLoadAgent = [](scf::IfOp ifOp) -> bool {
@@ -707,7 +707,7 @@ struct WSMaterializationPass
     materializeGetAgentIdOp(mod);
     materializeTokenOperations(mod, numCTAs);
     materializeMutexOperations(mod);
-    //tryRegisterRealloc(mod);
+    tryRegisterRealloc(mod);
 
     // The IR before this pass specifies 4 warps per CTA.  But this pass splits
     // things so that there are 4 warps per *group* (aka "agent"), and there are
