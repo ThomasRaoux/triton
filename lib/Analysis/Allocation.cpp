@@ -273,6 +273,14 @@ private:
                    std::max<int>(8, dstTy.getElementTypeBitWidth()) / 8;
       maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(op, bytes,
                                                           scratchAlignment);
+    } else if (auto extTensor = dyn_cast<triton::ExtractTensorSliceOp>(op)) {
+      auto scrTy = extTensor.getSrc().getType().cast<RankedTensorType>();
+      int threadsPerWarp = triton::gpu::TritonGPUDialect::getThreadsPerWarp(
+          op->getParentOfType<ModuleOp>());
+      auto bytes = product<int64_t>(scrTy.getShape()) *
+                   std::max<int>(8, scrTy.getElementTypeBitWidth()) / 8;
+      maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(op, bytes,
+                                                          scratchAlignment);
     } else if (auto cvtLayout = dyn_cast<triton::gpu::ConvertLayoutOp>(op)) {
       auto srcTy = cvtLayout.getSrc().getType().cast<RankedTensorType>();
       auto dstTy = cvtLayout.getResult().getType().cast<RankedTensorType>();

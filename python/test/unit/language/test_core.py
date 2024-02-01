@@ -4657,13 +4657,12 @@ def test_extract_slice(device):
         x = tl.load(X + off)
         out_off = tl.arange(0, M)
         #y = _take_slice(x, 4)
-        y = x[:, 4]
+        y = x[:, 37]
         tl.store(Z + out_off, y)
     M = 16
     N = 64
     x = torch.randint(0, 1000, (M, N), device=device, dtype=torch.int32)
     z = torch.empty((M,), device=device, dtype=torch.int32)
     slice[(1, )](x, z, M, N)
-    ref = x[:, 4]
-    print(z)
+    ref = x[:, 37]
     assert (ref == z).all(), (ref, z)

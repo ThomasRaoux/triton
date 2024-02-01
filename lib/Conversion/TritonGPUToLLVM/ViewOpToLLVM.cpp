@@ -279,29 +279,58 @@ struct ExtractTensorSliceOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op->getLoc();
     auto typeConverter = getTypeConverter();
-    auto srcVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
-
     auto srcTy = op.getSrc().getType().cast<RankedTensorType>();
     auto resultTy = op.getType().template cast<RankedTensorType>();
     auto resultLayout = resultTy.getEncoding();
     auto srcLayout = srcTy.getEncoding();
+    auto elemPtrTy = ptr_ty(rewriter.getContext(), 3);
+    auto llvmElemTy = typeConverter->convertType(srcTy.getElementType());
+    Value smemBase =
+        LLVM::getSharedMemoryBase(loc, rewriter, op.getOperation());
+    smemBase = bitcast(smemBase, elemPtrTy);
+    auto smemShape = convertType<unsigned, int64_t>(srcTy.getShape());
 
-    auto srcOffsets = emitOffsetForLayout(srcLayout, srcTy);
-    auto resultOffsets = emitOffsetForLayout(resultLayout, resultTy);
+    // Store to local shared memory
+    {
+      auto inVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
+      auto inIndices =
+          emitIndices(loc, rewriter, srcLayout, srcTy, /*withCTAOffset*/ false);
 
-    auto indices = emitIndices(loc, rewriter, resultLayout, resultTy, false);
-    SmallVector<Value> resultVals;
-    for (auto &index : indices) {
-      for(Value i : index) {
-        resultVals.push_back(i32_val(resultVals.size()));
+      assert(inIndices.size() == inVals.size() &&
+             "Unexpected number of indices emitted");
+      for (unsigned i = 0; i < inIndices.size(); ++i) {
+        Value offset =
+            mlir::LLVM::linearize(rewriter, loc, inIndices[i], smemShape);
+        Value ptr = gep(elemPtrTy, llvmElemTy, smemBase, offset);
+        store(inVals[i], ptr);
       }
     }
-    //for (size_t i = 0; i < resultOffsets.size(); i++) {
-    //  resultVals.push_back(i32_val(resultOffsets[i][0]));
-   // }
-    Value ret =
-        packLLElements(loc, typeConverter, resultVals, rewriter, resultTy);
-    rewriter.replaceOp(op, ret);
+    barrier();
+    // Load from remote shared memory
+    {
+      SmallVector<Value> outVals;
+      auto outIndices = emitIndices(loc, rewriter, resultLayout, resultTy,
+                                    /*withCTAOffset*/ false);
+
+      for (unsigned i = 0; i < outIndices.size(); ++i) {
+        auto coord = outIndices[i];
+        SmallVector<Value> localCoord;
+
+        for (unsigned d = 0; d < coord.size(); ++d) {
+          localCoord.push_back(urem(coord[d], i32_val(resultTy.getDimSize(d))));
+        }
+        localCoord.insert(localCoord.begin() + op.getAxis(),
+                          i32_val(op.getIdx()));
+        Value localOffset =
+            mlir::LLVM::linearize(rewriter, loc, localCoord, smemShape);
+        Value ptr = gep(elemPtrTy, llvmElemTy, smemBase, localOffset);
+        outVals.push_back(load(llvmElemTy, ptr));
+      }
+
+      Value result =
+          packLLElements(loc, typeConverter, outVals, rewriter, resultTy);
+      rewriter.replaceOp(op, result);
+    }
     return success();
   }
 };
