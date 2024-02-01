@@ -48,6 +48,20 @@ template <class Op> struct GenericOpPattern : public OpConversionPattern<Op> {
   }
 };
 
+struct ExtractTensorSliceOpPattern
+    : public OpConversionPattern<triton::ExtractTensorSliceOp> {
+  using OpConversionPattern<triton::ExtractTensorSliceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::ExtractTensorSliceOp op,
+                  triton::ExtractTensorSliceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<triton::ExtractTensorSliceOp>(
+        op, adaptor.getSrc(), adaptor.getAxis(), adaptor.getIdx());
+    return success();
+  }
+};
+
 class ArithConstantPattern : public OpConversionPattern<arith::ConstantOp> {
 public:
   using OpConversionPattern<arith::ConstantOp>::OpConversionPattern;
@@ -527,8 +541,8 @@ void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
       GenericOpPattern<triton::PrintOp>, GenericOpPattern<triton::AssertOp>,
       GenericOpPattern<triton::AtomicCASOp>,
       GenericOpPattern<triton::AtomicRMWOp>, GenericOpPattern<ReturnOp>,
-      GenericOpPattern<triton::CallOp>, TritonFuncOpPattern>(typeConverter,
-                                                             context);
+      ExtractTensorSliceOpPattern, GenericOpPattern<triton::CallOp>,
+      TritonFuncOpPattern>(typeConverter, context);
 }
 
 //

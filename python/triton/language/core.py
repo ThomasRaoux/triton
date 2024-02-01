@@ -786,6 +786,8 @@ class tensor:
                 ret = semantic.expand_dims(ret, dim, _builder)
             elif isinstance(sl, slice) and sl.start is None and sl.stop is None and sl.step is None:
                 pass
+            elif isinstance(sl, constexpr):
+                ret = semantic.extract_slice(ret, dim, sl.value, _builder)
             else:
                 assert False, f"unsupported tensor index: {sl}"
         return ret

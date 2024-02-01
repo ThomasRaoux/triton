@@ -1276,6 +1276,12 @@ void init_triton_ir(py::module &&m) {
             return self.create<mlir::triton::ExpandDimsOp>(
                 mlir::RankedTensorType::get(retShape, argEltType), arg, axis);
           })
+      .def("extract_tensor_slice",
+           [](TritonOpBuilder &self, mlir::Value &arg, int axis,
+              int idx) -> mlir::Value {
+             return self.create<mlir::triton::ExtractTensorSliceOp>(arg, axis,
+                                                                    idx);
+           })
       .def("create_cat",
            [](TritonOpBuilder &self, mlir::Value &lhs,
               mlir::Value &rhs) -> mlir::Value {

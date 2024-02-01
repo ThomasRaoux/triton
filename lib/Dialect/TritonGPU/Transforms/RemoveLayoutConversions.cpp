@@ -296,8 +296,8 @@ SmallVector<Value> LayoutPropagation::propagateToUsers(Value value,
     if (user->hasTrait<mlir::OpTrait::SameOperandsAndResultEncoding>() ||
         user->hasTrait<mlir::OpTrait::Elementwise>() ||
         isa<triton::ReduceOp, triton::ExpandDimsOp,
-            triton::ExperimentalInterleaveOp, triton::gpu::ConvertLayoutOp>(
-            user)) {
+            triton::ExperimentalInterleaveOp, triton::gpu::ConvertLayoutOp,
+            triton::ExtractTensorSliceOp>(user)) {
       setEncoding(user->getResults(), info, changed, user);
       continue;
     }
@@ -691,7 +691,8 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
   if (op->hasTrait<mlir::OpTrait::SameOperandsAndResultEncoding>() ||
       op->hasTrait<mlir::OpTrait::Elementwise>() ||
       isa<triton::ReduceOp, triton::ExpandDimsOp,
-          triton::ExperimentalInterleaveOp, triton::gpu::ConvertLayoutOp>(op)) {
+          triton::ExperimentalInterleaveOp, triton::gpu::ConvertLayoutOp,
+          triton::ExtractTensorSliceOp>(op)) {
     Operation *newOp = cloneElementwise(rewriter, op, encoding);
     for (auto [oldResult, newResult] :
          llvm::zip(op->getResults(), newOp->getResults()))

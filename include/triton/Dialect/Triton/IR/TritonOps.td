@@ -324,6 +324,19 @@ def TT_ExpandDimsOp : TT_Op<"expand_dims", [Pure,
     let hasFolder = 1;
 }
 
+
+def TT_ExtractTensorSliceOp : TT_Op<"extract_tensor_slice", [Pure,
+                                            DeclareOpInterfaceMethods<InferTypeOpInterface>,
+                                            SameOperandsAndResultElementType]> {
+    let summary = "extract a slice from a tensor";
+
+    let arguments = (ins TT_Tensor:$src, I32Attr:$axis, I32Attr:$idx);
+
+    let results = (outs TT_Tensor:$result);
+
+    let assemblyFormat = "$src attr-dict `:` functional-type(operands, results)";
+}
+
 def TT_ReshapeOp : TT_Op<"reshape", [Pure,
                                      SameOperandsAndResultElementType]> {
     let summary = "reinterpret a tensor to a different shape. It may change elements order if the attribute is set.";

@@ -536,6 +536,15 @@ def expand_dims(input: tl.tensor, axis: int, builder: ir.builder) -> tl.tensor:
     return tl.tensor(builder.create_expand_dims(input.handle, axis), ret_ty)
 
 
+def extract_slice(input: tl.tensor, axis: int, pos: int, builder: ir.builder) -> tl.tensor:
+    dst_shape = []
+    for i in range(len(input.shape)):
+        if i != axis:
+            dst_shape.append(input.shape[i])
+    ret_ty = tl.block_type(input.type.scalar, dst_shape)
+    return tl.tensor(builder.extract_tensor_slice(input.handle, axis, pos), ret_ty)
+
+
 def cat(lhs: tl.tensor, rhs: tl.tensor, can_reorder: bool, builder: ir.builder) -> tl.tensor:
     assert can_reorder, "current implementation of `cat` always may reorder elements"
     assert len(lhs.shape) == 1

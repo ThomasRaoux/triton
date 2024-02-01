@@ -267,6 +267,74 @@ struct ExpandDimsOpConversion : public ConvertOpToLLVMPattern<ExpandDimsOp> {
   }
 };
 
+struct ExtractTensorSliceOpConversion
+    : public ConvertOpToLLVMPattern<ExtractTensorSliceOp> {
+  using OpAdaptor = typename ExtractTensorSliceOp::Adaptor;
+  explicit ExtractTensorSliceOpConversion(LLVMTypeConverter &typeConverter,
+                                          PatternBenefit benefit = 1)
+      : ConvertOpToLLVMPattern<ExtractTensorSliceOp>(typeConverter, benefit) {}
+
+  LogicalResult
+  matchAndRewrite(ExtractTensorSliceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+    auto typeConverter = getTypeConverter();
+    auto srcTy = op.getSrc().getType().cast<RankedTensorType>();
+    auto resultTy = op.getType().template cast<RankedTensorType>();
+    auto resultLayout = resultTy.getEncoding();
+    auto srcLayout = srcTy.getEncoding();
+    auto elemPtrTy = ptr_ty(rewriter.getContext(), 3);
+    auto llvmElemTy = typeConverter->convertType(srcTy.getElementType());
+    Value smemBase =
+        LLVM::getSharedMemoryBase(loc, rewriter, op.getOperation());
+    smemBase = bitcast(smemBase, elemPtrTy);
+    auto smemShape = convertType<unsigned, int64_t>(srcTy.getShape());
+
+    // Store to local shared memory
+    {
+      auto inVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
+      auto inIndices =
+          emitIndices(loc, rewriter, srcLayout, srcTy, /*withCTAOffset*/ false);
+
+      assert(inIndices.size() == inVals.size() &&
+             "Unexpected number of indices emitted");
+      for (unsigned i = 0; i < inIndices.size(); ++i) {
+        Value offset =
+            mlir::LLVM::linearize(rewriter, loc, inIndices[i], smemShape);
+        Value ptr = gep(elemPtrTy, llvmElemTy, smemBase, offset);
+        store(inVals[i], ptr);
+      }
+    }
+    barrier();
+    // Load from remote shared memory
+    {
+      SmallVector<Value> outVals;
+      auto outIndices = emitIndices(loc, rewriter, resultLayout, resultTy,
+                                    /*withCTAOffset*/ false);
+
+      for (unsigned i = 0; i < outIndices.size(); ++i) {
+        auto coord = outIndices[i];
+        SmallVector<Value> localCoord;
+
+        for (unsigned d = 0; d < coord.size(); ++d) {
+          localCoord.push_back(urem(coord[d], i32_val(resultTy.getDimSize(d))));
+        }
+        localCoord.insert(localCoord.begin() + op.getAxis(),
+                          i32_val(op.getIdx()));
+        Value localOffset =
+            mlir::LLVM::linearize(rewriter, loc, localCoord, smemShape);
+        Value ptr = gep(elemPtrTy, llvmElemTy, smemBase, localOffset);
+        outVals.push_back(load(llvmElemTy, ptr));
+      }
+
+      Value result =
+          packLLElements(loc, typeConverter, outVals, rewriter, resultTy);
+      rewriter.replaceOp(op, result);
+    }
+    return success();
+  }
+};
+
 struct TransOpConversion : public ConvertOpToLLVMPattern<TransOp> {
   using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
 
@@ -318,4 +386,5 @@ void mlir::triton::populateViewOpToLLVMPatterns(
   patterns.add<CatOpConversion>(typeConverter, benefit);
   patterns.add<InterleaveOpConversion>(typeConverter, benefit);
   patterns.add<TransOpConversion>(typeConverter, benefit);
+  patterns.add<ExtractTensorSliceOpConversion>(typeConverter, benefit);
 }
