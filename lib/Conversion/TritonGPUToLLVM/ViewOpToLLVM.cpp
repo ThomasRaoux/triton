@@ -267,6 +267,45 @@ struct ExpandDimsOpConversion : public ConvertOpToLLVMPattern<ExpandDimsOp> {
   }
 };
 
+struct ExtractTensorSliceOpConversion
+    : public ConvertOpToLLVMPattern<ExtractTensorSliceOp> {
+  using OpAdaptor = typename ExtractTensorSliceOp::Adaptor;
+  explicit ExtractTensorSliceOpConversion(LLVMTypeConverter &typeConverter,
+                                          PatternBenefit benefit = 1)
+      : ConvertOpToLLVMPattern<ExtractTensorSliceOp>(typeConverter, benefit) {}
+
+  LogicalResult
+  matchAndRewrite(ExtractTensorSliceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+    auto typeConverter = getTypeConverter();
+    auto srcVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
+
+    auto srcTy = op.getSrc().getType().cast<RankedTensorType>();
+    auto resultTy = op.getType().template cast<RankedTensorType>();
+    auto resultLayout = resultTy.getEncoding();
+    auto srcLayout = srcTy.getEncoding();
+
+    auto srcOffsets = emitOffsetForLayout(srcLayout, srcTy);
+    auto resultOffsets = emitOffsetForLayout(resultLayout, resultTy);
+
+    auto indices = emitIndices(loc, rewriter, resultLayout, resultTy, false);
+    SmallVector<Value> resultVals;
+    for (auto &index : indices) {
+      for(Value i : index) {
+        resultVals.push_back(i32_val(resultVals.size()));
+      }
+    }
+    //for (size_t i = 0; i < resultOffsets.size(); i++) {
+    //  resultVals.push_back(i32_val(resultOffsets[i][0]));
+   // }
+    Value ret =
+        packLLElements(loc, typeConverter, resultVals, rewriter, resultTy);
+    rewriter.replaceOp(op, ret);
+    return success();
+  }
+};
+
 struct TransOpConversion : public ConvertOpToLLVMPattern<TransOp> {
   using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
 
@@ -318,4 +357,5 @@ void mlir::triton::populateViewOpToLLVMPatterns(
   patterns.add<CatOpConversion>(typeConverter, benefit);
   patterns.add<InterleaveOpConversion>(typeConverter, benefit);
   patterns.add<TransOpConversion>(typeConverter, benefit);
+  patterns.add<ExtractTensorSliceOpConversion>(typeConverter, benefit);
 }

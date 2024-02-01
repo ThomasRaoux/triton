@@ -814,6 +814,38 @@ OpFoldResult ExpandDimsOp::fold(FoldAdaptor adaptor) {
   return foldViewLikeOp(*this, adaptor.getSrc());
 }
 
+//-- ExtractSliceOp --
+
+mlir::LogicalResult mlir::triton::ExtractTensorSliceOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> loc, ValueRange operands,
+    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  mlir::triton::ExtractTensorSliceOp::Adaptor adaptor(operands, attributes,
+                                                      properties, regions);
+  // infer shape
+  auto arg = operands[0];
+  auto argTy = arg.getType().cast<RankedTensorType>();
+  SmallVector<int64_t> retShape = llvm::to_vector(argTy.getShape());
+  int axis = adaptor.getAxis();
+  retShape.erase(retShape.begin() + axis);
+  // infer encoding
+  Attribute argEncoding = argTy.getEncoding();
+  Attribute retEncoding;
+  if (argEncoding) {
+    Dialect &dialect = argEncoding.getDialect();
+    auto inferLayoutInterface = dyn_cast<DialectInferLayoutInterface>(&dialect);
+    if (inferLayoutInterface
+            ->inferReduceOpEncoding(argEncoding, axis, retEncoding)
+            .failed())
+      return emitOptionalError(loc, "failed to infer layout for ExtractTensorSliceOp");
+  }
+  // create type
+  auto argEltTy = argTy.getElementType();
+  inferredReturnTypes.push_back(
+      RankedTensorType::get(retShape, argEltTy, retEncoding));
+  return mlir::success();
+}
+
 //-- ReshapeOp --
 template <typename OpType>
 LogicalResult canonicalizeViewOrBroadcast(OpType op,

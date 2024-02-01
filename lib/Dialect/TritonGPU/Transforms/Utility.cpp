@@ -251,6 +251,12 @@ static std::optional<Attribute> inferDstEncoding(triton::ReduceOp op,
                                              encoding);
 }
 
+static std::optional<Attribute> inferDstExtract(triton::ExtractTensorSliceOp op,
+                                                 Attribute encoding) {
+  return triton::gpu::SliceEncodingAttr::get(op->getContext(), op.getAxis(),
+                                             encoding);
+}
+
 static std::optional<Attribute> inferDstEncoding(triton::ExpandDimsOp op,
                                                  Attribute encoding) {
   auto sliceEncoding = encoding.dyn_cast<triton::gpu::SliceEncodingAttr>();
@@ -291,6 +297,17 @@ static std::optional<Attribute> inferSrcEncoding(triton::ReduceOp op,
     return std::nullopt;
   return sliceEncoding.getParent();
 }
+
+static std::optional<Attribute> inferSrcEncoding(triton::ExtractTensorSliceOp op,
+                                                 Attribute encoding) {
+  auto sliceEncoding = encoding.dyn_cast<triton::gpu::SliceEncodingAttr>();
+  if (!sliceEncoding)
+    return std::nullopt;
+  if (op.getAxis() != sliceEncoding.getDim())
+    return std::nullopt;
+  return sliceEncoding.getParent();
+}
+
 
 static std::optional<Attribute> inferSrcEncoding(triton::ExpandDimsOp op,
                                                  Attribute encoding) {
@@ -362,6 +379,8 @@ std::optional<Attribute> inferSrcEncoding(Operation *op, Attribute encoding) {
 
   if (auto reduceOp = dyn_cast<triton::ReduceOp>(op))
     return inferSrcEncoding(reduceOp, encoding);
+  if (auto ext = dyn_cast<triton::ExtractTensorSliceOp>(op))
+    return inferSrcEncoding(ext, encoding);    
   if (auto expand = dyn_cast<triton::ExpandDimsOp>(op))
     return inferSrcEncoding(expand, encoding);
   if (auto interleave = dyn_cast<triton::ExperimentalInterleaveOp>(op))
@@ -386,6 +405,8 @@ std::optional<Attribute> inferDstEncoding(Operation *op, Attribute encoding) {
     return inferDstEncoding(interleave, encoding);
   if (auto trans = dyn_cast<triton::TransOp>(op))
     return inferDstEncoding(trans, encoding);
+  if (auto ext = dyn_cast<triton::ExtractTensorSliceOp>(op))
+    return inferDstExtract(ext, encoding);
   return std::nullopt;
 }
 

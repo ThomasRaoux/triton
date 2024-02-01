@@ -4640,3 +4640,30 @@ def test_tl_range(device):
             ptx = pgm.asm['ptx']
             # check that the loop got pipelined with the right number of stages.
             assert 'cp.async.wait_group 0x6' in ptx
+
+
+
+@triton.jit
+def _take_slice(x, pos: tl.constexpr):
+    BLOCK_DMODEL : tl.constexpr = x.shape[1]
+    y = tl.sum(tl.where(tl.arange(0, BLOCK_DMODEL)[None, :] == pos, x, 0), 1)
+    return y
+
+
+def test_extract_slice(device):
+    @triton.jit
+    def slice(X, Z, M: tl.constexpr, N: tl.constexpr):
+        off = tl.arange(0, N)[None, :] + tl.arange(0, M)[:, None] * N
+        x = tl.load(X + off)
+        out_off = tl.arange(0, M)
+        #y = _take_slice(x, 4)
+        y = x[:, 4]
+        tl.store(Z + out_off, y)
+    M = 16
+    N = 64
+    x = torch.randint(0, 1000, (M, N), device=device, dtype=torch.int32)
+    z = torch.empty((M,), device=device, dtype=torch.int32)
+    slice[(1, )](x, z, M, N)
+    ref = x[:, 4]
+    print(z)
+    assert (ref == z).all(), (ref, z)
