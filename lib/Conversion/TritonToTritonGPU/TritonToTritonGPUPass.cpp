@@ -10,7 +10,6 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
-#include "triton/Target/PTX/TmaMetadata.h"
 #include "llvm/ADT/APSInt.h"
 #include <numeric>
 

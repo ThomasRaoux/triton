@@ -393,6 +393,7 @@ class CUDABackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
+        passes.ttir.add_rewrite_tensor_pointer(pm)
         passes.ttir.add_combine(pm)
         passes.common.add_canonicalizer(pm)
         passes.ttir.add_reorder_broadcast(pm)
@@ -417,8 +418,6 @@ class CUDABackend(BaseBackend):
         passes.ttgpuir.add_coalesce(pm)
         # TODO(Qingyi): Move PlanCTAPass to the front of CoalescePass
         nvidia.passes.ttnvgpuir.add_plan_cta(pm, cluster_info)
-        nvidia.passes.ttgpuir.add_rewrite_tensor_pointer(pm, capability)
-        nvidia.passes.ttnvgpuir.add_plan_cta(pm, cluster_info)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)
         passes.ttgpuir.add_accelerate_matmul(pm, capability)
@@ -427,29 +426,10 @@ class CUDABackend(BaseBackend):
             passes.ttgpuir.add_optimize_epilogue(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm)
         passes.common.add_cse(pm)
-        # `num_warps` does not mean the total number of warps of a CTA when
-        # warp specialization is enabled.
-        # it's the responsibility of the compiler to figure out the exact
-        # `num_warps` to use.
-        # TODO: support the case where `num_warps` from user is not 4.
-        ws_enabled = False
-        if capability // 10 >= 9 and opt.enable_warp_specialization and opt.num_warps == 4:
-            nvidia.passes.ttnvgpuir.add_wsfeasibility_checking(pm, capability)
-            pm.run(mod)
-            ws_enabled = nvidia.passes.ttnvgpuir.is_ws_supported(mod)
-            pm = ir.pass_manager(mod.context)
-            pm.enable_debug()
-        metadata["ws_enabled"] = ws_enabled
-        if ws_enabled:
-            nvidia.passes.ttnvgpuir.add_wsdecomposing(pm, capability)
-            nvidia.passes.ttnvgpuir.add_wspipeline(pm, opt.num_stages, opt.num_warps, capability)
-            nvidia.passes.ttnvgpuir.add_wsmutex(pm, capability)
-            nvidia.passes.ttnvgpuir.add_wsmaterialization(pm, capability)
-            passes.common.add_licm(pm)
-            passes.common.add_cse(pm)
-        elif capability // 10 >= 8:
+        if capability // 10 >= 8:
             passes.ttgpuir.add_pipeline(pm, opt.num_stages, opt.num_warps, opt.num_ctas, capability)
-        nvidia.passes.ttnvgpuir.add_materialize_load_store(pm, opt.num_warps, capability)
+        if capability // 10 <= 8:
+            passes.ttgpuir.add_prefetch(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
@@ -476,15 +456,11 @@ class CUDABackend(BaseBackend):
         tma_infos = nvidia.TMAInfos()
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
-        nvidia.passes.ttnvgpuir.add_tma_descriptor_args(pm)
         passes.ttgpuir.add_decompose_unsupported_conversions(pm)
         passes.convert.add_scf_to_cf(pm)
         passes.convert.add_index_to_llvmir(pm)
         passes.ttgpuir.add_allocate_shared_memory(pm)
         nvidia.passes.ttgpuir.add_to_llvmir(pm, capability, tma_infos)
-        if metadata["ws_enabled"]:
-            passes.common.add_licm(pm)
-            passes.common.add_cse(pm)
         nvidia.passes.ttnvgpuir.add_nvgpu_to_llvm(pm)
         passes.convert.add_arith_to_llvmir(pm)
         passes.common.add_canonicalizer(pm)
