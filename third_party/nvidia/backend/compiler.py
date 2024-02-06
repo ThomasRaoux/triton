@@ -59,7 +59,6 @@ class CUDAOptions:
     num_stages: int = 3
     cluster_dims: tuple = (1, 1, 1)
     ptx_version: int = None
-    enable_warp_specialization: bool = False
     optimize_epilogue: bool = False
     enable_fp_fusion: bool = True
     allow_fp8e4nv: bool = False

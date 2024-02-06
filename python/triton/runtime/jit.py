@@ -286,7 +286,6 @@ class JITFunction(KernelInterface[T]):
         num_warps,
         num_ctas,
         num_stages,
-        enable_warp_specialization,
         enable_fp_fusion,
         extern_libs,
         configs,
@@ -297,7 +296,7 @@ class JITFunction(KernelInterface[T]):
         name = self.fn.__name__
         module = self.fn.__module__
         arg_reprs = ", ".join([f"{param.name}: {ty}" for param, ty in zip(self.params, key[1])])
-        repr = f"{name}[num_warps={num_warps}, num_ctas={num_ctas}, num_stages={num_stages}, enable_warp_specialization={enable_warp_specialization}, enable_fp_fusion={enable_fp_fusion}]({arg_reprs})"
+        repr = f"{name}[num_warps={num_warps}, num_ctas={num_ctas}, num_stages={num_stages}, enable_fp_fusion={enable_fp_fusion}]({arg_reprs})"
         key = str(key)
 
         class LegacyCompiler:
@@ -314,7 +313,6 @@ class JITFunction(KernelInterface[T]):
             num_warps=num_warps,
             num_ctas=num_ctas,
             num_stages=num_stages,
-            enable_warp_specialization=enable_warp_specialization,
             enable_fp_fusion=enable_fp_fusion,
             extern_libs=extern_libs,
             configs=configs,
@@ -384,7 +382,7 @@ class JITFunction(KernelInterface[T]):
             }
 
             if self._call_hook(key, signature, device, constants, options.num_warps, options.num_ctas,
-                               options.num_stages, options.enable_warp_specialization, options.enable_fp_fusion,
+                               options.num_stages, options.enable_fp_fusion,
                                options.extern_libs, configs):
                 return None
             # compile the kernel
