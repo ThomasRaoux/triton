@@ -113,8 +113,6 @@ class Autotuner(KernelInterface):
                 num_stages=config.num_stages,
                 num_ctas=config.num_ctas,
                 enable_warp_specialization=config.enable_warp_specialization,
-                # TODO: Make it configurable
-                # enable_persistent=False,
                 **current,
             )
             self.post_hook(args)
@@ -185,8 +183,6 @@ class Autotuner(KernelInterface):
                         num_warps=config.num_warps,
                         num_ctas=config.num_ctas,
                         enable_warp_specialization=config.enable_warp_specialization,
-                        # TODO: Make it configurable
-                        # enable_persistent=False,
                     )
                     for config in pruned_configs
                 }
@@ -204,8 +200,6 @@ class Autotuner(KernelInterface):
                     num_ctas=config.num_ctas,
                     num_stages=config.num_stages,
                     enable_warp_specialization=config.enable_warp_specialization,
-                    # TODO: Make it configurable
-                    # enable_persistent=False,
                     **kwargs,
                     **config.kwargs,
                 ))
@@ -239,8 +233,6 @@ class Config:
         self.num_ctas = num_ctas
         self.num_stages = num_stages
         self.enable_warp_specialization = enable_warp_specialization
-        # TODO[shuhaoj]: May make enable_persistent configurable in future if necessary.
-        self.enable_persistent = False
         self.pre_hook = pre_hook
 
     def __str__(self):
@@ -251,7 +243,6 @@ class Config:
         res.append(f"num_ctas: {self.num_ctas}")
         res.append(f"num_stages: {self.num_stages}")
         res.append(f"enable_warp_specialization: {self.enable_warp_specialization}")
-        res.append(f"enable_persistent: {self.enable_persistent}")
         return ", ".join(res)
 
 

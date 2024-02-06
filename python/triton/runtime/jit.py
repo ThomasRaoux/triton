@@ -236,9 +236,7 @@ class JITFunction(KernelInterface[T]):
         }
         # folded equal_to_1 and None
         # TODO: method to collect all folded args
-        none_args = {param.num for param, arg in zip(self.params, args) if arg is None and not param.do_not_specialize}
-        ids_of_folded_args = equal_to_1 | none_args
-        return AttrsDescriptor(tuple(divisible_by_16), tuple(equal_to_1), tuple(ids_of_folded_args),
+        return AttrsDescriptor(tuple(divisible_by_16), tuple(equal_to_1),
                                tuple(divisible_by_8))
         # return _triton.code_gen.instance_descriptor(divisible_by_16,
         # equal_to_1)
@@ -407,7 +405,7 @@ class JITFunction(KernelInterface[T]):
                        metadata.cluster_dims[0], metadata.cluster_dims[1], metadata.cluster_dims[2],  # cluster
                        metadata.shared, stream, kernel.function, CompiledKernel.launch_enter_hook,
                        CompiledKernel.launch_exit_hook, metadata,
-                       *driver.active.assemble_tensormap_to_arg(metadata.tensormaps_info, args))
+                       *args)
         return kernel
 
     def __init__(self, fn, version=None, do_not_specialize=None, debug=None, noinline=None):
