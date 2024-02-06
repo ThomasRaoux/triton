@@ -10,7 +10,7 @@ std::unique_ptr<Pass> createCombineOpsPass();
 
 std::unique_ptr<Pass> createReorderBroadcastPass();
 std::unique_ptr<Pass>
-createRewriteTensorPointerPass(int computeCapability = 80);
+createRewriteTensorPointerPass();
 
 } // namespace triton
 

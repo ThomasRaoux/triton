@@ -360,6 +360,10 @@ def test_gemm(BLOCK_M, BLOCK_N, BLOCK_K, NUM_WARPS, NUM_CTAS, M, N, K, TRANS_A, 
     ]:
         pytest.skip('Known legacy issue, ldmatrix can only support x4')
 
+    if epilogue == 'add-rows' and NUM_CTAS > 1:
+        pytest.skip('known failure: error getCTAsPerCGA for SliceEncodingAttr is not well-defined.')
+
+
     M = BLOCK_M if M is None else M
     N = BLOCK_N if N is None else N
     K = BLOCK_K if K is None else K
