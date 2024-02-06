@@ -49,7 +49,7 @@ static void createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
   // Extract part.
   auto allocType = alloc.getType().cast<RankedTensorType>();
   auto rank = allocType.getShape().size();
-  SmallVector<long int> sliceShape;
+  SmallVector<int64_t> sliceShape;
   for (unsigned i = 1; i < rank; ++i)
     sliceShape.push_back(allocType.getShape()[i]);
   RankedTensorType sliceType = RankedTensorType::get(

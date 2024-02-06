@@ -220,7 +220,7 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
     int numCTAs = typeConverter->getNumCTAs();
     auto rank = origShape.size();
     SmallVector<unsigned> retSizePerThread(rank, 1);
-    auto numElements = product<long int>(origShape);
+    auto numElements = product<int64_t>(origShape);
     if (numElements / (numWarps * threadsPerWarp) >= 4) {
       retSizePerThread[rank - 1] = 2;
       retSizePerThread[rank - 2] = 2;
