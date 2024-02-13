@@ -21,36 +21,8 @@ In doing so, you will learn about:
 import torch
 
 import triton
-import triton.language as tl
-
-
-@triton.jit
-def add_kernel(x_ptr,  # *Pointer* to first input vector.
-               y_ptr,  # *Pointer* to second input vector.
-               output_ptr,  # *Pointer* to output vector.
-               n_elements,  # Size of the vector.
-               BLOCK_SIZE: tl.constexpr,  # Number of elements each program should process.
-               # NOTE: `constexpr` so it can be used as a shape value.
-               ):
-    # There are multiple 'programs' processing different data. We identify which program
-    # we are here:
-    pid = tl.program_id(axis=0)  # We use a 1D launch grid so axis is 0.
-    # This program will process inputs that are offset from the initial data.
-    # For instance, if you had a vector of length 256 and block_size of 64, the programs
-    # would each access the elements [0:64, 64:128, 128:192, 192:256].
-    # Note that offsets is a list of pointers:
-    block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    # Create a mask to guard memory operations against out-of-bounds accesses.
-    mask = offsets < n_elements
-    # Load x and y from DRAM, masking out any extra elements in case the input is not a
-    # multiple of the block size.
-    x = tl.load(x_ptr + offsets, mask=mask)
-    y = tl.load(y_ptr + offsets, mask=mask)
-    output = x + y
-    # Write x + y back to DRAM.
-    tl.store(output_ptr + offsets, output, mask=mask)
-
+from ext import add_kernel
+import json
 
 # %%
 # Let's also declare a helper function to (1) allocate the `z` tensor
@@ -70,6 +42,28 @@ def add(x: torch.Tensor, y: torch.Tensor):
     #  - Each torch.tensor object is implicitly converted into a pointer to its first element.
     #  - `triton.jit`'ed functions can be indexed with a launch grid to obtain a callable GPU kernel.
     #  - Don't forget to pass meta-parameters as keywords arguments.
+    data = {
+        "fn_name": "add_kernel", "module": "ext", "signature": {0: "*fp32", 1: "*fp32", 2: "*fp32", 3:
+                                                                "i32"}, "constants": {4: 1024}, "attrs":
+        {"divisible_by_16": [0, 1, 2, 3, 4], "equal_to_1": [], "divisible_by_8": [3, 4]}, "options": {
+            "num_warps":
+            4, "num_ctas":
+            1, "num_stages":
+            3, "cluster_dims": [1, 1, 1], "ptx_version":
+            None, "enable_fp_fusion":
+            True, "allow_fp8e4nv":
+            True, "max_num_imprecise_acc_default":
+            1073741824, "extern_libs": [[
+                "libdevice",
+                "/root/.pyenv/versions/3.11.7/lib/python3.11/site-packages/triton/backends/nvidia/lib/libdevice.10.bc"
+            ]], "debug":
+            None
+        }
+    }
+    obj = json.dumps(data)
+    triton.compiler.preload(obj)
+
+    # will hit the cache
     add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=1024)
     # We return a handle to z but, since `torch.cuda.synchronize()` hasn't been called, the kernel is still
     # running asynchronously at this point.

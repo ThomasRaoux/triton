@@ -30,6 +30,18 @@ class AttrsDescriptor:
         if self.divisible_by_8 is None:
             self.divisible_by_8 = set()
 
+    def to_dict(self):
+        return {
+            'divisible_by_16': list(self.divisible_by_16), 'equal_to_1': list(self.equal_to_1), 'divisible_by_8':
+            list(self.divisible_by_8)
+        }
+
+    @staticmethod
+    def from_dict(data):
+        return AttrsDescriptor(divisible_by_16=set(data.get('divisible_by_16',
+                                                            [])), equal_to_1=set(data.get('equal_to_1', [])),
+                               divisible_by_8=set(data.get('divisible_by_8', [])))
+
     def hash(self):
         key = str([sorted(x) for x in self.__dict__.values()])
         return hashlib.md5(key.encode("utf-8")).hexdigest()
@@ -185,6 +197,18 @@ def parse(full_name, ext, context):
         return Path(full_name).read_bytes()
 
 
+def preload(src):
+    deserialized_obj = json.loads(src)
+    fn = getattr(__import__(deserialized_obj['module']), deserialized_obj['fn_name'])
+    constants = {int(key): value for key, value in deserialized_obj['constants'].items()}
+    signature = {int(key): value for key, value in deserialized_obj['signature'].items()}
+    src = ASTSource(fn, signature, constants, AttrsDescriptor.from_dict(deserialized_obj['attrs']))
+    options = deserialized_obj['options']
+    # Fix serialization of cluster_dims
+    options["cluster_dims"] = tuple(options["cluster_dims"])
+    return compile(src, None, options)
+
+
 def compile(src, target=None, options=None):
     if target is None:
         target = driver.active.get_current_target()
@@ -193,6 +217,12 @@ def compile(src, target=None, options=None):
     if not isinstance(src, ASTSource):
         assert isinstance(src, str), "source must be either AST or a filepath"
         src = IRSource(src)
+
+    obj = {
+        'fn_name': src.fn.__name__, 'module': src.fn.__module__, 'signature': src.signature, 'constants': src.constants,
+        'attrs': src.attrs.to_dict(), 'options': options
+    }
+    serialized_obj = json.dumps(obj)
     extra_options = src.parse_options()
     options = backend.parse_options(dict(options or dict(), **extra_options))
     # create cache manager
@@ -243,7 +273,9 @@ def compile(src, target=None, options=None):
                                                              binary=False)
     fn_cache_manager.put_group(metadata_filename, metadata_group)
     # return handle to compiled kernel
-    return CompiledKernel(src, metadata_group)
+    kernel = CompiledKernel(src, metadata_group)
+    kernel.full_key = serialized_obj
+    return kernel
 
 
 def make_backend(target):
@@ -260,6 +292,7 @@ class CompiledKernel:
     # TODO: move out of this namespace since it's a runtime thing
     launch_enter_hook = None
     launch_exit_hook = None
+    full_key = None
 
     def __init__(self, src, metadata_group):
         from collections import namedtuple
