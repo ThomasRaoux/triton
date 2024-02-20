@@ -607,6 +607,7 @@ def bench_flash_attention(BATCH, H, N_CTX, D_HEAD, causal, mode, provider, dtype
             q = q.to(torch.float8_e5m2)
             k = k.to(torch.float8_e5m2)
             v = v.permute(0, 1, 3, 2)
+         #   v = v.to(torch.float8_e5m2)
         sm_scale = 1.3
         fn = lambda: attention(q, k, v, causal, sm_scale)
         if mode == "bwd":

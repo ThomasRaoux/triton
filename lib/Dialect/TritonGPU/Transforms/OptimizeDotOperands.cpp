@@ -298,8 +298,8 @@ struct MMAV3UseRegOperand : public OpRewritePattern<DotOp> {
     // dot operand, as the other types require shuffling data across threads.
     // TODO: extend it to more types.
     auto srcTy = convertLhs.getSrc().getType().cast<RankedTensorType>();
-    if (!(srcTy.getElementType().isF16() || srcTy.getElementType().isBF16()))
-      return failure();
+   // if (!(srcTy.getElementType().isF16() || srcTy.getElementType().isBF16()))
+   //   return failure();
 
     auto dotOperandEnc = DotOperandEncodingAttr::get(
         dotOp.getContext(), /*opIdx=*/0, srcEnc, /*kWidth=*/0);

@@ -567,8 +567,7 @@ bool matchMmaV3AndDotOperandLayout(RankedTensorType srcTy,
   auto dotOperandLayout = dstLayout.cast<DotOperandEncodingAttr>();
   auto ans =
       mmaLayout.getVersionMajor() == 3 && dotOperandLayout.getOpIdx() == 0 &&
-      isMmaToMmaShortcut(dotOperandLayout.getParent(), srcLayout) &&
-      (srcTy.getElementType().isF16() || srcTy.getElementType().isBF16());
+      isMmaToMmaShortcut(dotOperandLayout.getParent(), srcLayout);
   return ans;
 }
 
