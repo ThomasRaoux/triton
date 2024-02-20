@@ -41,8 +41,8 @@ def _attn_fwd_inner(acc, l_i, m_i, q,  #
         start_n = tl.multiple_of(start_n, BLOCK_N)
         # -- compute qk ----
         k = tl.load(K_block_ptr)
-        qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-        qk += tl.dot(q, k)
+        #qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+        qk = tl.dot(q, k)
         if STAGE == 2:
             mask = offs_m[:, None] >= (start_n + offs_n[None, :])
             qk = qk * qk_scale + tl.where(mask, 0, -1.0e6)
@@ -127,7 +127,7 @@ def _attn_fwd(Q, K, V, sm_scale, M, Out,  #
         strides=(stride_vk, stride_vn),
         offsets=(0, 0),
         block_shape=(BLOCK_N, BLOCK_DMODEL),
-        order=(1, 0),
+        order=(0, 1),
     )
     K_block_ptr = tl.make_block_ptr(
         base=K + qvk_offset,
@@ -441,8 +441,8 @@ class _attention(torch.autograd.Function):
     def forward(ctx, q, k, v, causal, sm_scale):
         # shape constraints
         Lq, Lk, Lv = q.shape[-1], k.shape[-1], v.shape[-1]
-        assert Lq == Lk and Lk == Lv
-        assert Lk in {16, 32, 64, 128}
+        assert Lq == Lk
+        assert Lk in {16, 32, 64, 128, 256}
         o = torch.empty_like(q)
         BLOCK_M = 128
         BLOCK_N = 64 if Lk <= 64 else 32
@@ -566,17 +566,17 @@ except BaseException:
     HAS_FLASH = False
 
 TORCH_HAS_FP8 = hasattr(torch, 'float8_e5m2')
-BATCH, N_HEADS, N_CTX, D_HEAD = 4, 48, 4096, 64
+BATCH, N_HEADS, N_CTX, D_HEAD = 4, 48, 4096, 256
 # vary seq length for fixed head and batch=4
 configs = []
-for mode in ["fwd", "bwd"]:
-    for causal in [True, False]:
+for mode in ["fwd"]:
+    for causal in [False]:
         if mode == "bwd" and not causal:
             continue
         configs.append(
             triton.testing.Benchmark(
                 x_names=["N_CTX"],
-                x_vals=[2**i for i in range(10, 15)],
+                x_vals=[2**i for i in range(14, 15)],
                 line_arg="provider",
                 line_vals=["triton"] + (["flash"] if HAS_FLASH else []),
                 line_names=["Triton"] + (["Flash-2"] if HAS_FLASH else []),
@@ -602,10 +602,11 @@ def bench_flash_attention(BATCH, H, N_CTX, D_HEAD, causal, mode, provider, dtype
     if provider == "triton":
         q = torch.randn((BATCH, H, N_CTX, D_HEAD), dtype=dtype, device="cuda", requires_grad=True)
         k = torch.randn((BATCH, H, N_CTX, D_HEAD), dtype=dtype, device="cuda", requires_grad=True)
+        v = torch.randn((BATCH, H, N_CTX, D_HEAD), dtype=dtype, device="cuda", requires_grad=True)
         if mode == "fwd" and TORCH_HAS_FP8:
             q = q.to(torch.float8_e5m2)
             k = k.to(torch.float8_e5m2)
-        v = torch.randn((BATCH, H, N_CTX, D_HEAD), dtype=dtype, device="cuda", requires_grad=True)
+            v = v.permute(0, 1, 3, 2)
         sm_scale = 1.3
         fn = lambda: attention(q, k, v, causal, sm_scale)
         if mode == "bwd":
