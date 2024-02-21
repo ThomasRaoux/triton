@@ -60,7 +60,7 @@ def _attn_fwd_inner(acc, l_i, m_i, q,  #
         acc = acc * alpha[:, None]
         # update acc
         v = tl.load(V_block_ptr)
-        acc += tl.dot(p.to(tl.float16), v)
+        acc = tl.dot(p.to(tl.float8e5), v, acc)
         # update m_i and l_i
         m_i = m_ij
         V_block_ptr = tl.advance(V_block_ptr, (BLOCK_N, 0))
@@ -452,7 +452,8 @@ class _attention(torch.autograd.Function):
         # Tuning for H100
         if torch.cuda.get_device_capability()[0] == 9:
             num_warps = 8
-            num_stages = 7 if Lk >= 64 else 3
+            num_stages = 3 if Lk >= 64 else 3
+            BLOCK_N = 128
         grid = (triton.cdiv(q.shape[2], BLOCK_M), q.shape[0] * q.shape[1], 1)
         M = torch.empty((q.shape[0], q.shape[1], q.shape[2]), device=q.device, dtype=torch.float32)
         _attn_fwd[grid](
@@ -566,7 +567,7 @@ except BaseException:
     HAS_FLASH = False
 
 TORCH_HAS_FP8 = hasattr(torch, 'float8_e5m2')
-BATCH, N_HEADS, N_CTX, D_HEAD = 4, 48, 4096, 256
+BATCH, N_HEADS, N_CTX, D_HEAD = 64, 8, 4096, 256
 # vary seq length for fixed head and batch=4
 configs = []
 for mode in ["fwd"]:
@@ -576,7 +577,7 @@ for mode in ["fwd"]:
         configs.append(
             triton.testing.Benchmark(
                 x_names=["N_CTX"],
-                x_vals=[2**i for i in range(14, 15)],
+                x_vals=[2**i for i in range(13, 14)],
                 line_arg="provider",
                 line_vals=["triton"] + (["flash"] if HAS_FLASH else []),
                 line_names=["Triton"] + (["Flash-2"] if HAS_FLASH else []),
@@ -607,7 +608,7 @@ def bench_flash_attention(BATCH, H, N_CTX, D_HEAD, causal, mode, provider, dtype
             q = q.to(torch.float8_e5m2)
             k = k.to(torch.float8_e5m2)
             v = v.permute(0, 1, 3, 2)
-         #   v = v.to(torch.float8_e5m2)
+            v = v.to(torch.float8_e5m2)
         sm_scale = 1.3
         fn = lambda: attention(q, k, v, causal, sm_scale)
         if mode == "bwd":

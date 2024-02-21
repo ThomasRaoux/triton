@@ -40,6 +40,7 @@ public:
     // Only insert fences for compute capability 9.0
     if (computeCapability < 90)
       return;
+    return;
     if (::triton::tools::getBoolEnv("DISABLE_MMA_V3"))
       return;
     ModuleOp mod = getOperation();
