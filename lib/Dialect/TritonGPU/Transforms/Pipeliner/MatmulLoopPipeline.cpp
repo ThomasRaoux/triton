@@ -81,46 +81,25 @@ createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
     src = convertBlockLayout(src);
     mask = convertBlockLayout(src);
   }
-  auto insertOp = builder.create<ttg::InsertSliceAsyncOp>(
-      loc, alloc.getType(), src, alloc, insertIdx, loadOp.getMask(),
-      loadOp.getOther(), loadOp.getCache(), loadOp.getEvict(),
-      loadOp.getIsVolatile(), /*axis*/ 0);
-  auto commmit = builder.create<ttg::AsyncCommitGroupOp>(loc, ValueRange());
+
+  auto view = builder.create<ttg::SubviewOp>(loc, alloc.getType(), alloc, insertIdx);
+  Operation* copy = builder.create<ttg::AsyncSharedCopy>(
+      loc, src, view, loadOp.getMask(), loadOp.getOther(),
+      loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+  Operation *commmit =
+      builder.create<ttg::AsyncCommitGroupOp>(loc, copy->getResult(0));
 
   int stage = opToInfo[loadOp].stage;
-  opToInfo.insert({insertOp, {.stage = stage}});
+  opToInfo.insert({copy, {.stage = stage}});
   opToInfo.insert({commmit, {.stage = stage}});
   opToInfo.erase(loadOp);
 
   // Extract part.
-  auto allocType = alloc.getType().cast<RankedTensorType>();
-  auto rank = allocType.getShape().size();
-  SmallVector<int64_t> sliceShape;
-  for (unsigned i = 1; i < rank; ++i)
-    sliceShape.push_back(allocType.getShape()[i]);
-  RankedTensorType sliceType = RankedTensorType::get(
-      sliceShape, allocType.getElementType(), allocType.getEncoding());
-  SmallVector<OpFoldResult> sliceOffsets, sliceSizes, sliceStrides;
-  for (unsigned i = 0; i < rank; ++i) {
-    if (i == 0) {
-      sliceOffsets.push_back(extractIdx);
-      sliceSizes.push_back(int_attr(1));
-    } else {
-      sliceOffsets.push_back(int_attr(0));
-      sliceSizes.push_back(int_attr(sliceType.getShape()[i - 1]));
-    }
-    sliceStrides.push_back(int_attr(1));
-  }
-  auto extract = builder.create<ttg::ExtractSliceOp>(
-      loc, sliceType, insertOp.getResult(), sliceOffsets, sliceSizes,
-      sliceStrides);
-  auto newCvt = builder.create<ttg::ConvertLayoutOp>(
-      loadOp->getLoc(), loadOp.getType(), extract.getResult());
-  loadOp->replaceAllUsesWith(newCvt->getResults());
+  auto viewLoad = builder.create<ttg::SubviewOp>(loc, alloc.getType(), alloc, extractIdx);
+  auto sharedLoad = builder.create<ttg::SharedLoad>(
+      loc, loadOp.getType(), viewLoad);
+  loadOp->replaceAllUsesWith(sharedLoad->getResults());
   loadOp.erase();
-
-  // Fix up the yield op.
-  appendToYield(forOp, {insertOp});
 }
 
 /// Create an async load equivalent to the given load.
@@ -447,10 +426,10 @@ static Value createAlloc(scf::ForOp &forOp, tt::LoadOp loadOp,
   auto ty = loadOp.getType().cast<RankedTensorType>();
   SmallVector<int64_t> bufferShape(ty.getShape().begin(), ty.getShape().end());
   bufferShape.insert(bufferShape.begin(), distance);
-  Type allocType =
-      RankedTensorType::get(bufferShape, ty.getElementType(), sharedEnc);
-  Value alloc = builder.create<mlir::triton::gpu::AllocTensorOp>(
-      loadOp.getLoc(), allocType);
+  Type memdescType = mlir::triton::MemDescType::get(
+      forOp.getContext(), bufferShape, ty.getElementType(), sharedEnc);
+  Value alloc = builder.create<mlir::triton::gpu::AllocOp>(
+      loadOp.getLoc(), memdescType, Value());
   return alloc;
 }
 
@@ -467,13 +446,11 @@ createAsynOps(scf::ForOp &forOp,
   };
   SmallVector<AsyncLoad> asyncLoads;
   SmallVector<Value> allocs;
-  SmallVector<Value> newOperands;
   for (auto &[op, info] : opToInfo) {
     if (tt::LoadOp loadOp = dyn_cast<tt::LoadOp>(op)) {
       assert(info.sharedEncoding && "LoadOp shared encoding not defined.");
       Value alloc = createAlloc(forOp, loadOp, info.sharedEncoding, numBuffers);
       assert(alloc && "Failed to create alloc for the async load.");
-      newOperands.push_back(alloc);
       allocs.push_back(alloc);
       asyncLoads.emplace_back(loadOp, alloc);
     }
@@ -489,6 +466,7 @@ createAsynOps(scf::ForOp &forOp,
   Value extractIdx = minusOne;
   Value numBuffersVal =
       builder.create<arith::ConstantIntOp>(loc, numBuffers, 32);
+  SmallVector<Value> newOperands;
   newOperands.push_back(insertIdx);
   newOperands.push_back(extractIdx);
   Value phase;
@@ -498,13 +476,10 @@ createAsynOps(scf::ForOp &forOp,
       replaceForOpWithNewSignature(builder, forOp, newOperands);
   forOp.erase();
   forOp = newForOp;
-  for (int i = 0; i < asyncLoads.size(); i++) {
-    asyncLoads[i].alloc = newForOp.getBody()->getArgument(newOperandIndex + i);
-  }
   insertIdx =
-      newForOp.getBody()->getArgument(newOperandIndex + asyncLoads.size());
+      newForOp.getBody()->getArgument(newOperandIndex);
   extractIdx =
-      newForOp.getBody()->getArgument(newOperandIndex + asyncLoads.size() + 1);
+      newForOp.getBody()->getArgument(newOperandIndex + 1);
 
   // Create two counters for the insert and extract indices to avoid creating
   // long liverange.
@@ -585,7 +560,7 @@ createSchedule(scf::ForOp forOp, int numStages,
   // `numStages - 2`. All the other operations will go in stage `numStages - 1`.
   for (Operation &op : forOp.getBody()->without_terminator()) {
     if (prefetchExtract) {
-      if (isa<ttg::ExtractSliceOp, ttg::AsyncWaitOp>(op))
+      if (isa<ttg::SubviewOp, ttg::AsyncWaitOp>(op))
         extractOps.push_back(&op);
     }
   }
@@ -598,7 +573,7 @@ createSchedule(scf::ForOp forOp, int numStages,
 
   SmallVector<DenseSet<Operation *>> insertOps(numStages);
   for (auto &[op, info] : opToInfo) {
-    if (isa<ttg::InsertSliceAsyncOp, ttg::AsyncCommitGroupOp>(op)) {
+    if (isa<ttg::AsyncSharedCopy, ttg::AsyncCommitGroupOp>(op)) {
       insertOps[info.stage].insert(op);
     }
   }
@@ -788,7 +763,7 @@ bool mlir::triton::preProcessLoopAndGetSchedule(
  // builder.create<ttg::AsyncWaitOp>(forOp.getLoc(), 0);
   // Explicitly deallocate allocated tensors after the wait op
   for (auto alloc : allocs)
-    builder.create<ttg::DeallocTensorOp>(forOp.getLoc(), alloc);
+    builder.create<ttg::DeallocOp>(forOp.getLoc(), alloc);
   return true;
 }
 
@@ -863,6 +838,7 @@ minWaitNumberForExtract(ttg::ExtractSliceOp extractOp) {
 
 /// Insert wait ops after the extract_slice ops.
 void mlir::triton::insertWaits(ModuleOp module) {
+  return; // TODO
   module.walk([&](ttg::ExtractSliceOp firstExtractOp) {
     if (!firstExtractOp->hasAttr(kNeedWaitAttrName))
       return;
