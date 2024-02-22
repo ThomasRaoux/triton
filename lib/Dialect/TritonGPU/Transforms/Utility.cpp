@@ -467,7 +467,7 @@ bool isExpensiveToRemat(Operation *op, Attribute &targetEncoding) {
     return isExpensiveLoadOrStore(op);
   if (isa<triton::CatOp>(op))
     return triton::gpu::isExpensiveCat(cast<triton::CatOp>(op), targetEncoding);
-  if (isa<tensor::ExtractSliceOp, triton::gpu::AllocTensorOp,
+  if (isa<tensor::ExtractSliceOp,
           triton::gpu::InsertSliceAsyncOp, triton::AtomicRMWOp,
           triton::AtomicCASOp, triton::DotOp>(op))
     return true;
