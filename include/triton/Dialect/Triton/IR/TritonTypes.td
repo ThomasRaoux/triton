@@ -101,11 +101,9 @@ def TT_MemDescType : TritonTypeDef<"MemDesc", "memdesc"> {
   let parameters = (ins
     ArrayRefParameter<"int64_t">:$shape,
     "Type":$elementType,
-    "Attribute":$encoding,
-    "Attribute":$memorySpace
+    "Attribute":$encoding
   );
-  let mnemonic = ?;
-  let typeName = "tt.memdesc";
+  let hasCustomAssemblyFormat = 1;
 }
 
 def TT_TensorOrMemDesc : AnyTypeOf<[TT_Tensor, TT_MemDescType]>;

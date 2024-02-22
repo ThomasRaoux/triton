@@ -315,8 +315,7 @@ def TTG_AsyncSharedCopy : TTG_Op<"async_shared_copy",
 
 
 // Allocate shared memory
-def TTG_AllocOp : TTG_Op<"alloc", [MemoryEffects<[MemAlloc<SharedMemory>]>,  
-                                                ResultsAreSharedEncoding]> {
+def TTG_AllocOp : TTG_Op<"alloc", [MemoryEffects<[MemAlloc<SharedMemory>]>]> {
   let summary = "allocate tensor";
 
   let description = [{
