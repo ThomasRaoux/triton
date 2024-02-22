@@ -344,8 +344,7 @@ def TTG_AllocTensorOp : TTG_Op<"alloc_tensor", [MemoryEffects<[MemAlloc<SharedMe
 }
 
 // Deallocate shared memory
-def TTG_DeallocOp : TTG_Op<"dealloc", [MemoryEffects<[MemFree<SharedMemory>]>,  // Deallocate shared memory
-                                                    OperandsAreSharedEncoding]> {
+def TTG_DeallocOp : TTG_Op<"dealloc", [MemoryEffects<[MemFree<SharedMemory>]>]> {
   let summary = "dealloc buffer";
 
   let description = [{
@@ -378,11 +377,23 @@ def TTG_SubviewOp : TTG_Op<"subview", [Pure]> {
   let description = [{
     This operation returns a subview of the buffer.
   }];
-  let arguments = (ins I32:$index, TT_MemDescType:$desc);  
+  let arguments = (ins TT_MemDescType:$desc, I32:$index);  
 
-  let assemblyFormat = [{$desc `[` $index `]` attr-dict `:` functional-type(operands, results)}];
+  let assemblyFormat = [{$desc `[` $index `]` attr-dict `:` type($desc) `->` type($result)}];
 
   let results = (outs TT_MemDescType:$result);
+}
+
+// Allocate shared memory
+def TTG_SharedLoad : TTG_Op<"shared_load", [MemoryEffects<[MemRead<SharedMemory>]>]> {
+  let summary = "Load a buffer from shared memory into a distributed tensor";
+
+  let description = [{
+    // TODO
+  }];
+  let arguments = (ins TT_MemDescType:$src);
+  let assemblyFormat = [{$src attr-dict `:` type($src) `->` type($result)}];
+  let results = (outs TT_Tensor:$result);
 }
 
 #endif
