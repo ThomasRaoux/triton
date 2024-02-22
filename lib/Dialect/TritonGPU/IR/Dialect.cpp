@@ -2526,16 +2526,6 @@ struct CanonicalizeConvertFromConvert
       return success();
     }
 
-    // cvt(alloc_tensor(x), type2) -> alloc_tensor(x, type2)
-    if (auto alloc_tensor = dyn_cast<AllocTensorOp>(arg)) {
-      if (!hasSharedEncoding(op->getResult(0)))
-        return failure();
-
-      rewriter.replaceOpWithNewOp<AllocTensorOp>(op,
-                                                 op->getResult(0).getType());
-      return success();
-    }
-
     // cvt(insert_slice(x), type2) -> insert_slice(cvt(x, type2))
     if (auto insert_slice = dyn_cast<InsertSliceAsyncOp>(arg)) {
       if (!hasSharedEncoding(op->getResult(0)))

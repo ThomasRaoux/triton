@@ -103,8 +103,8 @@ void MembarAnalysis::insertBarrier(Operation *op, OpBuilder *builder) {
 void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
                             FuncBlockInfoMapT *funcBlockInfoMap,
                             OpBuilder *builder) {
-  if (isa<triton::gpu::ExtractSliceOp, triton::gpu::AllocTensorOp,
-          triton::gpu::DeallocTensorOp, triton::TransOp>(op)) {
+  if (isa<triton::gpu::ExtractSliceOp, triton::gpu::AllocOp,
+          triton::gpu::DeallocOp, triton::TransOp>(op)) {
     // FIXME(Keren): extract_slice is always alias for now
     return;
   }

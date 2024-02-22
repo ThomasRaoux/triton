@@ -28,6 +28,22 @@ class TTG_Op<string mnemonic, list<Trait> traits = []> :
        !listconcat(traits, [VerifyTensorLayoutsTrait])> {
 }
 
+class TTG_Type<string name, string typeMnemonic,
+        list<Trait> traits = []> : TypeDef<TritonGPU_Dialect, name, traits> {
+  let mnemonic = typeMnemonic;
+}
+
+def TTG_AsyncToken : TTG_Type<"AsyncToken",
+                                    "async.token", []> {
+  let summary = "async token type";
+  let description = [{
+    `ttg.async.token` is a type returned by an asynchronous operation. 
+    It is used to establish an SSA-based link between the async operation (e.g. AsyncCopy)
+    and operations that group or synchronize the async operations.
+  }];
+}
+
+
 def TTG_ConvertLayoutOp : TTG_Op<"convert_layout",
                                  [SameOperandsAndResultShape,
                                   SameOperandsAndResultElementType,
@@ -46,9 +62,9 @@ def TTG_ConvertLayoutOp : TTG_Op<"convert_layout",
 def TTG_AsyncWaitOp : TTG_Op<"async_wait"> {
   let summary = "async wait";
 
-  let arguments = (ins I32Attr:$num);
+  let arguments = (ins TTG_AsyncToken:$asyncToken, I32Attr:$num);
 
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "$asyncToken attr-dict";
 
   let extraClassDeclaration = [{
     static bool isSupported(int computeCapability) {
@@ -74,7 +90,12 @@ def TTG_AsyncBulkWaitOp : TTG_Op<"async_bulk_wait"> {
 def TTG_AsyncCommitGroupOp : TTG_Op<"async_commit_group"> {
   let summary = "async commit group";
 
-  let assemblyFormat = "attr-dict";
+  let results = (outs TTG_AsyncToken:$asyncToken);
+  let arguments = (ins Variadic<TTG_AsyncToken>:$inputTokens);
+  
+  let assemblyFormat = [{
+    $inputTokens attr-dict
+  }];
 
   let extraClassDeclaration = [{
     static bool isSupported(int computeCapability) {
@@ -242,6 +263,73 @@ def TTG_InsertSliceAsyncOp : TTG_Op<"insert_slice_async",
   let hasCustomAssemblyFormat = 1;
 }
 
+def TTG_AsyncSharedCopy : TTG_Op<"async_shared_copy",
+                                    [AttrSizedOperandSegments,
+                                     MemoryEffects<[MemRead<GlobalMemory>, MemWrite<SharedMemory>]>,
+                                     TypesMatchWith<"infer mask type from src type",
+                                                    "src", "mask", "getI1SameShape($_self)",
+                                                    "($_op.getOperands().size() <= 3) || std::equal_to<>()">,
+                                     TypesMatchWith<"infer other type from src type",
+                                                    "src", "other", "getPointeeType($_self)",
+                                                    "($_op.getOperands().size() <= 4) || std::equal_to<>()">]> {
+  let summary = "copy data from global memory to shared memory asynchronously";
+
+  let description = [{
+     
+  }];
+
+  let arguments = (ins TT_PtrTensor:$src, TT_MemDescType:$dst,
+                       Optional<I1Tensor>:$mask, Optional<TT_Type>:$other,
+                       TT_CacheModifierAttr:$cache, TT_EvictionPolicyAttr:$evict,
+                       BoolAttr:$isVolatile);
+
+  let builders = [
+      OpBuilder<(ins "Value":$src, "Value":$dst,
+                     "triton::CacheModifier":$cache,
+                     "triton::EvictionPolicy":$evict, "bool":$isVolatile)>,
+  ];
+
+  let results = (outs TTG_AsyncToken:$token);
+
+  //let assemblyFormat = [{
+  //  $src `,` $dst ``
+  //  $index, $mask, $other
+  //  attr-dict `:` type($src) `->` type($dst)
+  //}];
+
+  let extraClassDeclaration = [{
+    static DenseSet<unsigned> getEligibleLoadByteWidth(int computeCapability) {
+      DenseSet<unsigned> validLoadBytes;
+      if (computeCapability >= 80) {
+        validLoadBytes = {4, 8, 16};
+      }
+      return validLoadBytes;
+    }
+  }];
+
+  let assemblyFormat = [{
+    $src `,` $dst (`mask` $mask^)? (`other` $other^)? attr-dict `:` type($src) `->` type($dst)
+  }];
+
+}
+
+
+// Allocate shared memory
+def TTG_AllocOp : TTG_Op<"alloc", [MemoryEffects<[MemAlloc<SharedMemory>]>,  
+                                                ResultsAreSharedEncoding]> {
+  let summary = "allocate tensor";
+
+  let description = [{
+    This operation allocates buffer in the shared memory and return a descriptor
+    containing the address and a view of the buffer.
+  }];
+  let arguments = (ins Optional<TT_Tensor>:$init);  
+
+  let assemblyFormat = [{$init attr-dict `:` functional-type(operands, results)}];
+
+  let results = (outs TT_MemDescType:$result);
+}
+
 def TTG_AllocTensorOp : TTG_Op<"alloc_tensor", [MemoryEffects<[MemAlloc<SharedMemory>]>,  // Allocate shared memory
                                                 ResultsAreSharedEncoding]> {
   let summary = "allocate tensor";
@@ -256,6 +344,20 @@ def TTG_AllocTensorOp : TTG_Op<"alloc_tensor", [MemoryEffects<[MemAlloc<SharedMe
   let results = (outs TT_Tensor:$result);
 }
 
+// Deallocate shared memory
+def TTG_DeallocOp : TTG_Op<"dealloc", [MemoryEffects<[MemFree<SharedMemory>]>,  // Deallocate shared memory
+                                                    OperandsAreSharedEncoding]> {
+  let summary = "dealloc buffer";
+
+  let description = [{
+    This operation deallocate a buffer explicitly. Using the buffer after this operation is undefined.
+  }];
+
+  let arguments = (ins TT_MemDescType:$ptr);
+
+  let assemblyFormat = [{$ptr attr-dict `:` type($ptr)}];
+}
+
 def TTG_DeallocTensorOp : TTG_Op<"dealloc_tensor", [MemoryEffects<[MemFree<SharedMemory>]>,  // Deallocate shared memory
                                                     OperandsAreSharedEncoding]> {
   let summary = "dealloc tensor";
@@ -268,6 +370,20 @@ def TTG_DeallocTensorOp : TTG_Op<"dealloc_tensor", [MemoryEffects<[MemFree<Share
   let arguments = (ins TT_Tensor:$ptr);
 
   let assemblyFormat = [{$ptr attr-dict `:` type($ptr)}];
+}
+
+// Allocate shared memory
+def TTG_SubviewOp : TTG_Op<"subview", [Pure]> {
+  let summary = "take a subview of the descriptor";
+
+  let description = [{
+    This operation returns a subview of the buffer.
+  }];
+  let arguments = (ins I32:$index, TT_MemDescType:$desc);  
+
+  let assemblyFormat = [{$desc `[` $index `]` attr-dict `:` functional-type(operands, results)}];
+
+  let results = (outs TT_MemDescType:$result);
 }
 
 #endif

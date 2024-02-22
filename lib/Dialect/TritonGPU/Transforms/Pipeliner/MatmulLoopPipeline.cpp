@@ -85,7 +85,7 @@ createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
       loc, alloc.getType(), src, alloc, insertIdx, loadOp.getMask(),
       loadOp.getOther(), loadOp.getCache(), loadOp.getEvict(),
       loadOp.getIsVolatile(), /*axis*/ 0);
-  auto commmit = builder.create<ttg::AsyncCommitGroupOp>(loc);
+  auto commmit = builder.create<ttg::AsyncCommitGroupOp>(loc, ValueRange());
 
   int stage = opToInfo[loadOp].stage;
   opToInfo.insert({insertOp, {.stage = stage}});
@@ -770,7 +770,7 @@ bool mlir::triton::preProcessLoopAndGetSchedule(
   // Insert a wait 0 after the loop
   OpBuilder builder(forOp);
   builder.setInsertionPointAfter(forOp);
-  builder.create<ttg::AsyncWaitOp>(forOp.getLoc(), 0);
+ // builder.create<ttg::AsyncWaitOp>(forOp.getLoc(), 0);
   // Explicitly deallocate allocated tensors after the wait op
   for (auto alloc : allocs)
     builder.create<ttg::DeallocTensorOp>(forOp.getLoc(), alloc);
@@ -873,8 +873,8 @@ void mlir::triton::insertWaits(ModuleOp module) {
       return; // Wait is not needed.
     OpBuilder builder(lastExtractOp);
     builder.setInsertionPointAfter(lastExtractOp);
-    builder.create<ttg::AsyncWaitOp>(lastExtractOp.getLoc(),
-                                     minWaitNumber.value());
+    //builder.create<ttg::AsyncWaitOp>(lastExtractOp.getLoc(),
+    //                                 minWaitNumber.value());
   });
 }
 
