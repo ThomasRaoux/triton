@@ -82,12 +82,14 @@ createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
     mask = convertBlockLayout(src);
   }
 
-  auto view = builder.create<ttg::SubviewOp>(loc, alloc.getType(), alloc, insertIdx);
-  Operation* copy = builder.create<ttg::AsyncSharedCopy>(
-      loc, src, view, loadOp.getMask(), loadOp.getOther(),
-      loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+  auto view =
+      builder.create<ttg::SubviewOp>(loc, alloc.getType(), alloc, insertIdx);
+  Operation *copy = builder.create<ttg::AsyncSharedCopy>(
+      loc, src, view, loadOp.getMask(), loadOp.getOther(), loadOp.getCache(),
+      loadOp.getEvict(), loadOp.getIsVolatile());
   Operation *commmit =
       builder.create<ttg::AsyncCommitGroupOp>(loc, copy->getResult(0));
+  builder.create<ttg::AsyncWaitOp>(loc, commmit->getResult(0), 0);
 
   int stage = opToInfo[loadOp].stage;
   opToInfo.insert({copy, {.stage = stage}});
@@ -95,9 +97,10 @@ createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
   opToInfo.erase(loadOp);
 
   // Extract part.
-  auto viewLoad = builder.create<ttg::SubviewOp>(loc, alloc.getType(), alloc, extractIdx);
-  auto sharedLoad = builder.create<ttg::SharedLoad>(
-      loc, loadOp.getType(), viewLoad);
+  auto viewLoad =
+      builder.create<ttg::SubviewOp>(loc, alloc.getType(), alloc, extractIdx);
+  auto sharedLoad =
+      builder.create<ttg::SharedLoad>(loc, loadOp.getType(), viewLoad);
   loadOp->replaceAllUsesWith(sharedLoad->getResults());
   loadOp.erase();
 }
@@ -476,10 +479,8 @@ createAsynOps(scf::ForOp &forOp,
       replaceForOpWithNewSignature(builder, forOp, newOperands);
   forOp.erase();
   forOp = newForOp;
-  insertIdx =
-      newForOp.getBody()->getArgument(newOperandIndex);
-  extractIdx =
-      newForOp.getBody()->getArgument(newOperandIndex + 1);
+  insertIdx = newForOp.getBody()->getArgument(newOperandIndex);
+  extractIdx = newForOp.getBody()->getArgument(newOperandIndex + 1);
 
   // Create two counters for the insert and extract indices to avoid creating
   // long liverange.
@@ -760,7 +761,7 @@ bool mlir::triton::preProcessLoopAndGetSchedule(
   // Insert a wait 0 after the loop
   OpBuilder builder(forOp);
   builder.setInsertionPointAfter(forOp);
- // builder.create<ttg::AsyncWaitOp>(forOp.getLoc(), 0);
+  // builder.create<ttg::AsyncWaitOp>(forOp.getLoc(), 0);
   // Explicitly deallocate allocated tensors after the wait op
   for (auto alloc : allocs)
     builder.create<ttg::DeallocOp>(forOp.getLoc(), alloc);
@@ -864,8 +865,8 @@ void mlir::triton::insertWaits(ModuleOp module) {
       return; // Wait is not needed.
     OpBuilder builder(lastExtractOp);
     builder.setInsertionPointAfter(lastExtractOp);
-    //builder.create<ttg::AsyncWaitOp>(lastExtractOp.getLoc(),
-    //                                 minWaitNumber.value());
+    // builder.create<ttg::AsyncWaitOp>(lastExtractOp.getLoc(),
+    //                                  minWaitNumber.value());
   });
 }
 
