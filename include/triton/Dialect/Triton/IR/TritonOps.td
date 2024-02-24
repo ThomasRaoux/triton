@@ -17,6 +17,8 @@ include "mlir/Interfaces/InferTypeOpInterface.td" // SameOperandsAndResultType
 include "mlir/Interfaces/SideEffectInterfaces.td" // Pure
 include "mlir/Interfaces/CastInterfaces.td" // CastOpInterface
 include "mlir/Interfaces/CallInterfaces.td" // CallOpInterface
+include "triton/Dialect/Triton/IR/TritonTypeInterfaces.td"
+
 
 //
 // Interfaces
@@ -506,8 +508,8 @@ def TT_DotOp : TT_Op<"dot", [Pure,
     }];
 
     let arguments = (ins
-      TT_FpIntTensor:$a,
-      TT_FpIntTensor:$b,
+      TT_TensorOrMemDesc:$a,
+      TT_TensorOrMemDesc:$b,
       TT_FpIntTensor:$c,
       BoolAttr:$allowTF32,
       I32Attr:$maxNumImpreciseAcc);

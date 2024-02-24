@@ -106,6 +106,5 @@ def TT_MemDescType : TritonTypeDef<"MemDesc", "memdesc"> {
   let hasCustomAssemblyFormat = 1;
 }
 
-def TT_TensorOrMemDesc : AnyTypeOf<[TT_Tensor, TT_MemDescType]>;
 
 #endif
