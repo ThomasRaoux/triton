@@ -417,8 +417,8 @@ DotOp::inferReturnTypes(MLIRContext *context, std::optional<Location> location,
   inferredReturnTypes.push_back(accTy);
 
   // verify encodings
-  auto aEnc = operands[0].getType().cast<RankedTensorType>().getEncoding();
-  auto bEnc = operands[1].getType().cast<RankedTensorType>().getEncoding();
+  auto aEnc = operands[0].getType().cast<TensorOrMemDesc>().getEncoding();
+  auto bEnc = operands[1].getType().cast<TensorOrMemDesc>().getEncoding();
   auto retEnc = accTy.getEncoding();
   if (aEnc) {
     assert(bEnc);
@@ -1129,6 +1129,10 @@ void ExternElementwiseOp::getEffects(
   effects.emplace_back(MemoryEffects::Read::get(),
                        SideEffects::DefaultResource::get());
 }
+
+// -- Interface --
+
+
 
 } // namespace triton
 } // namespace mlir

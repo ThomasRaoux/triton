@@ -371,7 +371,7 @@ def TTG_DeallocTensorOp : TTG_Op<"dealloc_tensor", [MemoryEffects<[MemFree<Share
 }
 
 // Allocate shared memory
-def TTG_SubviewOp : TTG_Op<"subview", [Pure]> {
+def TTG_SubviewOp : TTG_Op<"subview", [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
   let summary = "take a subview of the descriptor";
 
   let description = [{

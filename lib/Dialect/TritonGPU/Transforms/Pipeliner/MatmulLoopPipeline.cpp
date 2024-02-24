@@ -37,6 +37,7 @@ struct PipelineOpInfo {
   ttg::SharedEncodingAttr sharedEncoding = nullptr;
   // Blocked encoding is used for loads feeding into other loads.
   ttg::BlockedEncodingAttr blockedEncoding = nullptr;
+  bool loadIsMMAV3 = false;
 };
 
 }; // namespace
@@ -80,7 +81,7 @@ createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
   }
 
   auto view =
-      builder.create<ttg::SubviewOp>(loc, alloc.getType(), alloc, insertIdx);
+      builder.create<ttg::SubviewOp>(loc, alloc, insertIdx);
   Operation *copy = builder.create<ttg::AsyncSharedCopy>(
       loc, src, view, loadOp.getMask(), loadOp.getOther(), loadOp.getCache(),
       loadOp.getEvict(), loadOp.getIsVolatile());
@@ -89,16 +90,22 @@ createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
   builder.create<ttg::AsyncWaitOp>(loc, commmit->getResult(0), 0);
 
   int stage = opToInfo[loadOp].stage;
+  bool isMMV3Load = opToInfo[loadOp].loadIsMMAV3;
   opToInfo.insert({copy, {.stage = stage}});
   opToInfo.insert({commmit, {.stage = stage}});
   opToInfo.erase(loadOp);
 
   // Extract part.
-  auto viewLoad =
-      builder.create<ttg::SubviewOp>(loc, alloc.getType(), alloc, extractIdx);
-  auto sharedLoad =
-      builder.create<ttg::SharedLoad>(loc, loadOp.getType(), viewLoad);
-  loadOp->replaceAllUsesWith(sharedLoad->getResults());
+  auto viewLoad = builder.create<ttg::SubviewOp>(loc, alloc, extractIdx);
+  if (isMMV3Load) {
+    auto cvt = cast<ttg::ConvertLayoutOp>((*loadOp->getUsers().begin()));
+    cvt.replaceAllUsesWith(viewLoad.getResult());
+    cvt.erase();
+  } else {
+    auto sharedLoad =
+        builder.create<ttg::SharedLoad>(loc, loadOp.getType(), viewLoad);
+    loadOp->replaceAllUsesWith(sharedLoad->getResults());
+  }
   loadOp.erase();
 }
 
@@ -358,6 +365,7 @@ collectOpsToPipeline(scf::ForOp forOp,
     if (!loadInfo.sharedEncoding)
       loadInfo.sharedEncoding =
           getSharedEncoding(loadOp, distAndUse.second, loadIsMMAV3);
+    loadInfo.loadIsMMAV3 = loadIsMMAV3;
     int stage = (maxDistance - distAndUse.first) * stagesBetweenLoads;
     loadInfo.stage = stage;
     loadInfo.use = distAndUse.second;
@@ -946,7 +954,7 @@ void mlir::triton::asyncLaunchDots(scf::ForOp forOp) {
           // allocated enough buffers to pipeline dot operation with 2 stages.
           for (Value operand : {dotOp.getOperand(0), dotOp.getOperand(1)}) {
             auto operandEncoding =
-                operand.getType().cast<RankedTensorType>().getEncoding();
+                operand.getType().cast<TensorOrMemDesc>().getEncoding();
             if (!operandEncoding.isa<ttg::SharedEncodingAttr>())
               continue;
             Value transitiveOperand = operand;

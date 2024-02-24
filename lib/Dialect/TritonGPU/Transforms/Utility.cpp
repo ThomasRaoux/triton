@@ -17,7 +17,7 @@ using namespace triton;
 
 SmallVector<unsigned, 3> mmaVersionToInstrShape(int version,
                                                 const ArrayRef<int64_t> &shape,
-                                                RankedTensorType type) {
+                                                TensorOrMemDesc type) {
   if (version == 1)
     return {16, 16};
   else if (version == 2) {
