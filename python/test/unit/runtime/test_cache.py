@@ -343,3 +343,41 @@ def test_preload() -> None:
     assert counter == 0
     assert len(kernel_add.cache[device]) == 1
     assert final_kernel.hash == hash
+
+
+def test_preload_skip_cache() -> None:
+
+    @triton.jit
+    def kernel_add(a, b, o, N: tl.constexpr, type: tl.constexpr):
+        idx = tl.arange(0, N)
+        tl.device_assert(idx < 32, "idx < 32")
+        tl.store(o + idx, tl.load(a + idx) + tl.load(b + idx))
+
+    device = torch.cuda.current_device()
+
+    # get the serialized specialization data
+    specialization_data = None
+
+    def cache_hook(*args, **kwargs):
+        nonlocal specialization_data
+        specialization_data = kwargs["compile"]["specialization_data"]
+        return True
+
+    a = torch.full((32, ), 1, dtype=torch.float32, device=device)
+    b = torch.full((32, ), 2, dtype=torch.float32, device=device)
+    o = torch.empty(32, dtype=torch.float32, device=device)
+    JITFunction.cache_hook = cache_hook
+    kernel_add[(1,)](a, b, o, 32, tl.float32)
+
+    # clear the cache
+    reset_tmp_dir()
+    kernel_add.cache[device].clear()
+
+    # preload the kernel
+    kernel_preload = kernel_add.preload(specialization_data)
+    assert len(kernel_add.cache[device]) == 1
+    
+    # run the kernel, skip passing constexpr as they are not kernel arguments.    
+    kernel_preload[(1, 1, 1)](a, b, o)
+    JITFunction.cache_hook = None
+    assert(torch.equal(o, a+b))

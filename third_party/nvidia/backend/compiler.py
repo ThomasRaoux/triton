@@ -96,6 +96,10 @@ class CUDABackend(BaseBackend):
         args["allow_fp8e4nv"] = self.capability >= 89
         args["max_num_imprecise_acc_default"] = 2**30 if self.capability == 90 else 0
         return CUDAOptions(**args)
+    
+    @staticmethod
+    def get_options():
+        return CUDAOptions.__dataclass_fields__.keys()
 
     def load_dialects(self, ctx):
         nvidia.load_dialects(ctx)

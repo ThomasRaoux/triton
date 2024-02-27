@@ -340,20 +340,18 @@ class JITFunction(KernelInterface[T]):
         )
 
     def run(self, *args, grid, warmup, **kwargs):
-        from ..compiler import CompiledKernel, compile, ASTSource, make_backend
+        from ..compiler import CompiledKernel, compile, ASTSource, make_backend, get_all_targets_options
         # deprecated arguments
         assert "device_type" not in kwargs, "device_type option is deprecated; current target will be used"
         assert "device" not in kwargs, "device option is deprecated; current device will be used"
         assert "stream" not in kwargs, "stream option is deprecated; current stream will be used"
         # parse options
         device = driver.active.get_current_device()
-        stream = driver.active.get_current_stream(device)
-        target = driver.active.get_current_target()
-        backend = make_backend(target)
         kwargs["debug"] = self.debug
-        options = backend.parse_options(kwargs)
+        option_names = get_all_targets_options()
+        options = {k: kwargs[k] for k in option_names if k in kwargs}
         # bind non-reserved keyword args and set defaults
-        kwargs = {k: v for k, v in kwargs.items() if not k in options.__dict__}
+        kwargs = {k: v for k, v in kwargs.items() if not k in option_names}
         bound_args = self.signature.bind(*args, **kwargs)
         bound_args.apply_defaults()
         assert len(bound_args.arguments) == len(self.params)
@@ -396,6 +394,7 @@ class JITFunction(KernelInterface[T]):
 
             if self._call_hook(key, signature, device, constants, options, configs):
                 return None
+            target = driver.active.get_current_target()            
             # compile the kernel
             src = ASTSource(self, signature, constants, configs[0])
             self.cache[device][key] = compile(
@@ -408,7 +407,7 @@ class JITFunction(KernelInterface[T]):
         if not warmup:
             args = [arg.value for arg in args if not arg.param.is_constexpr]
             metadata = kernel.metadata
-
+            stream = driver.active.get_current_stream(device)
             kernel.run(grid_0, grid_1, grid_2, metadata.num_warps,
                        metadata.num_ctas,  # number of warps/ctas per instance
                        metadata.cluster_dims[0], metadata.cluster_dims[1], metadata.cluster_dims[2],  # cluster

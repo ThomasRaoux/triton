@@ -291,6 +291,12 @@ def make_backend(target):
     return actives[0](target)
 
 
+def get_all_targets_options():
+    all_options = {}
+    for x in backends.values():
+        all_options = all_options | x.compiler.get_options()
+    return all_options
+
 class CompiledKernel:
 
     # Hooks for external tools to monitor the execution of triton kernels
