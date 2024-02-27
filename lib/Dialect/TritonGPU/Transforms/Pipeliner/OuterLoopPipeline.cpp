@@ -55,16 +55,16 @@ createSchedule(scf::ForOp forOp, int numStages) {
 static void hoistAllocAndConst(scf::ForOp forOp) {
   SmallVector<Operation *> toHoist;
   for (Operation &op : forOp.getBody()->without_terminator()) {
-    if (isa<ttg::AllocTensorOp, arith::ConstantOp>(op))
+    if (isa<ttg::AllocOp, arith::ConstantOp>(op))
       toHoist.push_back(&op);
   }
   for (Operation *op : toHoist) {
     op->moveBefore(forOp);
-    auto allocOp = dyn_cast<ttg::AllocTensorOp>(op);
+    auto allocOp = dyn_cast<ttg::AllocOp>(op);
     if (!allocOp)
       continue;
     for (Operation *user : allocOp->getUsers()) {
-      if (auto dealloc = dyn_cast<ttg::DeallocTensorOp>(user)) {
+      if (auto dealloc = dyn_cast<ttg::DeallocOp>(user)) {
         dealloc->moveAfter(forOp);
       }
     }

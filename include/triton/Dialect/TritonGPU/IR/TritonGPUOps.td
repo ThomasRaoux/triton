@@ -329,20 +329,6 @@ def TTG_AllocOp : TTG_Op<"alloc", [MemoryEffects<[MemAlloc<SharedMemory>]>]> {
   let results = (outs TT_MemDescType:$result);
 }
 
-def TTG_AllocTensorOp : TTG_Op<"alloc_tensor", [MemoryEffects<[MemAlloc<SharedMemory>]>,  // Allocate shared memory
-                                                ResultsAreSharedEncoding]> {
-  let summary = "allocate tensor";
-
-  let description = [{
-    This operation defines a tensor of a particular shape.
-    The contents of the tensor are supposed to be in shared memory.
-  }];
-
-  let assemblyFormat = [{attr-dict `:` type($result)}];
-
-  let results = (outs TT_Tensor:$result);
-}
-
 // Deallocate shared memory
 def TTG_DeallocOp : TTG_Op<"dealloc", [MemoryEffects<[MemFree<SharedMemory>]>]> {
   let summary = "dealloc buffer";
@@ -352,20 +338,6 @@ def TTG_DeallocOp : TTG_Op<"dealloc", [MemoryEffects<[MemFree<SharedMemory>]>]> 
   }];
 
   let arguments = (ins TT_MemDescType:$ptr);
-
-  let assemblyFormat = [{$ptr attr-dict `:` type($ptr)}];
-}
-
-def TTG_DeallocTensorOp : TTG_Op<"dealloc_tensor", [MemoryEffects<[MemFree<SharedMemory>]>,  // Deallocate shared memory
-                                                    OperandsAreSharedEncoding]> {
-  let summary = "dealloc tensor";
-
-  let description = [{
-    This operation deallocate a tensor explicitly.
-    The contents of the tensor are supposed to be in shared memory.
-  }];
-
-  let arguments = (ins TT_Tensor:$ptr);
 
   let assemblyFormat = [{$ptr attr-dict `:` type($ptr)}];
 }
