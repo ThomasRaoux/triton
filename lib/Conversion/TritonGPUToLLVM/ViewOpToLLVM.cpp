@@ -359,11 +359,12 @@ struct SubviewOpConversion
     auto smemObj = getSharedMemoryObjectFromStruct(loc, adaptor.getDesc(),
                                                    llvmElemTy, rewriter);
     SmallVector<Value> opOffsetVals = op.getOffsets();
-    size_t destRank = op.getResult().getType().getShape().size();
+    size_t destRank = op.getResult().getType().getRank();
     SmallVector<Value> offsetVals = {destRank, i32_val(0)};
-    SmallVector<Value> strides = smemObj.strides;
-    strides.resize(destRank);
-
+    SmallVector<Value> strides;
+    int rankReduced = srcTy.getRank() - destRank;
+    for( int i = rankReduced; i < opOffsetVals.size(); i++ )
+      strides.push_back(smemObj.strides[i]);
     // Compute the offset based on the original strides of the shared memory
     // object
     auto offset = dot(rewriter, loc, opOffsetVals, smemObj.strides);

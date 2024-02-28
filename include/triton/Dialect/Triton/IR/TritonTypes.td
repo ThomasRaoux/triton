@@ -107,6 +107,9 @@ def TT_MemDescType : TritonTypeDef<"MemDesc", "memdesc"> {
     unsigned getElementTypeBitWidth() const {
       return getElementType().getIntOrFloatBitWidth();
     }
+    int64_t getRank() const {
+      return getShape().size();
+    }
   }];
   let hasCustomAssemblyFormat = 1;
 }

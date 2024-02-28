@@ -98,7 +98,7 @@ createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
   opToInfo.erase(loadOp);
 
   // Extract part.
-  SmallVector<Value> loadOffsets = { insertIdx, zero, zero };
+  SmallVector<Value> loadOffsets = { extractIdx, zero, zero };
   auto viewLoad = builder.create<ttg::SubviewOp>(loc, alloc, loadOffsets);
   if (isMMV3Load) {
     auto cvt = cast<ttg::ConvertLayoutOp>((*loadOp->getUsers().begin()));
