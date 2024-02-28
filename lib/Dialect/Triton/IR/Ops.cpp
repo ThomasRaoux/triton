@@ -1130,8 +1130,6 @@ void ExternElementwiseOp::getEffects(
                        SideEffects::DefaultResource::get());
 }
 
-// -- Interface --
-
 
 
 } // namespace triton

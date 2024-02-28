@@ -410,11 +410,6 @@ bool maybeSharedAllocationOp(Operation *op) {
           dialect->getTypeID() == TypeID::get<tensor::TensorDialect>());
 }
 
-bool maybeAliasOp(Operation *op) {
-  return isa<ExtractSliceOp, triton::TransOp, InsertSliceAsyncOp,
-             tensor::InsertSliceOp>(op);
-}
-
 static bool supportMFMAGranularity(int m, int n, int k) {
   // these limitations are dtype dependent, in future we may relax them
   const static std::pair<int, int> mfmaTypes[2] = {{32, 8}, {16, 16}};
@@ -517,7 +512,7 @@ bool supportMMA(Value value, int version) {
   // types of both the operands are identical here.
   assert((version == 1 || version == 2 || version == 3) &&
          "Unexpected MMA layout version found");
-  auto elemTy = value.getType().cast<RankedTensorType>().getElementType();
+  auto elemTy = value.getType().cast<TensorOrMemDesc>().getElementType();
   // FP8 is not natively supported on all mma versions but it can always be
   // promoted to fp16 therefore we can always support it.
   bool isFP8 = elemTy.isFloat8E5M2() || elemTy.isFloat8E4M3FN() ||

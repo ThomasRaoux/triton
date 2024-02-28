@@ -81,8 +81,8 @@ Value getMemAccessPtr(Operation *op) {
     return atomic.getPtr();
   if (auto atomic = dyn_cast<triton::AtomicCASOp>(op))
     return atomic.getPtr();
-  if (auto insert = dyn_cast<triton::gpu::InsertSliceAsyncOp>(op))
-    return insert.getSrc();
+  if (auto copy = dyn_cast<triton::gpu::AsyncSharedCopy>(op))
+    return copy.getSrc();
   if (auto store = dyn_cast<triton::StoreOp>(op))
     return store.getPtr();
   return nullptr;
@@ -512,8 +512,7 @@ bool isExpensiveToRemat(Operation *op, Attribute &targetEncoding) {
     return isExpensiveLoadOrStore(op);
   if (isa<triton::CatOp>(op))
     return triton::gpu::isExpensiveCat(cast<triton::CatOp>(op), targetEncoding);
-  if (isa<tensor::ExtractSliceOp,
-          triton::gpu::InsertSliceAsyncOp, triton::AtomicRMWOp,
+  if (isa<triton::gpu::AsyncSharedCopy, triton::AtomicRMWOp,
           triton::AtomicCASOp, triton::DotOp>(op))
     return true;
   if (isa<scf::YieldOp, scf::ForOp, scf::IfOp, scf::WhileOp, scf::ConditionOp>(

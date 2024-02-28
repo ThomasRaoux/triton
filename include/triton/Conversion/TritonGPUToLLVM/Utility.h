@@ -1175,7 +1175,6 @@ loadSharedToDistributed(Value dst, ArrayRef<SmallVector<Value>> dstIndices,
   unsigned outElems = triton::gpu::getTotalElemsPerThread(dstTy);
   SmallVector<Value> offsetVals = {smemObj.strides.size(), i32_val(0)};
   assert(outElems == dstIndices.size());
-
   DenseMap<unsigned, Value> sharedPtrs =
       getSwizzledSharedPtrs(loc, outVec, dstTy, srcSharedLayout, elemTy,
                             smemObj, rewriter, offsetVals, smemObj.strides);

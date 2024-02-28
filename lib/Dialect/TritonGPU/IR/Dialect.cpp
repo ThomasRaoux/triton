@@ -354,7 +354,7 @@ SmallVector<int64_t> getShapePerCTA(Attribute layout, ArrayRef<int64_t> shape) {
 }
 
 SmallVector<int64_t> getShapePerCTA(Type type) {
-  auto tensorType = type.cast<RankedTensorType>();
+  auto tensorType = type.cast<TensorOrMemDesc>();
   return getShapePerCTA(tensorType.getEncoding(), tensorType.getShape());
 }
 
@@ -1959,76 +1959,6 @@ void DotOperandEncodingAttr::print(mlir::AsmPrinter &printer) const {
 }
 
 //===----------------------------------------------------------------------===//
-// InsertSliceAsyncOp
-//===----------------------------------------------------------------------===//
-
-ParseResult parseInsertSliceAsyncOp(OpAsmParser &parser,
-                                    OperationState &result) {
-  SmallVector<OpAsmParser::UnresolvedOperand, 8> allOperands;
-  Type srcType, dstType;
-  SMLoc allOperandLoc = parser.getCurrentLocation();
-  if (parser.parseOperandList(allOperands) ||
-      parser.parseOptionalAttrDict(result.attributes) || parser.parseColon() ||
-      parser.parseCustomTypeWithFallback(srcType) || parser.parseArrow() ||
-      parser.parseCustomTypeWithFallback(dstType))
-    return failure();
-  result.addTypes(dstType);
-
-  SmallVector<Type> operandTypes;
-  operandTypes.push_back(srcType); // src
-  operandTypes.push_back(dstType); // dst
-  operandTypes.push_back(
-      IntegerType::get(parser.getBuilder().getContext(), 32)); // index
-
-  int hasMask = 0, hasOther = 0;
-  if (allOperands.size() >= 4) {
-    operandTypes.push_back(
-        triton::getI1SameShapeFromTensorOrTensorPtr(srcType)); // mask
-    hasMask = 1;
-  }
-  if (allOperands.size() >= 5) {
-    operandTypes.push_back(triton::getPointeeType(srcType)); // other
-    hasOther = 1;
-  }
-
-  if (parser.resolveOperands(allOperands, operandTypes, allOperandLoc,
-                             result.operands))
-    return failure();
-
-  // Deduce operandSegmentSizes from the number of the operands.
-  auto operandSegmentSizesAttrName =
-      triton::gpu::InsertSliceAsyncOp::getOperandSegmentSizesAttrName(
-          result.name);
-  result.addAttribute(
-      operandSegmentSizesAttrName,
-      parser.getBuilder().getDenseI32ArrayAttr({1, 1, 1, hasMask, hasOther}));
-  return success();
-}
-
-void printInsertSliceAsyncOp(OpAsmPrinter &printer,
-                             triton::gpu::InsertSliceAsyncOp insertSliceOp) {
-  printer << " ";
-  printer << insertSliceOp.getOperation()->getOperands();
-  // "operandSegmentSizes" can be deduced, so we don't print it.
-  printer.printOptionalAttrDict(
-      insertSliceOp->getAttrs(),
-      {insertSliceOp.getOperandSegmentSizesAttrName()});
-  printer << " : ";
-  printer.printStrippedAttrOrType(insertSliceOp.getSrc().getType());
-  printer << " -> ";
-  printer.printStrippedAttrOrType(insertSliceOp.getDst().getType());
-}
-
-ParseResult InsertSliceAsyncOp::parse(OpAsmParser &parser,
-                                      OperationState &result) {
-  return parseInsertSliceAsyncOp(parser, result);
-}
-
-void InsertSliceAsyncOp::print(OpAsmPrinter &printer) {
-  printInsertSliceAsyncOp(printer, *this);
-}
-
-//===----------------------------------------------------------------------===//
 // ASM Interface (i.e.: alias)
 //===----------------------------------------------------------------------===//
 
@@ -2697,56 +2627,6 @@ struct CanonicalizeConvertFromConvert
       return success();
     }
 
-    // cvt(insert_slice(x), type2) -> insert_slice(cvt(x, type2))
-    if (auto insert_slice = dyn_cast<InsertSliceAsyncOp>(arg)) {
-      if (!hasSharedEncoding(op->getResult(0)))
-        return failure();
-
-      auto newType = op.getType();
-      // Ensure that the new insert_slice op is placed in the same place as
-      // the old insert_slice op. Otherwise, the new insert_slice op may be
-      // placed after the async_wait op, which is not allowed.
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPoint(insert_slice);
-      auto newArg = rewriter.create<ConvertLayoutOp>(op->getLoc(), newType,
-                                                     insert_slice.getDst());
-      rewriter.replaceOpWithNewOp<InsertSliceAsyncOp>(
-          op, newType, insert_slice.getSrc(), newArg.getResult(),
-          insert_slice.getIndex(), insert_slice.getMask(),
-          insert_slice.getOther(), insert_slice.getCache(),
-          insert_slice.getEvict(), insert_slice.getIsVolatile(),
-          insert_slice.getAxis());
-      return success();
-    }
-
-    // cvt(extract_slice(x), type2) -> extract_slice(cvt(x, type2))
-    if (auto extract_slice = dyn_cast<ExtractSliceOp>(arg)) {
-      if (!hasSharedEncoding(op->getResult(0)))
-        return failure();
-
-      auto origType = extract_slice.getSrc().getType();
-      auto newType =
-          RankedTensorType::get(origType.getShape(), origType.getElementType(),
-                                op.getType().getEncoding());
-      auto origResType = op.getType();
-      auto resType = RankedTensorType::get(
-          origResType.getShape(), origResType.getElementType(),
-          extract_slice.getType().getEncoding());
-      // Ensure that the new extract_slice op is placed in the same place as
-      // the old extract_slice op. Otherwise, the new extract_slice op may be
-      // placed after the async_wait op, which is not allowed.
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPoint(extract_slice);
-      auto newArg = rewriter.create<triton::gpu::ConvertLayoutOp>(
-          op->getLoc(), newType, extract_slice.getSrc());
-      rewriter.replaceOpWithNewOp<triton::gpu::ExtractSliceOp>(
-          op, resType, newArg.getResult(), extract_slice.getOffsets(),
-          extract_slice.getSizes(), extract_slice.getStrides(),
-          extract_slice.getStaticOffsets(), extract_slice.getStaticSizes(),
-          extract_slice.getStaticStrides());
-      return mlir::success();
-    }
-
     // cvt(cvt(x, type1), type2) -> cvt(x, type2)
     if (auto cvt = dyn_cast<ConvertLayoutOp>(arg)) {
       if (cvt.getSrc().getDefiningOp() && !hasSharedEncoding(cvt.getSrc()) &&
@@ -2801,26 +2681,6 @@ void ConvertLayoutOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 }
 
 //===----------------------------------------------------------------------===//
-
-/// Build an ExtractSliceOp with mixed static and dynamic entries and custom
-/// result type. If the type passed is nullptr, it is inferred.
-void ExtractSliceOp::build(OpBuilder &b, OperationState &result,
-                           RankedTensorType resultType, Value source,
-                           ArrayRef<OpFoldResult> offsets,
-                           ArrayRef<OpFoldResult> sizes,
-                           ArrayRef<OpFoldResult> strides,
-                           ArrayRef<NamedAttribute> attrs) {
-  SmallVector<int64_t> staticOffsets, staticSizes, staticStrides;
-  SmallVector<Value> dynamicOffsets, dynamicSizes, dynamicStrides;
-  dispatchIndexOpFoldResults(offsets, dynamicOffsets, staticOffsets);
-  dispatchIndexOpFoldResults(sizes, dynamicSizes, staticSizes);
-  dispatchIndexOpFoldResults(strides, dynamicStrides, staticStrides);
-  build(b, result, resultType, source, dynamicOffsets, dynamicSizes,
-        dynamicStrides, b.getDenseI64ArrayAttr(staticOffsets),
-        b.getDenseI64ArrayAttr(staticSizes),
-        b.getDenseI64ArrayAttr(staticStrides));
-  result.addAttributes(attrs);
-}
 
 // -- SubviewOp --
 LogicalResult SubviewOp::inferReturnTypes(

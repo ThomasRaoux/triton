@@ -103,6 +103,11 @@ def TT_MemDescType : TritonTypeDef<"MemDesc", "memdesc"> {
     "Type":$elementType,
     "Attribute":$encoding
   );
+   let extraClassDeclaration = [{
+    unsigned getElementTypeBitWidth() const {
+      return getElementType().getIntOrFloatBitWidth();
+    }
+  }];
   let hasCustomAssemblyFormat = 1;
 }
 

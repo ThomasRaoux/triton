@@ -59,6 +59,7 @@ createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
                 Value insertIdx, Value extractIdx,
                 llvm::MapVector<Operation *, PipelineOpInfo> &opToInfo) {
   OpBuilder builder(forOp);
+  Value zero = builder.create<arith::ConstantIntOp>(forOp.getLoc(), 0, 32);
   // Replace the load with insert/extract slice.
   builder.setInsertionPoint(loadOp);
   Location loc = loadOp.getLoc();
@@ -79,9 +80,10 @@ createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
     src = convertBlockLayout(src);
     mask = convertBlockLayout(src);
   }
-
+  
+  SmallVector<Value> copyOffsets = { insertIdx, zero, zero };
   auto view =
-      builder.create<ttg::SubviewOp>(loc, alloc, insertIdx);
+      builder.create<ttg::SubviewOp>(loc, alloc, copyOffsets);
   Operation *copy = builder.create<ttg::AsyncSharedCopy>(
       loc, src, view, loadOp.getMask(), loadOp.getOther(), loadOp.getCache(),
       loadOp.getEvict(), loadOp.getIsVolatile());
@@ -96,7 +98,8 @@ createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
   opToInfo.erase(loadOp);
 
   // Extract part.
-  auto viewLoad = builder.create<ttg::SubviewOp>(loc, alloc, extractIdx);
+  SmallVector<Value> loadOffsets = { insertIdx, zero, zero };
+  auto viewLoad = builder.create<ttg::SubviewOp>(loc, alloc, loadOffsets);
   if (isMMV3Load) {
     auto cvt = cast<ttg::ConvertLayoutOp>((*loadOp->getUsers().begin()));
     cvt.replaceAllUsesWith(viewLoad.getResult());
@@ -721,9 +724,6 @@ bool mlir::triton::preProcessLoopAndGetSchedule(
   options.annotateFn = [](Operation *op,
                           mlir::triton::PipeliningOption::PipelinerPart part,
                           unsigned iteration) {
-    if (isa<ttg::ExtractSliceOp>(op)) {
-      op->setAttr(kNeedWaitAttrName, UnitAttr::get(op->getContext()));
-    }
   };
   // Insert a wait 0 after the loop
   OpBuilder builder(forOp);
@@ -738,7 +738,7 @@ bool mlir::triton::preProcessLoopAndGetSchedule(
 /// Find the minimum number of async_commit_group ops between the extract
 /// and the insert. Wait number is the number of commits-1.
 static std::optional<int>
-minWaitNumberForExtract(ttg::ExtractSliceOp extractOp) {
+minWaitNumberForExtract(Operation* op) {
   auto countCommitsBetween = [](Operation *op1, Operation *op2) {
     int count = 0;
     for (auto op = op1; op != op2; op = op->getNextNode()) {
@@ -758,13 +758,9 @@ minWaitNumberForExtract(ttg::ExtractSliceOp extractOp) {
   std::function<int(Value, Operation *, int)> minOverHistories =
       [&](Value val, Operation *sinkOp, int thisHistorySum) -> int {
     if (Operation *defOp = val.getDefiningOp()) {
-      if (isa<ttg::InsertSliceAsyncOp>(defOp)) {
         thisHistorySum += countCommitsBetween(defOp->getNextNode(), sinkOp);
         minCommitNumber = std::min(minCommitNumber, thisHistorySum);
         return minCommitNumber;
-      }
-      // Failed to track, return 1 conservatively.
-      return 1;
     }
     if (auto arg = val.dyn_cast<BlockArgument>()) {
       Block *block = arg.getOwner();
@@ -796,7 +792,7 @@ minWaitNumberForExtract(ttg::ExtractSliceOp extractOp) {
     return 1;
   };
 
-  int minCommits = minOverHistories(extractOp.getOperand(0), extractOp, 0);
+  int minCommits = minOverHistories(op->getOperand(0), op, 0);
   if (minCommits == 0)
     llvm::report_fatal_error("No commits between insert and extract!");
   return minCommits - 1;
@@ -805,7 +801,7 @@ minWaitNumberForExtract(ttg::ExtractSliceOp extractOp) {
 /// Insert wait ops after the extract_slice ops.
 void mlir::triton::insertWaits(ModuleOp module) {
   return; // TODO
-  module.walk([&](ttg::ExtractSliceOp firstExtractOp) {
+ /* module.walk([&](ttg::ExtractSliceOp firstExtractOp) {
     if (!firstExtractOp->hasAttr(kNeedWaitAttrName))
       return;
 
@@ -832,7 +828,7 @@ void mlir::triton::insertWaits(ModuleOp module) {
     builder.setInsertionPointAfter(lastExtractOp);
     // builder.create<ttg::AsyncWaitOp>(lastExtractOp.getLoc(),
     //                                  minWaitNumber.value());
-  });
+  });*/
 }
 
 /// MMA V3 post-processing.
@@ -964,9 +960,9 @@ void mlir::triton::asyncLaunchDots(scf::ForOp forOp) {
                   transitiveOperand.getDefiningOp()->getOperand(0);
             if (forOp.isDefinedOutsideOfLoop(transitiveOperand))
               continue;
-            if (transitiveOperand.getDefiningOp<ttg::ExtractSliceOp>() ==
-                nullptr)
-              valid = false;
+          //  if (transitiveOperand.getDefiningOp<ttg::ExtractSliceOp>() ==
+          //      nullptr)
+          //    valid = false;
           }
 
           if (valid) {
