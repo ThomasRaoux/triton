@@ -104,8 +104,9 @@ createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
   opToInfo.erase(loadOp);
 
   // Extract part.
-  SmallVector<Value> loadOffsets = { extractIdx, zero, zero };
-  auto viewLoad = builder.create<ttg::SubviewOp>(loc, subviewTy, alloc, loadOffsets);
+  SmallVector<Value> loadOffsets = {extractIdx, zero, zero};
+  auto viewLoad =
+      builder.create<ttg::SubviewOp>(loc, subviewTy, alloc, loadOffsets);
   if (isMMV3Load) {
     auto cvt = cast<ttg::ConvertLayoutOp>((*loadOp->getUsers().begin()));
     cvt.replaceAllUsesWith(viewLoad.getResult());
@@ -729,8 +730,7 @@ bool mlir::triton::preProcessLoopAndGetSchedule(
   options.supportDynamicLoops = true;
   options.annotateFn = [](Operation *op,
                           mlir::triton::PipeliningOption::PipelinerPart part,
-                          unsigned iteration) {
-  };
+                          unsigned iteration) {};
   // Insert a wait 0 after the loop
   OpBuilder builder(forOp);
   builder.setInsertionPointAfter(forOp);
@@ -743,8 +743,7 @@ bool mlir::triton::preProcessLoopAndGetSchedule(
 
 /// Find the minimum number of async_commit_group ops between the extract
 /// and the insert. Wait number is the number of commits-1.
-static std::optional<int>
-minWaitNumberForExtract(Operation* op) {
+static int minWaitNumberForExtract(Operation *waitOp) {
   auto countCommitsBetween = [](Operation *op1, Operation *op2) {
     int count = 0;
     for (auto op = op1; op != op2; op = op->getNextNode()) {
@@ -764,17 +763,17 @@ minWaitNumberForExtract(Operation* op) {
   std::function<int(Value, Operation *, int)> minOverHistories =
       [&](Value val, Operation *sinkOp, int thisHistorySum) -> int {
     if (Operation *defOp = val.getDefiningOp()) {
-        thisHistorySum += countCommitsBetween(defOp->getNextNode(), sinkOp);
-        minCommitNumber = std::min(minCommitNumber, thisHistorySum);
-        return minCommitNumber;
+      thisHistorySum += countCommitsBetween(defOp->getNextNode(), sinkOp);
+      minCommitNumber = std::min(minCommitNumber, thisHistorySum);
+      return minCommitNumber;
     }
     if (auto arg = val.dyn_cast<BlockArgument>()) {
       Block *block = arg.getOwner();
       auto forOp = dyn_cast<scf::ForOp>(block->getParentOp());
 
-      // Failed to track, return 1 conservatively.
+      // Failed to track, return 0 conservatively.
       if (!forOp)
-        return 1;
+        return 0;
 
       Operation *firstForInst = &*forOp.getBody()->begin();
       int insertsBetween = countCommitsBetween(firstForInst, sinkOp);
@@ -794,47 +793,22 @@ minWaitNumberForExtract(Operation* op) {
       int min2 = minOverHistories(prevVal, yieldOp, thisHistorySum);
       return std::min(std::min(min1, min2), minCommitNumber);
     }
-    // Failed to track, return 1 conservatively.
-    return 1;
+    // Failed to track, return 0 conservatively.
+    return 0;
   };
 
-  int minCommits = minOverHistories(op->getOperand(0), op, 0);
+  int minCommits = minOverHistories(waitOp->getOperand(0), waitOp, 0);
   if (minCommits == 0)
     llvm::report_fatal_error("No commits between insert and extract!");
-  return minCommits - 1;
+  return minCommits;
 }
 
 /// Insert wait ops after the extract_slice ops.
-void mlir::triton::insertWaits(ModuleOp module) {
-  return; // TODO
- /* module.walk([&](ttg::ExtractSliceOp firstExtractOp) {
-    if (!firstExtractOp->hasAttr(kNeedWaitAttrName))
-      return;
-
-    Operation *extractOp = firstExtractOp;
-    ttg::ExtractSliceOp lastExtractOp = firstExtractOp;
-
-    // If there is no meaningful work between the extracts, don't insert
-    // multiple waits. Insert just one wait per group of extracts.
-    std::optional<int> minWaitNumber = std::nullopt;
-    while (extractOp) {
-      lastExtractOp = cast<ttg::ExtractSliceOp>(extractOp);
-      std::optional<int> currMin = minWaitNumberForExtract(lastExtractOp);
-      if (currMin.has_value())
-        minWaitNumber =
-            std::min(minWaitNumber.value_or(INT_MAX), currMin.value());
-
-      extractOp->removeAttr(kNeedWaitAttrName);
-      extractOp = dyn_cast<ttg::ExtractSliceOp>(extractOp->getNextNode());
-    }
-
-    if (!minWaitNumber.has_value())
-      return; // Wait is not needed.
-    OpBuilder builder(lastExtractOp);
-    builder.setInsertionPointAfter(lastExtractOp);
-    // builder.create<ttg::AsyncWaitOp>(lastExtractOp.getLoc(),
-    //                                  minWaitNumber.value());
-  });*/
+void mlir::triton::updateWaits(ModuleOp module) {
+  module.walk([&](ttg::AsyncWaitOp waitOp) {
+    int minNumCommits = minWaitNumberForExtract(waitOp);
+    waitOp.setNum(minNumCommits);
+  });
 }
 
 /// MMA V3 post-processing.
@@ -966,9 +940,9 @@ void mlir::triton::asyncLaunchDots(scf::ForOp forOp) {
                   transitiveOperand.getDefiningOp()->getOperand(0);
             if (forOp.isDefinedOutsideOfLoop(transitiveOperand))
               continue;
-          //  if (transitiveOperand.getDefiningOp<ttg::ExtractSliceOp>() ==
-          //      nullptr)
-          //    valid = false;
+            //  if (transitiveOperand.getDefiningOp<ttg::ExtractSliceOp>() ==
+            //      nullptr)
+            //    valid = false;
           }
 
           if (valid) {
