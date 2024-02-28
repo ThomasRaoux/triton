@@ -2617,6 +2617,15 @@ struct CanonicalizeConvertFromConvert
       return success();
     }
 
+    // cvt(shared_load) -> shared_load.
+    if (auto sharedLoad = dyn_cast<SharedLoad>(arg)) {
+      // Shared_load can load to any layout so we can always fold convert into
+      // it.
+      rewriter.replaceOpWithNewOp<SharedLoad>(op, op->getResult(0).getType(),
+                                              sharedLoad.getSrc());
+      return success();
+    }
+
     // cvt(cat) -> cat
     if (auto cat = dyn_cast<CatOp>(arg)) {
       if (isExpensiveCat(cat, op.getType().getEncoding()))
