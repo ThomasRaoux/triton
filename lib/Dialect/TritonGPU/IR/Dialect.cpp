@@ -2682,21 +2682,6 @@ void ConvertLayoutOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 
 //===----------------------------------------------------------------------===//
 
-// -- SubviewOp --
-LogicalResult SubviewOp::inferReturnTypes(
-    MLIRContext *context, std::optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
-    SmallVectorImpl<Type> &inferredReturnTypes) {
-  auto srcType = operands[0].getType().cast<MemDescType>();
-  auto newShape = srcType.getShape().drop_front();
-  auto newDesc = MemDescType::get(context, newShape, srcType.getElementType(),
-                                  srcType.getEncoding());
-  inferredReturnTypes.push_back(newDesc);
-  return success();
-}
-
-//===----------------------------------------------------------------------===//
-
 void TritonGPUDialect::initialize() {
   registerTypes();
 

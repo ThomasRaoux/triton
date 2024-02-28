@@ -194,11 +194,12 @@ def TTG_DeallocOp : TTG_Op<"dealloc", [MemoryEffects<[MemFree<SharedMemory>]>]> 
   let assemblyFormat = [{$ptr attr-dict `:` type($ptr)}];
 }
 
-def TTG_SubviewOp : TTG_Op<"subview", [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
-  let summary = "take a subview of the descriptor";
+def TTG_SubviewOp : TTG_Op<"subview", [Pure]> {
+  let summary = "take a subview of the descriptor.";
 
   let description = [{
-    This operation returns a subview of the buffer.
+    This operation returns a new descriptor representing a subview of the buffer.
+    It doesn't affect the underlying memory. The subview can be rank-reduced.
   }];
   let arguments = (
     ins TT_MemDescType:$desc, Variadic<I32>:$offsets);

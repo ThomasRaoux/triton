@@ -7,6 +7,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
+#include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -80,10 +81,15 @@ createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
     src = convertBlockLayout(src);
     mask = convertBlockLayout(src);
   }
-  
-  SmallVector<Value> copyOffsets = { insertIdx, zero, zero };
+
+  SmallVector<Value> copyOffsets = {insertIdx, zero, zero};
+  MLIRContext *ctx = forOp.getContext();
+  tt::MemDescType allocTy = alloc.getType().cast<tt::MemDescType>();
+  tt::MemDescType subviewTy =
+      tt::MemDescType::get(ctx, allocTy.getShape().drop_front(),
+                           allocTy.getElementType(), allocTy.getEncoding());
   auto view =
-      builder.create<ttg::SubviewOp>(loc, alloc, copyOffsets);
+      builder.create<ttg::SubviewOp>(loc, subviewTy, alloc, copyOffsets);
   Operation *copy = builder.create<ttg::AsyncSharedCopy>(
       loc, src, view, loadOp.getMask(), loadOp.getOther(), loadOp.getCache(),
       loadOp.getEvict(), loadOp.getIsVolatile());
@@ -99,7 +105,7 @@ createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
 
   // Extract part.
   SmallVector<Value> loadOffsets = { extractIdx, zero, zero };
-  auto viewLoad = builder.create<ttg::SubviewOp>(loc, alloc, loadOffsets);
+  auto viewLoad = builder.create<ttg::SubviewOp>(loc, subviewTy, alloc, loadOffsets);
   if (isMMV3Load) {
     auto cvt = cast<ttg::ConvertLayoutOp>((*loadOp->getUsers().begin()));
     cvt.replaceAllUsesWith(viewLoad.getResult());
