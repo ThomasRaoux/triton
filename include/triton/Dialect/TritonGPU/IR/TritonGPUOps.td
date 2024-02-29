@@ -62,7 +62,7 @@ def TTG_ConvertLayoutOp : TTG_Op<"convert_layout",
 def TTG_AsyncWaitOp : TTG_Op<"async_wait"> {
   let summary = "async wait";
 
-  let arguments = (ins TTG_AsyncToken:$asyncToken, I32Attr:$num);
+  let arguments = (ins Optional<TTG_AsyncToken>:$asyncToken, I32Attr:$num);
 
   let assemblyFormat = "$asyncToken attr-dict";
 

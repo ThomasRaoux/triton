@@ -734,7 +734,7 @@ bool mlir::triton::preProcessLoopAndGetSchedule(
   // Insert a wait 0 after the loop
   OpBuilder builder(forOp);
   builder.setInsertionPointAfter(forOp);
-  // builder.create<ttg::AsyncWaitOp>(forOp.getLoc(), 0);
+  builder.create<ttg::AsyncWaitOp>(forOp.getLoc(), Value(), 0);
   // Explicitly deallocate allocated tensors after the wait op
   for (auto alloc : allocs)
     builder.create<ttg::DeallocOp>(forOp.getLoc(), alloc);
@@ -797,6 +797,8 @@ static int minWaitNumberForExtract(Operation *waitOp) {
     return 0;
   };
 
+  if (waitOp->getNumOperands() != 1)
+    return 0;
   int minCommits = minOverHistories(waitOp->getOperand(0), waitOp, 0);
   if (minCommits == 0)
     llvm::report_fatal_error("No commits between insert and extract!");
