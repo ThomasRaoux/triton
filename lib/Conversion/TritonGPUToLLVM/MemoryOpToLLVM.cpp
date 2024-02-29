@@ -24,8 +24,6 @@ void lowerDistributedToShared(AllocOp op, AllocOpAdaptor adaptor,
              "Unexpected rank of ConvertLayout(blocked->shared)");
   Value smemBase = LLVM::getSharedMemoryBase(loc, rewriter, op.getOperation());
   auto elemTy = typeConverter->convertType(srcTy.getElementType());
-  auto elemPtrTy = ptr_ty(rewriter.getContext(), 3);
-  smemBase = bitcast(smemBase, elemPtrTy);
 
   int32_t elemSize = elemTy.getIntOrFloatBitWidth();
   auto mmaLayout = srcLayout.dyn_cast<NvidiaMmaEncodingAttr>();
