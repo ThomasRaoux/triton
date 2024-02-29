@@ -163,7 +163,7 @@ def TTG_AsyncSharedCopy : TTG_Op<"async_shared_copy",
 
 
 // Allocate shared memory
-def TTG_AllocOp : TTG_Op<"alloc", [MemoryEffects<[MemAlloc<SharedMemory>]>]> {
+def TTG_AllocOp : TTG_Op<"alloc"> {
   let summary = "allocate tensor";
 
   let description = [{
@@ -174,7 +174,7 @@ def TTG_AllocOp : TTG_Op<"alloc", [MemoryEffects<[MemAlloc<SharedMemory>]>]> {
 
   let assemblyFormat = [{$init attr-dict `:` functional-type(operands, results)}];
 
-  let results = (outs TT_MemDescType:$result);
+  let results = (outs Res<TT_MemDescType, "", [MemAlloc<SharedMemory>]>:$result);
 }
 
 // Deallocate shared memory

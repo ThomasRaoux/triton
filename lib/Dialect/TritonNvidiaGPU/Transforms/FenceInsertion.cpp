@@ -85,7 +85,7 @@ private:
     if (op && isa<tt::DotOp, ttng::DotAsyncOp>(op))
       return false;
     // reach convertlayout
-    if (op && isa<ttg::AllocOp>(op))
+    if (op && isa<ttg::AllocOp>(op) && cast<ttg::AllocOp>(op).getInit())
       return true;
     // root and not BlockArgument
     if (!op && !isa<BlockArgument>(operand))

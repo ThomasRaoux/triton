@@ -2548,6 +2548,25 @@ struct CanonicalizeConvertFromHistogram
   }
 };
 
+// alloc(cvt) -> alloc
+struct CanonicalizeConvertFromAlloc
+    : public mlir::OpRewritePattern<triton::gpu::AllocOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(triton::gpu::AllocOp op,
+                  PatternRewriter &rewriter) const override {
+    if (!op.getInit())
+      return failure();
+    auto convert = op.getInit().getDefiningOp<ConvertLayoutOp>();
+    if (!convert)
+      return failure();
+    rewriter.replaceOpWithNewOp<triton::gpu::AllocOp>(
+        op, op->getResult(0).getType(), convert.getSrc());
+    return mlir::success();
+  }
+};
+
 struct CanonicalizeConvertFromConvert
     : public OpRewritePattern<ConvertLayoutOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -2632,6 +2651,15 @@ struct CanonicalizeConvertFromConvert
       return success();
     }
 
+
+    // cvt(cvt(x, type1), type2) -> cvt(x, type2)
+    if (auto cvt = dyn_cast<ConvertLayoutOp>(arg)) {
+      auto srcType = op.getSrc().getType();
+      rewriter.replaceOpWithNewOp<triton::gpu::ConvertLayoutOp>(
+          op, op->getResultTypes().front(), cvt.getSrc());
+      return success();
+    }
+
     // cvt(type1, splat(type2, x)) -> splat(type1, x)
     if (auto splat = dyn_cast<triton::SplatOp>(arg)) {
       rewriter.replaceOpWithNewOp<triton::SplatOp>(op, op->getResultTypes(),
@@ -2664,6 +2692,7 @@ void ConvertLayoutOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
   patterns.add<CanonicalizeConvertFromConvert>(context);
   patterns.add<CanonicalizeConvertFromReshape>(context);
   patterns.add<CanonicalizeConvertFromHistogram>(context);
+  patterns.add<CanonicalizeConvertFromAlloc>(context);
 }
 
 //===----------------------------------------------------------------------===//

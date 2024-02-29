@@ -190,6 +190,7 @@ public:
 
   static Value getMMAv3Operand(Value v, mlir::PatternRewriter &rewriter,
                                int opIdx) {
+    OpBuilder::InsertionGuard g(rewriter);  
     Value arg = v;
     if (auto cvtOp = v.getDefiningOp<ttg::ConvertLayoutOp>())
       arg = cvtOp.getSrc();
@@ -214,7 +215,7 @@ public:
         argType.getElementType());
     auto newType = tt::MemDescType::get(argType.getShape(),
                                         argType.getElementType(), newLayout);
-
+    rewriter.setInsertionPointAfterValue(arg);
     return rewriter.create<ttg::AllocOp>(arg.getLoc(), newType, arg);
   }
 
