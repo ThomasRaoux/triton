@@ -103,7 +103,7 @@ def TT_MemDescType : TritonTypeDef<"MemDesc", "memdesc"> {
     "Type":$elementType,
     "Attribute":$encoding
   );
-   let extraClassDeclaration = [{
+  let extraClassDeclaration = [{
     unsigned getElementTypeBitWidth() const {
       return getElementType().getIntOrFloatBitWidth();
     }
@@ -111,6 +111,15 @@ def TT_MemDescType : TritonTypeDef<"MemDesc", "memdesc"> {
       return getShape().size();
     }
   }];
+  let builders = [
+        TypeBuilderWithInferredContext<(ins
+            "llvm::ArrayRef<int64_t>":$shape,
+            "Type":$elementType,
+            "Attribute":$encoding
+        ), [{
+            return $_get(elementType.getContext(), shape, elementType, encoding);
+        }]>
+    ];
   let hasCustomAssemblyFormat = 1;
 }
 

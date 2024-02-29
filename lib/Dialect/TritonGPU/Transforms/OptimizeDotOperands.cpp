@@ -16,31 +16,33 @@ using namespace triton;
 using namespace triton::gpu;
 
 // Given
-//   convert(trans(convert(src) #shared)) #dot_operand,
+//   shared_load(trans(alloc(src) #shared)) #dot_operand,
 // change the encoding of the inner convert to a special, swizzled shared
 // encoding.
-class SwizzleShmemConvert : public OpRewritePattern<ConvertLayoutOp> {
+class SwizzleShmemConvert : public OpRewritePattern<SharedLoad> {
 public:
   using OpRewritePattern::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(ConvertLayoutOp outerCvt,
+  LogicalResult matchAndRewrite(SharedLoad sharedLoad,
                                 PatternRewriter &rewriter) const override {
     // Match outerCvt(trans(innerCvt(x))).
-    auto trans = outerCvt.getSrc().getDefiningOp<TransOp>();
+    auto trans = sharedLoad.getSrc().getDefiningOp<TransOp>();
     if (!trans || trans.getOrder() != ArrayRef<int32_t>{1, 0})
       return failure();
-    auto innerCvt = trans.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!innerCvt)
+    auto alloc = trans.getSrc().getDefiningOp<AllocOp>();
+    if (!alloc)
       return failure();
 
-    auto srcTy = innerCvt.getSrc().getType().cast<RankedTensorType>();
-    auto innerCvtTy = innerCvt.getType().cast<RankedTensorType>();
-    auto outerCvtTy = outerCvt.getType().cast<RankedTensorType>();
+    if (!alloc.getInit())
+      return failure();
+    auto srcTy = alloc.getInit().getType();
+    auto allocTy = alloc.getType();
+    auto sharedLoadTy = sharedLoad.getType().cast<RankedTensorType>();
 
-    auto innerCvtEnc = innerCvtTy.getEncoding().dyn_cast<SharedEncodingAttr>();
-    auto outerCvtEnc =
-        outerCvtTy.getEncoding().dyn_cast<DotOperandEncodingAttr>();
-    if (!innerCvtEnc || !outerCvtEnc)
+    auto allocEnc = allocTy.getEncoding().cast<SharedEncodingAttr>();
+    auto sharedLoadEnc =
+        sharedLoadTy.getEncoding().dyn_cast<DotOperandEncodingAttr>();
+    if (!allocEnc || !sharedLoadEnc)
       return failure();
 
     // TODO(Qingyi): need to check whether the CTALayout of innerCvtEnc should
@@ -54,21 +56,20 @@ public:
     // and maxPhase for the YType, hence it would causing incorrect swizzling
     // code.
     auto newInnerCvtEnc = SharedEncodingAttr::get(
-        getContext(), outerCvtEnc, innerCvtTy.getShape(),
-        /*order=*/getOrder(srcTy.getEncoding()), innerCvtEnc.getCTALayout(),
-        innerCvtTy.getElementType(), /*needTrans=*/true);
-    if (newInnerCvtEnc == innerCvtEnc)
+        getContext(), sharedLoadEnc, allocTy.getShape(),
+        /*order=*/getOrder(srcTy.getEncoding()), allocEnc.getCTALayout(),
+        allocTy.getElementType(), /*needTrans=*/true);
+    if (newInnerCvtEnc == allocEnc)
       return failure();
 
-    auto newInnerCvt = rewriter.create<ConvertLayoutOp>(
-        innerCvt.getLoc(),
-        RankedTensorType::get(innerCvtTy.getShape(),
-                              innerCvtTy.getElementType(), newInnerCvtEnc),
-        innerCvt.getSrc());
+    auto newInnerCvt = rewriter.create<AllocOp>(
+        alloc.getLoc(),
+        RankedTensorType::get(allocTy.getShape(), allocTy.getElementType(),
+                              newInnerCvtEnc),
+        alloc.getInit());
     auto newTrans = rewriter.create<TransOp>(trans.getLoc(), newInnerCvt,
                                              ArrayRef<int32_t>({1, 0}));
-    rewriter.replaceOpWithNewOp<ConvertLayoutOp>(outerCvt, outerCvtTy,
-                                                 newTrans);
+    rewriter.replaceOpWithNewOp<SharedLoad>(sharedLoad, sharedLoadTy, newTrans);
     return success();
   }
 };
@@ -276,18 +277,18 @@ struct MMAV3UseRegOperand : public OpRewritePattern<DotOp> {
 
   LogicalResult matchAndRewrite(DotOp dotOp,
                                 PatternRewriter &rewriter) const override {
-    auto convertLhs = dotOp.getOperand(0).getDefiningOp<ConvertLayoutOp>();
-    if (!convertLhs)
+    auto alloc = dotOp.getOperand(0).getDefiningOp<AllocOp>();
+    if (!alloc || !alloc.getInit())
       return failure();
 
     auto getEncoding = [](Value v) {
-      return v.getType().cast<RankedTensorType>().getEncoding();
+      return v.getType().cast<TensorOrMemDesc>().getEncoding();
     };
 
     if (!getEncoding(dotOp.getOperand(0)).isa<SharedEncodingAttr>())
       return failure();
     auto srcEnc =
-        getEncoding(convertLhs.getSrc()).dyn_cast<NvidiaMmaEncodingAttr>();
+        getEncoding(alloc.getInit()).dyn_cast<NvidiaMmaEncodingAttr>();
     auto dstEnc =
         getEncoding(dotOp.getResult()).dyn_cast<NvidiaMmaEncodingAttr>();
     if (!srcEnc || srcEnc.getVersionMajor() != 3 || !dstEnc ||
@@ -297,7 +298,7 @@ struct MMAV3UseRegOperand : public OpRewritePattern<DotOp> {
     // We currently only support convert from f16 and bf16 mma to f16 and bf16
     // dot operand, as the other types require shuffling data across threads.
     // TODO: extend it to more types.
-    auto srcTy = convertLhs.getSrc().getType().cast<RankedTensorType>();
+    auto srcTy = alloc.getInit().getType().cast<RankedTensorType>();
     if (!(srcTy.getElementType().isF16() || srcTy.getElementType().isBF16()))
       return failure();
 
@@ -306,7 +307,7 @@ struct MMAV3UseRegOperand : public OpRewritePattern<DotOp> {
     auto newTy = RankedTensorType::get(srcTy.getShape(), srcTy.getElementType(),
                                        dotOperandEnc);
     Value newOperand = rewriter.create<ConvertLayoutOp>(dotOp.getLoc(), newTy,
-                                                        convertLhs.getSrc());
+                                                        alloc.getInit());
     rewriter.modifyOpInPlace(dotOp, [&]() { dotOp.setOperand(0, newOperand); });
     return success();
   }
