@@ -19,10 +19,6 @@ include "mlir/Interfaces/ViewLikeInterface.td"
 def GlobalMemory : Resource<"::mlir::triton::GlobalMemory">;
 def SharedMemory : Resource<"::mlir::triton::gpu::SharedMemory">;
 
-def ResultsAreSharedEncoding: NativeOpTrait<"ResultsAreSharedEncoding">;
-
-def OperandsAreSharedEncoding: NativeOpTrait<"OperandsAreSharedEncoding">;
-
 class TTG_Op<string mnemonic, list<Trait> traits = []> :
     Op<TritonGPU_Dialect, mnemonic,
        !listconcat(traits, [VerifyTensorLayoutsTrait])> {

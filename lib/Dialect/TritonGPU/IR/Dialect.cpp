@@ -390,15 +390,11 @@ bool isaDistributedLayout(Attribute layout) {
 
 template <typename T> bool hasEncoding(Value value) {
   auto type = value.getType();
-  if (auto tensorType = type.dyn_cast<RankedTensorType>()) {
+  if (auto tensorType = type.dyn_cast<TensorOrMemDesc>()) {
     auto encoding = tensorType.getEncoding();
     return encoding && encoding.isa<T>();
   }
   return false;
-}
-
-bool hasSharedEncoding(Value value) {
-  return hasEncoding<triton::gpu::SharedEncodingAttr>(value);
 }
 
 bool hasDotOperandEncoding(Value value) {
@@ -2633,25 +2629,6 @@ struct CanonicalizeConvertFromConvert
 
       rewriter.replaceOpWithNewOp<CatOp>(op, op->getResult(0).getType(),
                                          cat.getOperands());
-      return success();
-    }
-
-    // cvt(cvt(x, type1), type2) -> cvt(x, type2)
-    if (auto cvt = dyn_cast<ConvertLayoutOp>(arg)) {
-      if (cvt.getSrc().getDefiningOp() && !hasSharedEncoding(cvt.getSrc()) &&
-          hasSharedEncoding(op.getSrc()) && !hasSharedEncoding(op.getResult()))
-        return failure();
-
-      if (hasSharedEncoding(op.getSrc()) && hasSharedEncoding(op.getResult()))
-        return failure();
-
-      auto srcType = op.getSrc().getType();
-      auto srcShared =
-          srcType.getEncoding().dyn_cast<triton::gpu::SharedEncodingAttr>();
-      if (srcShared && srcShared.getVec() > 1)
-        return failure();
-      rewriter.replaceOpWithNewOp<triton::gpu::ConvertLayoutOp>(
-          op, op->getResultTypes().front(), cvt.getSrc());
       return success();
     }
 

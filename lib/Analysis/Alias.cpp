@@ -22,21 +22,7 @@ AliasInfo AliasInfo::join(const AliasInfo &lhs, const AliasInfo &rhs) {
 void SharedMemoryAliasAnalysis::visitOperation(
     Operation *op, ArrayRef<const dataflow::Lattice<AliasInfo> *> operands,
     ArrayRef<dataflow::Lattice<AliasInfo> *> results) {
-  AliasInfo aliasInfo;
-  bool pessimistic = true;
-  // These ops may allocate a new shared memory buffer.
-  auto result = op->getResult(0);
-  if (triton::gpu::hasSharedEncoding(result)) {
-    aliasInfo.insert(result);
-    pessimistic = false;
-  }
-
-  if (pessimistic) {
-    return setAllToEntryStates(results);
-  }
-  // Join all lattice elements
-  for (auto *result : results)
-    propagateIfChanged(result, result->join(aliasInfo));
+  return setAllToEntryStates(results);
 }
 
 AliasResult SharedMemoryAliasAnalysis::alias(Value lhs, Value rhs) {
