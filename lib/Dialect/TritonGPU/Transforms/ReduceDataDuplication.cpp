@@ -68,7 +68,7 @@ public:
               srcType.getElementType()));
       auto tmp = builder.create<triton::gpu::AllocOp>(
           cvtOp.getLoc(), tmpType, cvtOp.getSrc());
-      auto newConvert = builder.create<triton::gpu::ConvertLayoutOp>(
+      auto newConvert = builder.create<triton::gpu::SharedLoad>(
           cvtOp.getLoc(), dstType, tmp);
       cvtOp.replaceAllUsesWith(newConvert.getResult());
       cvtOp.erase();
