@@ -29,6 +29,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 using namespace mlir;
 
@@ -87,15 +88,17 @@ public:
 void Prefetcher::cloneElementwiseOps(Value &ret, const SmallVector<Value> &vals,
                                      OpBuilder &builder) {
   IRMapping mapping;
-  mapping.map(vals[0], ret);
-  for (int i = 1; i < vals.size(); i++) {
+  mapping.map(vals[1], ret);
+  for (int i = 2; i < vals.size(); i++) {
     Value v = vals[i];
     Value curr = builder.clone(*v.getDefiningOp(), mapping)->getResult(0);
-    auto retType = RankedTensorType::get(
-        ret.getType().cast<RankedTensorType>().getShape(),
-        curr.getType().cast<RankedTensorType>().getElementType(),
-        curr.getType().cast<RankedTensorType>().getEncoding());
-    curr.setType(retType);
+    if (curr.getType().isa<RankedTensorType>()) {
+      auto retType = RankedTensorType::get(
+          ret.getType().cast<RankedTensorType>().getShape(),
+          curr.getType().cast<RankedTensorType>().getElementType(),
+          curr.getType().cast<RankedTensorType>().getEncoding());
+      curr.setType(retType);
+    }
     mapping.map(v, curr);
   }
   if (vals.size() > 1)
@@ -107,12 +110,10 @@ Value Prefetcher::generatePrefetch(Value v, unsigned opIdx, bool isPrologue,
                                    std::optional<int64_t> offsetK,
                                    std::optional<int64_t> shapeK) {
   // opIdx: 0 => a, 1 => b
-  auto type = v.getType().cast<RankedTensorType>();
+  auto type = v.getType().cast<triton::MemDescType>();
   SmallVector<int64_t> shape{type.getShape().begin(), type.getShape().end()};
   SmallVector<int64_t> offset{0, 0};
   Type elementType = type.getElementType();
-
-  auto intAttr = [&](int64_t val) { return builder.getI64IntegerAttr(val); };
 
   // k => (prefetchWidth, k - prefetchWidth)
   int64_t kIdx = opIdx == 0 ? 1 : 0;
@@ -136,7 +137,7 @@ Value Prefetcher::generatePrefetch(Value v, unsigned opIdx, bool isPrologue,
 
   auto dotOperandEnc = triton::gpu::DotOperandEncodingAttr::get(
       builder.getContext(), opIdx, dotEncoding, prefetchWidth / 8);
-  Value prefetchSlice = builder.create<triton::gpu::ConvertLayoutOp>(
+  Value prefetchSlice = builder.create<triton::gpu::SharedLoad>(
       v.getLoc(), RankedTensorType::get(shape, elementType, dotOperandEnc),
       newSmem);
 
@@ -174,11 +175,10 @@ LogicalResult Prefetcher::initialize() {
       if (!op->getResult(0).hasOneUse())
         break;
       rets.push_back(op->getOperand(0));
-      if (auto cvt = dyn_cast_or_null<triton::gpu::ConvertLayoutOp>(op))
-        if (triton::gpu::hasSharedEncoding(cvt.getSrc())) {
-          foundConvertFromShared = true;
-          break;
-        }
+      if (auto cvt = dyn_cast<triton::gpu::SharedLoad>(op)) {
+        foundConvertFromShared = true;
+        break;
+      }
       op = op->getOperand(0).getDefiningOp();
     }
     std::reverse(rets.begin(), rets.end());
@@ -356,6 +356,15 @@ scf::ForOp Prefetcher::createNewForOp() {
 
 struct PrefetchPass : public TritonGPUPrefetchBase<PrefetchPass> {
   void runOnOperation() override {
+
+    // Canonicalize convert ops to make the pattern matching easier.
+    RewritePatternSet cleanUpPatterns(&getContext());
+    triton::gpu::ConvertLayoutOp::getCanonicalizationPatterns(cleanUpPatterns, &getContext());
+    if (mlir::applyPatternsAndFoldGreedily(getOperation(),
+                                           std::move(cleanUpPatterns))
+            .failed()) {
+      signalPassFailure();
+    }
     getOperation()->walk([&](scf::ForOp forOp) {
       Prefetcher prefetcher(forOp);
 
