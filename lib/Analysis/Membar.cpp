@@ -103,10 +103,13 @@ void MembarAnalysis::insertBarrier(Operation *op, OpBuilder *builder) {
 void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
                             FuncBlockInfoMapT *funcBlockInfoMap,
                             OpBuilder *builder) {
-  if (isa<triton::gpu::AllocOp,
-          triton::gpu::DeallocOp>(op)) {
+  if (isa<triton::gpu::DeallocOp>(op)) {
     // FIXME(Keren): extract_slice is always alias for now
     return;
+  }
+  if (auto alloc = dyn_cast<triton::gpu::AllocOp>(op)) {
+    if (!alloc.getInit()) 
+      return;
   }
 
   if (isa<gpu::BarrierOp>(op)) {
