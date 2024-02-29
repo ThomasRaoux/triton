@@ -721,8 +721,7 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
 bool canBeRemat(Operation *op) {
   if (isa<LoadOp, StoreOp>(op))
     return !isExpensiveLoadOrStore(op);
-  if (isa<tensor::ExtractSliceOp, AllocTensorOp, InsertSliceAsyncOp,
-          AtomicRMWOp, AtomicCASOp, DotOp>(op))
+  if (isa<AtomicRMWOp, AtomicCASOp, DotOp>(op))
     return false;
   if (isa<scf::IfOp, scf::WhileOp, scf::ConditionOp>(op))
     return false;
@@ -839,10 +838,6 @@ LogicalResult getRematerializableSlice(
 }
 
 void backwardRematerialization(ConvertLayoutOp convertOp) {
-  // we don't want to rematerialize any conversion to/from shared
-  if (hasSharedEncoding(convertOp.getResult()) ||
-      hasSharedEncoding(convertOp.getSrc()))
-    return;
   // we don't handle conversions to DotOperandEncodingAttr
   // this is a heuristic to accommodate fused attention
   RankedTensorType targetType = convertOp.getType();
@@ -865,10 +860,6 @@ void backwardRematerialization(ConvertLayoutOp convertOp) {
 // For convert left we try to hoist them above type extension to reduce the cost
 // of the convert.
 void hoistConvertOnTopOfExtOrBroadcast(ConvertLayoutOp convertOp) {
-  // we don't want to rematerialize any conversion to/from shared
-  if (hasSharedEncoding(convertOp.getResult()) ||
-      hasSharedEncoding(convertOp.getSrc()))
-    return;
   // we don't handle conversions to DotOperandEncodingAttr
   // this is a heuristics to accommodate fused attention
   RankedTensorType targetType = convertOp.getType();

@@ -90,4 +90,38 @@ def TT_TensorPtr : TT_PtrOf<[TT_Tensor]>;
 // Any Type in Triton IR
 def TT_Type : AnyTypeOf<[TT_FloatLike, TT_IntLike, TT_PtrLike, TT_TensorPtr]>;
 
+// Memory descriptor type.
+def TT_MemDescType : TritonTypeDef<"MemDesc", "memdesc"> {
+    let summary = "memory descriptor type (`::mlir::triton::MemDescType`) in Triton IR type system";
+
+    let description = [{
+        Memory descriptor contains a base pointer (scalar) and a descriptor of the memory.
+    }];
+
+  let parameters = (ins
+    ArrayRefParameter<"int64_t">:$shape,
+    "Type":$elementType,
+    "Attribute":$encoding
+  );
+  let extraClassDeclaration = [{
+    unsigned getElementTypeBitWidth() const {
+      return getElementType().getIntOrFloatBitWidth();
+    }
+    int64_t getRank() const {
+      return getShape().size();
+    }
+  }];
+  let builders = [
+        TypeBuilderWithInferredContext<(ins
+            "llvm::ArrayRef<int64_t>":$shape,
+            "Type":$elementType,
+            "Attribute":$encoding
+        ), [{
+            return $_get(elementType.getContext(), shape, elementType, encoding);
+        }]>
+    ];
+  let hasCustomAssemblyFormat = 1;
+}
+
+
 #endif

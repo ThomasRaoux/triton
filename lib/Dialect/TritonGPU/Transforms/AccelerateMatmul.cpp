@@ -212,10 +212,10 @@ public:
     auto newLayout = ttg::SharedEncodingAttr::get(
         argType.getContext(), argType.getShape(), newOrder, CTALayout,
         argType.getElementType());
-    auto newType = RankedTensorType::get(argType.getShape(),
-                                         argType.getElementType(), newLayout);
+    auto newType = tt::MemDescType::get(argType.getShape(),
+                                        argType.getElementType(), newLayout);
 
-    return rewriter.create<ttg::ConvertLayoutOp>(arg.getLoc(), newType, arg);
+    return rewriter.create<ttg::AllocOp>(arg.getLoc(), newType, arg);
   }
 
   mlir::LogicalResult

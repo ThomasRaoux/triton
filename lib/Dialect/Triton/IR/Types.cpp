@@ -43,6 +43,41 @@ void PointerType::print(AsmPrinter &printer) const {
   printer << "<" << getPointeeType() << ", " << getAddressSpace() << ">";
 }
 
+Type MemDescType::parse(AsmParser &parser) {
+  if (parser.parseLess())
+    return Type();
+
+  SmallVector<int64_t> dimensions;
+  if (parser.parseDimensionList(dimensions, /*allowDynamic=*/false))
+    return Type();
+
+  // Parse the element type.
+  Type elementType;
+  if (parser.parseType(elementType))
+    return Type();
+
+  Attribute encoding;
+  if (succeeded(parser.parseOptionalComma())) {
+    if (parser.parseAttribute(encoding))
+      return Type();
+  }
+  if (parser.parseGreater())
+    return Type();
+
+  return MemDescType::get(parser.getContext(), dimensions, elementType,
+                          encoding);
+}
+
+void MemDescType::print(AsmPrinter &printer) const {
+  printer << "<";
+  for (auto dim : getShape())
+    printer << dim << "x";
+  printer << getElementType();
+  if (getEncoding())
+    printer << ", " << getEncoding();
+  printer << ">";
+}
+
 namespace mlir {
 
 namespace triton {
