@@ -13,6 +13,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/ADT/SetVector.h"
 
 #define DEBUG_TYPE "triton-matmul-loop-pipeline"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -737,7 +738,7 @@ bool mlir::triton::preProcessLoopAndGetSchedule(
   // Insert a wait 0 after the loop
   OpBuilder builder(forOp);
   builder.setInsertionPointAfter(forOp);
-  builder.create<ttg::AsyncWaitOp>(forOp.getLoc(), Value(), 0);
+  builder.create<ttg::AsyncWaitOp>(forOp.getLoc(), ValueRange({}), 0);
   // Explicitly deallocate allocated tensors after the wait op
   for (auto alloc : allocs)
     builder.create<ttg::DeallocOp>(forOp.getLoc(), alloc);
@@ -806,12 +807,46 @@ static int minWaitNumberForExtract(Operation *waitOp) {
   return minCommits;
 }
 
+// Look for consecutive wait ops and combine them into a single wait op.
+static void combineRedundantWaitOps(llvm::SmallSetVector<ttg::AsyncWaitOp, 8> &waitOps) {
+ llvm::SmallSetVector<ttg::AsyncWaitOp, 8> toDelete;
+  for (auto waitOp : waitOps) {
+    if (toDelete.count(waitOp))
+      continue;
+    SmallVector<ttg::AsyncWaitOp> waitGroup = {waitOp};
+    SmallVector<Value> depTokens;
+    unsigned minWaitNumber = waitOp.getNum();
+    Operation* next = waitOp->getNextNode();
+    while (next && isa<ttg::SubviewOp, ttg::AsyncWaitOp>(next)) {
+      if (auto nextWait = dyn_cast<ttg::AsyncWaitOp>(next)) {
+        waitGroup.push_back(nextWait);
+        minWaitNumber = std::min(minWaitNumber, nextWait.getNum());
+        depTokens.append(nextWait.getOperands().begin(),
+                         nextWait.getOperands().end());
+      }
+      next = next->getNextNode();
+    }
+    if (waitGroup.size() == 1)
+      continue;
+    OpBuilder builder(waitGroup.back());
+    auto newWaitOp = builder.create<ttg::AsyncWaitOp>(waitOp.getLoc(), depTokens,
+                                                     minWaitNumber);
+    toDelete.insert(waitGroup.begin(), waitGroup.end());
+  }
+  for (auto waitOp : toDelete) {
+    waitOp->erase();
+  }
+}
+
 /// Insert wait ops after the extract_slice ops.
 void mlir::triton::updateWaits(ModuleOp module) {
+  llvm::SmallSetVector<ttg::AsyncWaitOp, 8> waitOps;
   module.walk([&](ttg::AsyncWaitOp waitOp) {
     int minNumCommits = minWaitNumberForExtract(waitOp);
     waitOp.setNum(minNumCommits);
+    waitOps.insert(waitOp);
   });
+  combineRedundantWaitOps(waitOps);
 }
 
 /// MMA V3 post-processing.
