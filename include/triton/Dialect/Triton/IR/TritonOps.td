@@ -513,11 +513,11 @@ def TT_TransOp : TT_Op<"trans", [Pure,
     }];
 
     let arguments = (
-      ins TT_Tensor:$src,
+      ins TT_TensorOrMemDesc:$src,
       DenseI32ArrayAttr:$order
     );
 
-    let results = (outs TT_Tensor:$result);
+    let results = (outs TT_TensorOrMemDesc:$result);
 
     let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
 

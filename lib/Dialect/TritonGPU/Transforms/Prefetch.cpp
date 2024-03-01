@@ -132,7 +132,7 @@ Value Prefetcher::generatePrefetch(Value v, unsigned opIdx, bool isPrologue,
         builder.create<arith::ConstantIntOp>(v.getLoc(), off, 32));
   Value newSmem = builder.create<triton::gpu::SubviewOp>(
       v.getLoc(),
-      triton::MemDescType::get(elementType.getContext(), shape, elementType,
+      triton::MemDescType::get(shape, elementType,
                                type.getEncoding()),
       v, offsetsVal);
 

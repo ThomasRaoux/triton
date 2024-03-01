@@ -2,13 +2,14 @@
 #define TRITON_TYPES
 
 include "mlir/IR/AttrTypeBase.td"
+include "mlir/IR/BuiltinTypeInterfaces.td"
 include "triton/Dialect/Triton/IR/TritonDialect.td"
 
 //
 // Types
 //
-class TritonTypeDef<string name, string _mnemonic>
-    : TypeDef<Triton_Dialect, name> {
+class TritonTypeDef<string name, string _mnemonic, list<Trait> traits = []>
+    : TypeDef<Triton_Dialect, name, traits> {
     // Used by printer/parser
     let mnemonic = _mnemonic;
 }
@@ -91,7 +92,7 @@ def TT_TensorPtr : TT_PtrOf<[TT_Tensor]>;
 def TT_Type : AnyTypeOf<[TT_FloatLike, TT_IntLike, TT_PtrLike, TT_TensorPtr]>;
 
 // Memory descriptor type.
-def TT_MemDescType : TritonTypeDef<"MemDesc", "memdesc"> {
+def TT_MemDescType : TritonTypeDef<"MemDesc", "memdesc", [ShapedTypeInterface]> {
     let summary = "memory descriptor type (`::mlir::triton::MemDescType`) in Triton IR type system";
 
     let description = [{
@@ -104,12 +105,12 @@ def TT_MemDescType : TritonTypeDef<"MemDesc", "memdesc"> {
     "Attribute":$encoding
   );
   let extraClassDeclaration = [{
-    unsigned getElementTypeBitWidth() const {
-      return getElementType().getIntOrFloatBitWidth();
+    MemDescType cloneWith(std::optional<ArrayRef<int64_t>> shape,
+                          Type elementType) const {
+        return MemDescType::get(shape.value_or(getShape()), elementType, getEncoding());
     }
-    int64_t getRank() const {
-      return getShape().size();
-    }
+
+    bool hasRank() const { return true; }                          
   }];
   let builders = [
         TypeBuilderWithInferredContext<(ins

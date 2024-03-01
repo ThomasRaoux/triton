@@ -83,10 +83,9 @@ createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
   }
 
   SmallVector<Value> copyOffsets = {insertIdx, zero, zero};
-  MLIRContext *ctx = forOp.getContext();
   tt::MemDescType allocTy = alloc.getType().cast<tt::MemDescType>();
   tt::MemDescType subviewTy =
-      tt::MemDescType::get(ctx, allocTy.getShape().drop_front(),
+      tt::MemDescType::get(allocTy.getShape().drop_front(),
                            allocTy.getElementType(), allocTy.getEncoding());
   auto view =
       builder.create<ttg::SubviewOp>(loc, subviewTy, alloc, copyOffsets);
@@ -407,7 +406,7 @@ static Value createAlloc(scf::ForOp &forOp, tt::LoadOp loadOp,
   SmallVector<int64_t> bufferShape(ty.getShape().begin(), ty.getShape().end());
   bufferShape.insert(bufferShape.begin(), distance);
   Type memdescType = mlir::triton::MemDescType::get(
-      forOp.getContext(), bufferShape, ty.getElementType(), sharedEnc);
+      bufferShape, ty.getElementType(), sharedEnc);
   Value alloc = builder.create<mlir::triton::gpu::AllocOp>(
       loadOp.getLoc(), memdescType, Value());
   return alloc;

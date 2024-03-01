@@ -739,7 +739,7 @@ MemDescType getExpandedDesc(MemDescType descTy) {
   expandedShape[2] = shape[1];
   auto encoding = descTy.getEncoding();
   auto expandedEncoding = getExpandedEncoding(encoding);
-  auto expandedDesc = MemDescType::get(descTy.getContext(), expandedShape, elTy,
+  auto expandedDesc = MemDescType::get(expandedShape, elTy,
                                        expandedEncoding);
   return expandedDesc;
 }
