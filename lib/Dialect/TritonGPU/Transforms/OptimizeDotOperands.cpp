@@ -338,6 +338,7 @@ public:
       patterns.add<HoistLayoutConversion>(context);
     patterns.add<FuseTransHopper>(context);
     patterns.add<MMAV3UseRegOperand>(context);
+    ConvertLayoutOp::getCanonicalizationPatterns(patterns, context);
     if (applyPatternsAndFoldGreedily(m, std::move(patterns)).failed())
       signalPassFailure();
   }

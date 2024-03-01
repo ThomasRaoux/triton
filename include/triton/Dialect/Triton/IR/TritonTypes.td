@@ -97,12 +97,16 @@ def TT_MemDescType : TritonTypeDef<"MemDesc", "memdesc", [ShapedTypeInterface]> 
 
     let description = [{
         Memory descriptor contains a base pointer (scalar) and a descriptor of the memory.
+        If mutable memory is false that means the memory is constant and can only be allocated and stored once.
+        A constant memory allocation is different than a tensor as it can have multiple views and the descriptor
+        can be changed without changing the underlying memory.
     }];
 
   let parameters = (ins
     ArrayRefParameter<"int64_t">:$shape,
     "Type":$elementType,
-    "Attribute":$encoding
+    "Attribute":$encoding,
+    "bool":$mutable_memory
   );
   let extraClassDeclaration = [{
     MemDescType cloneWith(std::optional<ArrayRef<int64_t>> shape,
@@ -110,7 +114,7 @@ def TT_MemDescType : TritonTypeDef<"MemDesc", "memdesc", [ShapedTypeInterface]> 
         return MemDescType::get(shape.value_or(getShape()), elementType, getEncoding());
     }
 
-    bool hasRank() const { return true; }                          
+    bool hasRank() const { return true; }
   }];
   let builders = [
         TypeBuilderWithInferredContext<(ins
@@ -118,8 +122,16 @@ def TT_MemDescType : TritonTypeDef<"MemDesc", "memdesc", [ShapedTypeInterface]> 
             "Type":$elementType,
             "Attribute":$encoding
         ), [{
-            return $_get(elementType.getContext(), shape, elementType, encoding);
-        }]>
+            return $_get(elementType.getContext(), shape, elementType, encoding, /*mutableMemory=*/false);
+        }]>,
+        TypeBuilderWithInferredContext<(ins
+            "llvm::ArrayRef<int64_t>":$shape,
+            "Type":$elementType,
+            "Attribute":$encoding,
+            "bool":$mutableMemory
+        ), [{
+            return $_get(elementType.getContext(), shape, elementType, encoding, mutableMemory);
+        }]>        
     ];
   let hasCustomAssemblyFormat = 1;
 }

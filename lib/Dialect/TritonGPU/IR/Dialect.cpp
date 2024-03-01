@@ -2695,6 +2695,17 @@ void ConvertLayoutOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
   patterns.add<CanonicalizeConvertFromAlloc>(context);
 }
 
+// AllocOp
+void AllocOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  // For alloc that cannot be mutated we mark them as no-side effect. This is not fully correct 
+  if (!getType().getMutableMemory())
+    return;
+  effects.emplace_back(MemoryEffects::Allocate::get(),
+                       mlir::triton::gpu::SharedMemory::get());
+}
+
 //===----------------------------------------------------------------------===//
 
 void TritonGPUDialect::initialize() {

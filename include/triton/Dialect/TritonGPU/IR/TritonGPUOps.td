@@ -163,18 +163,17 @@ def TTG_AsyncSharedCopy : TTG_Op<"async_shared_copy",
 
 
 // Allocate shared memory
-def TTG_AllocOp : TTG_Op<"alloc"> {
+def TTG_AllocOp : TTG_Op<"alloc", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "allocate tensor";
-
   let description = [{
     This operation allocates buffer in the shared memory and return a descriptor
     containing the address and a view of the buffer.
   }];
   let arguments = (ins Optional<TT_Tensor>:$init);
-
+  
   let assemblyFormat = [{$init attr-dict `:` functional-type(operands, results)}];
 
-  let results = (outs Res<TT_MemDescType, "", [MemAlloc<SharedMemory>]>:$result);
+  let results = (outs TT_MemDescType:$result);
 }
 
 // Deallocate shared memory
