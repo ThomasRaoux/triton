@@ -96,7 +96,7 @@ void Prefetcher::cloneElementwiseOps(Value &ret, const SmallVector<Value> &vals,
       auto retType = RankedTensorType::get(
           ret.getType().cast<RankedTensorType>().getShape(),
           curr.getType().cast<RankedTensorType>().getElementType(),
-          curr.getType().cast<RankedTensorType>().getEncoding());
+          curr.getDefiningOp()->getOperand(0).getType().cast<RankedTensorType>().getEncoding());
       curr.setType(retType);
     }
     mapping.map(v, curr);
