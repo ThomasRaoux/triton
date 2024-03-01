@@ -258,7 +258,7 @@ struct TransOpConversion : public ConvertOpToLLVMPattern<TransOp> {
   matchAndRewrite(TransOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op->getLoc();
-    auto resultTy = op.getType().cast<RankedTensorType>();
+    auto resultTy = op.getType().cast<TensorOrMemDesc>();
     if (auto enc = resultTy.getEncoding().dyn_cast<SharedEncodingAttr>()) {
       auto llvmElemTy =
           getTypeConverter()->convertType(resultTy.getElementType());
