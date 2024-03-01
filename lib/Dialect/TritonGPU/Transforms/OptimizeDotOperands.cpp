@@ -16,33 +16,30 @@ using namespace triton;
 using namespace triton::gpu;
 
 // Given
-//   shared_load(trans(alloc(src) #shared)) #dot_operand,
+//   convert(trans(src)) #dot_operand ->
+//   convert(shared_load(trans(alloc(src))))
 // change the encoding of the inner convert to a special, swizzled shared
 // encoding.
-class SwizzleShmemConvert : public OpRewritePattern<SharedLoad> {
+class SwizzleShmemConvert : public OpRewritePattern<ConvertLayoutOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(SharedLoad sharedLoad,
+  LogicalResult matchAndRewrite(ConvertLayoutOp cvtOp,
                                 PatternRewriter &rewriter) const override {
     // Match outerCvt(trans(innerCvt(x))).
-    auto trans = sharedLoad.getSrc().getDefiningOp<TransOp>();
+    auto trans = cvtOp.getSrc().getDefiningOp<TransOp>();
     if (!trans || trans.getOrder() != ArrayRef<int32_t>{1, 0})
       return failure();
-    auto alloc = trans.getSrc().getDefiningOp<AllocOp>();
-    if (!alloc)
-      return failure();
 
-    if (!alloc.getInit())
-      return failure();
-    auto srcTy = alloc.getInit().getType();
-    auto allocTy = alloc.getType();
-    auto sharedLoadTy = sharedLoad.getType().cast<RankedTensorType>();
+    auto srcTy = trans.getSrc().getType().dyn_cast<RankedTensorType>();
 
-    auto allocEnc = allocTy.getEncoding().cast<SharedEncodingAttr>();
-    auto sharedLoadEnc =
+    if (auto srcCvt = trans.getSrc().getDefiningOp<ConvertLayoutOp>()) {
+      srcTy = srcCvt.getSrc().getType();
+    }
+    auto sharedLoadTy = cvtOp.getType().cast<RankedTensorType>();
+    auto cvtEncoding =
         sharedLoadTy.getEncoding().dyn_cast<DotOperandEncodingAttr>();
-    if (!allocEnc || !sharedLoadEnc)
+    if (!cvtEncoding)
       return failure();
 
     // TODO(Qingyi): need to check whether the CTALayout of innerCvtEnc should
@@ -55,21 +52,22 @@ public:
     // type inference of TransOp simply swap the order but doesn't fix the vec
     // and maxPhase for the YType, hence it would causing incorrect swizzling
     // code.
-    auto newInnerCvtEnc = SharedEncodingAttr::get(
-        getContext(), sharedLoadEnc, allocTy.getShape(),
-        /*order=*/getOrder(srcTy.getEncoding()), allocEnc.getCTALayout(),
-        allocTy.getElementType(), /*needTrans=*/true);
-    if (newInnerCvtEnc == allocEnc)
+    auto newInnerCvtEnc =
+        SharedEncodingAttr::get(getContext(), cvtEncoding, srcTy.getShape(),
+                                /*order=*/getOrder(srcTy.getEncoding()),
+                                triton::gpu::getCTALayout(srcTy.getEncoding()),
+                                srcTy.getElementType(), /*needTrans=*/true);
+    if (newInnerCvtEnc == cvtEncoding)
       return failure();
 
-    auto newInnerCvt = rewriter.create<AllocOp>(
-        alloc.getLoc(),
-        RankedTensorType::get(allocTy.getShape(), allocTy.getElementType(),
-                              newInnerCvtEnc),
-        alloc.getInit());
-    auto newTrans = rewriter.create<TransOp>(trans.getLoc(), newInnerCvt,
+    auto alloc = rewriter.create<AllocOp>(
+        trans.getLoc(),
+        MemDescType::get(srcTy.getShape(), srcTy.getElementType(),
+                         newInnerCvtEnc),
+        trans.getSrc());
+    auto newTrans = rewriter.create<TransOp>(trans.getLoc(), alloc,
                                              ArrayRef<int32_t>({1, 0}));
-    rewriter.replaceOpWithNewOp<SharedLoad>(sharedLoad, sharedLoadTy, newTrans);
+    rewriter.replaceOpWithNewOp<SharedLoad>(trans, sharedLoadTy, newTrans);
     return success();
   }
 };
@@ -337,6 +335,7 @@ public:
     if (triton::gpu::TritonGPUDialect::getComputeCapability(m) >= 80)
       patterns.add<HoistLayoutConversion>(context);
     patterns.add<FuseTransHopper>(context);
+    patterns.add<SwizzleShmemConvert>(context);
     patterns.add<MMAV3UseRegOperand>(context);
     ConvertLayoutOp::getCanonicalizationPatterns(patterns, context);
     if (applyPatternsAndFoldGreedily(m, std::move(patterns)).failed())

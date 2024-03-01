@@ -107,10 +107,16 @@ createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
   auto viewLoad =
       builder.create<ttg::SubviewOp>(loc, subviewTy, alloc, loadOffsets);
   if (isMMV3Load) {
-    auto cvt = cast<ttg::AllocOp>((*loadOp->getUsers().begin()));
-    cvt.replaceAllUsesWith(viewLoad.getResult());
-    cvt.erase();
+    auto alloc = cast<ttg::AllocOp>((*loadOp->getUsers().begin()));
+    alloc.replaceAllUsesWith(viewLoad.getResult());
+    alloc.erase();
   } else {
+    for (Operation *user : loadOp->getUsers()) {
+      if (auto alloc = dyn_cast<ttg::AllocOp>(user)) {
+        alloc.replaceAllUsesWith(viewLoad.getResult());
+        alloc.erase();
+      }
+    }
     auto sharedLoad =
         builder.create<ttg::SharedLoad>(loc, loadOp.getType(), viewLoad);
     loadOp->replaceAllUsesWith(sharedLoad->getResults());
@@ -137,29 +143,27 @@ allTransitiveUsesHaveDotEncoding(Value val,
     ttg::SharedEncodingAttr tempAttr;
     if (user->getNumResults() != 1)
       return false;
-    auto tensorType = user->getResult(0).getType().dyn_cast<RankedTensorType>();
-    if (!tensorType)
-      return false;
-    if (tensorType.getEncoding().isa<ttg::SharedEncodingAttr>()) {
+    if (auto memDesc = user->getResult(0).getType().dyn_cast<triton::MemDescType>()) {
       // First time we find a shared encoding in the chain, save it and try to
       // use it if it is compatible with the other users.
       if (!tempAttr)
-        tempAttr = tensorType.getEncoding().cast<ttg::SharedEncodingAttr>();
+        tempAttr = memDesc.getEncoding().cast<ttg::SharedEncodingAttr>();
       ttg::SharedEncodingAttr nextEncoding;
       bool hasDotEncodingUse =
           allTransitiveUsesHaveDotEncoding(user->getResult(0), nextEncoding);
       if (!hasDotEncodingUse)
         return false;
     } else {
-      auto convertLayout = llvm::dyn_cast<ttg::ConvertLayoutOp>(user);
-      if (!convertLayout)
+      if (!isa<ttg::SharedLoad, ttg::ConvertLayoutOp>(user))
         return false;
-      auto dotOpEnc = convertLayout.getType()
+      auto dotOpEnc = user->getResult(0)
+                          .getType()
+                          .cast<TensorOrMemDesc>()
                           .getEncoding()
                           .dyn_cast<ttg::DotOperandEncodingAttr>();
       if (!dotOpEnc)
         return false;
-      auto srcTensorType = val.getType().cast<RankedTensorType>();
+      auto srcTensorType = val.getType().cast<TensorOrMemDesc>();
       auto CTALayout = ttg::getCTALayout(srcTensorType.getEncoding());
       auto order = ttg::getOrder(srcTensorType.getEncoding());
       unsigned bitWidth =
