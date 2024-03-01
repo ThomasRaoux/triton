@@ -437,7 +437,7 @@ Value loadA(ConversionPatternRewriter &rewriter, Location loc, Value thread,
   assert(nonKDim == 32 || nonKDim == 16 || nonKDim == 4);
   auto warpsPerCTA = mfmaLayout.getWarpsPerCTA();
 
-  auto aTensorTy = tensor.getType().cast<RankedTensorType>();
+  auto aTensorTy = tensor.getType().cast<MemDescType>();
   SmallVector<int64_t> shape(aTensorTy.getShape().begin(),
                              aTensorTy.getShape().end());
   auto sharedLayout = aTensorTy.getEncoding().cast<SharedEncodingAttr>();
@@ -582,7 +582,7 @@ Value loadB(ConversionPatternRewriter &rewriter, Location loc, Value thread,
   assert(nonKDim == 32 || nonKDim == 16 || nonKDim == 4);
   auto warpsPerCTA = mfmaLayout.getWarpsPerCTA();
 
-  auto bTensorTy = tensor.getType().cast<RankedTensorType>();
+  auto bTensorTy = tensor.getType().cast<MemDescType>();
   ArrayRef<int64_t> shape = bTensorTy.getShape();
   auto sharedLayout = bTensorTy.getEncoding().cast<SharedEncodingAttr>();
   auto order = sharedLayout.getOrder();
