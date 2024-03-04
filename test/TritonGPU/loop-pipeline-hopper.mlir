@@ -14,38 +14,44 @@
 // CHECK-DAG: %[[CONSTANT_0:.*]] = arith.constant 0 : i32
 // CHECK-DAG: %[[CONSTANT_1:.*]] = arith.constant 1 : i32
 // CHECK-DAG: %[[CONSTANT_2:.*]] = arith.constant 2 : i32
-// CHECK: %[[ABUFFER:.*]] = triton_gpu.alloc_tensor
-// CHECK: %[[BBUFFER:.*]] = triton_gpu.alloc_tensor
+// CHECK: %[[ABUFFER:.*]] = triton_gpu.alloc
+// CHECK: %[[BBUFFER:.*]] = triton_gpu.alloc
 // CHECK-DAG: %[[LOOP_COND_0:.*]] = arith.cmpi slt, %[[LB:.*]], %[[UB:.*]]
 // CHECK-DAG: %[[LOOP_COND_0_SPLAT_A:.*]] = tt.splat %[[LOOP_COND_0]]
-// CHECK: %[[A0BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[CONSTANT_0]], %[[LOOP_COND_0_SPLAT_A]]
+// CHECK-DAG: %[[ASUB:.*]] = triton_gpu.subview %[[ABUFFER]][%[[CONSTANT_0]], %[[CONSTANT_0]], %[[CONSTANT_0]]] : !tt.memdesc<2x128x32xf16, #shared, mutable> -> !tt.memdesc<128x32xf16, #shared, mutable>
+// CHECK: %[[T_A0:.*]] = triton_gpu.async_shared_copy %{{.*}}, %[[ASUB]] mask %[[LOOP_COND_0_SPLAT_A]] {cache = 1 : i32, evict = 1 : i32, isVolatile = false} : tensor<128x32x!tt.ptr<f16, 1>, #blocked1> -> <128x32xf16, #shared, mutable>
 // CHECK-DAG: %[[LOOP_COND_0_SPLAT_B:.*]] = tt.splat %[[LOOP_COND_0]]
-// CHECK: %[[B0BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[CONSTANT_0]], %[[LOOP_COND_0_SPLAT_B]]
+// CHECK-DAG: %[[BSUB:.*]] = triton_gpu.subview %[[BBUFFER]][%[[CONSTANT_0]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK: %[[T_B0:.*]] = triton_gpu.async_shared_copy %{{.*}}, %[[BSUB]] mask %[[LOOP_COND_0_SPLAT_B]] other %{{.*}} {cache = 1 : i32, evict = 1 : i32, isVolatile = false} : tensor<32x128x!tt.ptr<f16, 1>, #blocked> -> <32x128xf16, #shared1, mutable>
 // CHECK-DAG: %[[IV_1:.*]] = arith.addi %[[LB]], %[[STEP:.*]]
 // CHECK-DAG: %[[LOOP_COND_1:.*]] = arith.cmpi slt, %[[IV_1]], %[[UB]]
 // CHECK-DAG: %[[LOOP_COND_1_SPLAT_A:.*]] = tt.splat %[[LOOP_COND_1]]
-// CHECK: %[[A1BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[CONSTANT_1]], %[[LOOP_COND_1_SPLAT_A]]
+// CHECK-DAG: %[[ASUB1:.*]] = triton_gpu.subview %[[ABUFFER]][%[[CONSTANT_1]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK: %[[T_A1:.*]] = triton_gpu.async_shared_copy %{{.*}}, %[[ASUB1]] mask %[[LOOP_COND_1_SPLAT_A]]
 // CHECK-DAG: %[[LOOP_COND_1_SPLAT_B:.*]] = tt.splat %[[LOOP_COND_1]]
-// CHECK: %[[B1BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[CONSTANT_1]], %[[LOOP_COND_1_SPLAT_B]]
-// CHECK: %[[A0:.*]] = triton_gpu.extract_slice %[[A0BUFFER]][%[[CONSTANT_0]], 0, 0]
-// CHECK: %[[B0:.*]] = triton_gpu.extract_slice %[[B0BUFFER]][%[[CONSTANT_0]], 0, 0]
-// CHECK:   triton_gpu.async_wait {num = 2 : i32}
+// CHECK-DAG: %[[BSUB1:.*]] = triton_gpu.subview %[[BBUFFER]][%[[CONSTANT_1]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK: %[[T_B1:.*]] = triton_gpu.async_shared_copy %{{.*}}, %[[BSUB1]] mask %[[LOOP_COND_1_SPLAT_B]]
+// CHECK-DAG: %[[A0:.*]] = triton_gpu.subview %[[ABUFFER]][%[[CONSTANT_0]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK-DAG: %[[B0:.*]] = triton_gpu.subview %[[BBUFFER]][%[[CONSTANT_0]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK-DAG:   triton_gpu.async_wait {{.*}} {num = 2 : i32}
 // CHECK: scf.for {{.*}} iter_args({{.*}}, %[[INS_IDX:.*]] = %[[CONSTANT_1]], %[[EXT_IDX:.*]] = %[[CONSTANT_0]]{{.*}}, %[[arg_a0:.*]] = %[[A0]], %[[arg_b0:.*]] = %[[B0]]
-// CHECK:   %[[arg_a0_dot_op:.*]] = triton_gpu.convert_layout %[[arg_a0]]
-// CHECK:   %[[arg_b0_dot_op_0:.*]] = triton_gpu.convert_layout %[[arg_b0]]
+// CHECK:   %[[arg_a0_dot_op:.*]] = triton_gpu.shared_load %[[arg_a0]]
+// CHECK:   %[[arg_b0_dot_op_0:.*]] = triton_gpu.shared_load %[[arg_b0]]
 // CHECK:   tt.dot %[[arg_a0_dot_op]], %[[arg_b0_dot_op_0]], {{.*}}
 // CHECK-DAG: %[[INS_IDX_2:.*]] = arith.addi %[[INS_IDX]], %[[CONSTANT_1]] : i32
 // CHECK-DAG: %[[CMP_INS:.*]] = arith.cmpi slt, %[[INS_IDX_2]], %[[CONSTANT_2]]
 // CHECK-DAG: %[[INS_IDX_3:.*]] = arith.select %[[CMP_INS]], %[[INS_IDX_2]], %[[CONSTANT_0]]
-// CHECK:   %[[NEXT_A_BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[INS_IDX_3]]
-// CHECK:   %[[NEXT_B_BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[INS_IDX_3]]
+// CHECK:   %[[ASUB3:.*]] = triton_gpu.subview %[[ABUFFER]][%[[INS_IDX_3]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK:   %[[NEXT_A_BUFFER:.*]] = triton_gpu.async_shared_copy {{.*}}, %[[ASUB3]]
+// CHECK:   %[[BSUB3:.*]] = triton_gpu.subview %[[BBUFFER]][%[[INS_IDX_3]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK:   %[[NEXT_B_BUFFER:.*]] = triton_gpu.async_shared_copy {{.*}}, %[[BSUB3]]
 // CHECK-DAG: %[[EXT_IDX_2:.*]] = arith.addi %[[EXT_IDX]], %[[CONSTANT_1]] : i32
 // CHECK-DAG: %[[CMP_EXT:.*]] = arith.cmpi slt, %[[EXT_IDX_2]], %[[CONSTANT_2]]
 // CHECK-DAG: %[[EXT_IDX_3:.*]] = arith.select %[[CMP_EXT]], %[[EXT_IDX_2]], %[[CONSTANT_0]]
-// CHECK:   %[[NEXT_A:.*]] = triton_gpu.extract_slice %{{.+}}[%[[EXT_IDX_3]], 0, 0]
-// CHECK:   %[[NEXT_B:.*]] = triton_gpu.extract_slice %{{.+}}[%[[EXT_IDX_3]], 0, 0]
-// CHECK:   triton_gpu.async_wait {num = 2 : i32}
-// CHECK:   scf.yield {{.*}}, %[[NEXT_A_BUFFER]], %[[NEXT_B_BUFFER]], %[[INS_IDX_3]], %[[EXT_IDX_3]], %[[NEXT_A]], %[[NEXT_B]]
+// CHECK-DAG: %[[NEXT_A:.*]] = triton_gpu.subview %{{.+}}[%[[EXT_IDX_3]],
+// CHECK-DAG: %[[NEXT_B:.*]] = triton_gpu.subview %{{.+}}[%[[EXT_IDX_3]],
+// CHECK-DAG: triton_gpu.async_wait {{.*}} {num = 2 : i32}
+// CHECK:   scf.yield {{.*}}, %[[INS_IDX_3]], %[[EXT_IDX_3]], %[[NEXT_A]], %[[NEXT_B]]
 module attributes {"triton_gpu.num-ctas" = 1 : i32, "triton_gpu.num-warps" = 4 : i32} {
 tt.func @matmul_loop(%lb : index, %ub : index, %step : index,
                        %A : !tt.ptr<f16> {tt.divisibility = 16 : i32},
@@ -103,38 +109,48 @@ tt.func @matmul_loop(%lb : index, %ub : index, %step : index,
 // CHECK-DAG: %[[CONSTANT_0:.*]] = arith.constant 0 : i32
 // CHECK-DAG: %[[CONSTANT_1:.*]] = arith.constant 1 : i32
 // CHECK-DAG: %[[CONSTANT_2:.*]] = arith.constant 2 : i32
-// CHECK:   %[[ABUFFER:.*]] = triton_gpu.alloc_tensor
-// CHECK:   %[[BBUFFER:.*]] = triton_gpu.alloc_tensor
-// CHECK:   %[[A0BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[CONSTANT_0]]
-// CHECK:   %[[B0BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[CONSTANT_0]]
-// CHECK:   %[[A1BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[CONSTANT_1]]
-// CHECK:   %[[B1BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[CONSTANT_1]]
-// CHECK: scf.for {{.*}} iter_args(%[[A2BUFFER:.*]] = %[[A0BUFFER]], %[[B2BUFFER:.*]] = %[[B0BUFFER]], {{.*}}, %[[A3BUFFER:.*]] = %[[A1BUFFER]], %[[B3BUFFER:.*]] = %[[B1BUFFER]]
-// CHECK-DAG:   %[[A0:.*]] = triton_gpu.extract_slice %[[A2BUFFER]][%[[CONSTANT_0]], 0, 0]
-// CHECK-DAG:   %[[B0:.*]] = triton_gpu.extract_slice %[[B2BUFFER]][%[[CONSTANT_0]], 0, 0]
-// CHECK:   triton_gpu.async_wait {num = 2 : i32}
+// CHECK:   %[[ABUFFER:.*]] = triton_gpu.alloc
+// CHECK:   %[[BBUFFER:.*]] = triton_gpu.alloc
+// CHECK:   triton_gpu.subview %[[ABUFFER]][%[[CONSTANT_0]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK:   triton_gpu.async_shared_copy
+// CHECK:   triton_gpu.subview %[[BBUFFER]][%[[CONSTANT_0]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK:   triton_gpu.async_shared_copy
+// CHECK:   triton_gpu.subview %[[ABUFFER]][%[[CONSTANT_1]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK:   triton_gpu.async_shared_copy
+// CHECK:   triton_gpu.subview %[[BBUFFER]][%[[CONSTANT_1]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK:   triton_gpu.async_shared_copy
+// CHECK: scf.for
+// CHECK-DAG:   %[[A0:.*]] = triton_gpu.subview %[[ABUFFER]][%[[CONSTANT_0]],
+// CHECK-DAG:   %[[B0:.*]] = triton_gpu.subview %[[BBUFFER]][%[[CONSTANT_0]],
+// CHECK-DAG:   triton_gpu.async_wait {{.*}} {num = 2 : i32}
 // CHECK:   scf.for {{.*}} iter_args({{.*}}, %[[INS_IDX:.*]] = %[[CONSTANT_1]], %[[EXT_IDX:.*]] = %[[CONSTANT_0]]{{.*}}, %[[arg_a0:.*]] = %[[A0]], %[[arg_b0:.*]] = %[[B0]]
-// CHECK:   %[[arg_a0_dot_op:.*]] = triton_gpu.convert_layout %[[arg_a0]]
-// CHECK:   %[[arg_b0_dot_op_0:.*]] = triton_gpu.convert_layout %[[arg_b0]]
+// CHECK:   %[[arg_a0_dot_op:.*]] = triton_gpu.shared_load %[[arg_a0]]
+// CHECK:   %[[arg_b0_dot_op_0:.*]] = triton_gpu.shared_load %[[arg_b0]]
 // CHECK:   tt.dot %[[arg_a0_dot_op]], %[[arg_b0_dot_op_0]], {{.*}}
 // CHECK-DAG: %[[INS_IDX_2:.*]] = arith.addi %[[INS_IDX]], %[[CONSTANT_1]] : i32
 // CHECK-DAG: %[[CMP_INS:.*]] = arith.cmpi slt, %[[INS_IDX_2]], %[[CONSTANT_2]]
 // CHECK-DAG: %[[INS_IDX_3:.*]] = arith.select %[[CMP_INS]], %[[INS_IDX_2]], %[[CONSTANT_0]]
-// CHECK:   %[[NEXT_A_BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[INS_IDX_3]]
-// CHECK:   %[[NEXT_B_BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[INS_IDX_3]]
+// CHECK:   triton_gpu.subview %[[ABUFFER]][%[[INS_IDX_3]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK:   triton_gpu.async_shared_copy
+// CHECK:   triton_gpu.subview %[[BBUFFER]][%[[INS_IDX_3]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK:   triton_gpu.async_shared_copy
 // CHECK-DAG: %[[EXT_IDX_2:.*]] = arith.addi %[[EXT_IDX]], %[[CONSTANT_1]] : i32
 // CHECK-DAG: %[[CMP_EXT:.*]] = arith.cmpi slt, %[[EXT_IDX_2]], %[[CONSTANT_2]]
 // CHECK-DAG: %[[EXT_IDX_3:.*]] = arith.select %[[CMP_EXT]], %[[EXT_IDX_2]], %[[CONSTANT_0]]
-// CHECK:   %[[NEXT_A:.*]] = triton_gpu.extract_slice %{{.+}}[%[[EXT_IDX_3]], 0, 0]
-// CHECK:   %[[NEXT_B:.*]] = triton_gpu.extract_slice %{{.+}}[%[[EXT_IDX_3]], 0, 0]
-// CHECK:   triton_gpu.async_wait {num = 2 : i32}
-// CHECK:   scf.yield {{.*}}, %[[NEXT_A_BUFFER]], %[[NEXT_B_BUFFER]], %[[INS_IDX_3]], %[[EXT_IDX_3]], %[[NEXT_A]], %[[NEXT_B]]
+// CHECK-DAG: %[[NEXT_A:.*]] = triton_gpu.subview %[[ABUFFER]][%[[EXT_IDX_3]]
+// CHECK-DAG: %[[NEXT_B:.*]] = triton_gpu.subview %[[BBUFFER]][%[[EXT_IDX_3]]
+// CHECK-DAG: triton_gpu.async_wait {{.*}} {num = 2 : i32}
+// CHECK:   scf.yield {{.*}}, %[[INS_IDX_3]], %[[EXT_IDX_3]], %[[NEXT_A]], %[[NEXT_B]]
 // CHECK:   triton_gpu.async_wait {num = 0 : i32}
-// CHECK:   %[[A3BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[CONSTANT_0]]
-// CHECK:   %[[B3BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[CONSTANT_0]]
-// CHECK:   %[[A4BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[CONSTANT_1]]
-// CHECK:   %[[B4BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[CONSTANT_1]]
-// CHECK    scf.yield {{.*}}, %[[A3BUFFER]], %[[B3BUFFER]], {{.*}}, %[[A4BUFFER]], %[[B4BUFFER]]
+// CHECK:   triton_gpu.subview %[[ABUFFER]][%[[CONSTANT_0]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK:   triton_gpu.async_shared_copy
+// CHECK:   triton_gpu.subview %[[BBUFFER]][%[[CONSTANT_0]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK:   triton_gpu.async_shared_copy
+// CHECK:   triton_gpu.subview %[[ABUFFER]][%[[CONSTANT_1]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK:   triton_gpu.async_shared_copy
+// CHECK:   triton_gpu.subview %[[BBUFFER]][%[[CONSTANT_1]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK:   triton_gpu.async_shared_copy
+// CHECK    scf.yield
 module attributes {"triton_gpu.num-ctas" = 1 : i32, "triton_gpu.num-warps" = 4 : i32} {
 tt.func @matmul_loop_nested(%lb : index, %ub : index, %step : index,
                               %A : !tt.ptr<f16> {tt.divisibility = 16 : i32},
@@ -192,24 +208,27 @@ tt.func @matmul_loop_nested(%lb : index, %ub : index, %step : index,
 // CHECK-DAG: %[[CONSTANT_0:.*]] = arith.constant 0 : i32
 // CHECK-DAG: %[[CONSTANT_1:.*]] = arith.constant 1 : i32
 // CHECK-DAG: %[[CONSTANT_2:.*]] = arith.constant 2 : i32
-// CHECK: %[[BBUFFER:.*]] = triton_gpu.alloc_tensor
-// CHECK: %[[B0BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[CONSTANT_0]]
-// CHECK: %[[B1BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[CONSTANT_1]]
-// CHECK: %[[B0:.*]] = triton_gpu.extract_slice %[[B0BUFFER]][%[[CONSTANT_0]], 0, 0]
-// CHECK: triton_gpu.async_wait {num = 1 : i32}
+// CHECK: %[[BBUFFER:.*]] = triton_gpu.alloc
+// CHECK: triton_gpu.subview %[[BBUFFER]][%[[CONSTANT_0]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK: triton_gpu.async_shared_copy
+// CHECK: triton_gpu.subview %[[BBUFFER]][%[[CONSTANT_1]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK: triton_gpu.async_shared_copy
+// CHECK-DAG: %[[B0:.*]] = triton_gpu.subview %[[BBUFFER]][%[[CONSTANT_0]]
+// CHECK-DAG: triton_gpu.async_wait {{.*}} {num = 1 : i32}
 // CHECK:   scf.for {{.*}} iter_args({{.*}}, %[[INS_IDX:.*]] = %[[CONSTANT_1]], %[[EXT_IDX:.*]] = %[[CONSTANT_0]]{{.*}}, %[[arg_b0:.*]] = %[[B0]]
-// CHECK:   %[[arg_b0_dot_op:.*]] = triton_gpu.convert_layout %[[arg_b0]]
+// CHECK:   %[[arg_b0_dot_op:.*]] = triton_gpu.shared_load %[[arg_b0]]
 // CHECK:   tt.dot {{.*}}, %[[arg_b0_dot_op]], {{.*}}
 // CHECK-DAG: %[[INS_IDX_2:.*]] = arith.addi %[[INS_IDX]], %[[CONSTANT_1]] : i32
 // CHECK-DAG: %[[CMP_INS:.*]] = arith.cmpi slt, %[[INS_IDX_2]], %[[CONSTANT_2]]
 // CHECK-DAG: %[[INS_IDX_3:.*]] = arith.select %[[CMP_INS]], %[[INS_IDX_2]], %[[CONSTANT_0]]
-// CHECK:   %[[NEXT_B_BUFFER:.*]] = triton_gpu.insert_slice_async {{.*}}, {{.*}}, %[[INS_IDX_3]]
+// CHECK:     triton_gpu.subview %[[BBUFFER]][%[[INS_IDX_3]], %[[CONSTANT_0]], %[[CONSTANT_0]]]
+// CHECK:     triton_gpu.async_shared_copy
 // CHECK-DAG: %[[EXT_IDX_2:.*]] = arith.addi %[[EXT_IDX]], %[[CONSTANT_1]] : i32
 // CHECK-DAG: %[[CMP_EXT:.*]] = arith.cmpi slt, %[[EXT_IDX_2]], %[[CONSTANT_2]]
 // CHECK-DAG: %[[EXT_IDX_3:.*]] = arith.select %[[CMP_EXT]], %[[EXT_IDX_2]], %[[CONSTANT_0]]
-// CHECK:   %[[NEXT_B:.*]] = triton_gpu.extract_slice %{{.+}}[%[[EXT_IDX_3]], 0, 0]
-// CHECK:   triton_gpu.async_wait {num = 1 : i32}
-// CHECK:   scf.yield {{.*}}, %[[NEXT_B_BUFFER]], %[[INS_IDX_3]], %[[EXT_IDX_3]], %[[NEXT_B]]
+// CHECK-DAG: %[[NEXT_B:.*]] = triton_gpu.subview %{{.+}}[%[[EXT_IDX_3]]
+// CHECK-DAG: triton_gpu.async_wait {{.*}} {num = 1 : i32}
+// CHECK:   scf.yield {{.*}}, %[[INS_IDX_3]], %[[EXT_IDX_3]], %[[NEXT_B]]
 module attributes {"triton_gpu.num-ctas" = 1 : i32, "triton_gpu.num-warps" = 4 : i32} {
 tt.func @matmul_loop_single_pipeline(%lb : index, %ub : index, %step : index,
                                        %A : !tt.ptr<f16> {tt.divisibility = 16 : i32},
@@ -313,9 +332,9 @@ tt.func @matmul_loop_single_pipeline(%lb : index, %ub : index, %step : index,
 //      %a = tt.load %a_tileptr {cache = 1 : i32, evict = 1 : i32, isVolatile = false} : !tt.ptr<tensor<128x32xf16>, 1> -> tensor<128x32xf16, #BA>
 //      %b = tt.load %b_tileptr {cache = 1 : i32, evict = 1 : i32, isVolatile = false} : !tt.ptr<tensor<32x128xf16>, 1> -> tensor<32x128xf16, #BB>
 //
-//      %sa = triton_gpu.convert_layout %a : tensor<128x32xf16, #BA> -> tensor<128x32xf16, #SA>
-//      %sb = triton_gpu.convert_layout %b : tensor<32x128xf16, #BB> -> tensor<32x128xf16, #SB>
-//      %c = tt.dot %sa, %sb, %prev_c {allowTF32 = true, maxNumImpreciseAcc = 0 : i32} : tensor<128x32xf16, #SA> * tensor<32x128xf16, #SB> -> tensor<128x128xf32, #C>
+//      %sa = triton_gpu.alloc %a : (tensor<128x32xf16, #BA>) -> !tt.memdesc<128x32xf16, #SA>
+//      %sb = triton_gpu.alloc %b : (tensor<32x128xf16, #BB>) -> !tt.memdesc<32x128xf16, #SB>
+//      %c = tt.dot %sa, %sb, %prev_c {allowTF32 = true, maxNumImpreciseAcc = 0 : i32} : !tt.memdesc<128x32xf16, #SA> * !tt.memdesc<32x128xf16, #SB> -> tensor<128x128xf32, #C>
 //
 //      %a_tileptr_next = tt.advance %a_tileptr, [%c0, %c32_i32] : !tt.ptr<tensor<128x32xf16>, 1>
 //      %b_tileptr_next = tt.advance %b_tileptr, [%c32_i32, %c0] : !tt.ptr<tensor<32x128xf16>, 1>
@@ -364,21 +383,21 @@ module attributes {"triton_gpu.compute-capability" = 90 : i32, "triton_gpu.num-c
     %15 = tt.broadcast %13 : tensor<64x1xi32, #blocked> -> tensor<64x16xi32, #blocked>
     %16 = tt.addptr %14, %15 : tensor<64x16x!tt.ptr<f16, 1>, #blocked>, tensor<64x16xi32, #blocked>
     // CHECK: scf.for
-    // CHECK:   triton_gpu.async_wait {num = 1 : i32}
+    // CHECK:   triton_gpu.async_wait {{.*}} {num = 1 : i32}
     // CHECK:   tt.dot
     // CHECK:   triton_nvidia_gpu.dot_async
-    // CHECK:   triton_gpu.insert_slice_async
+    // CHECK:   triton_gpu.async_shared_copy
     // CHECK:   triton_gpu.async_commit_group
     // CHECK:   scf.yield
     %17:2 = scf.for %arg3 = %c0_i32 to %c8_i32 step %c1_i32 iter_args(%arg4 = %cst_3, %arg5 = %16) -> (tensor<128x64xf32, #mma>, tensor<64x16x!tt.ptr<f16, 1>, #blocked>)  : i32 {
       %18 = tt.load %arg5 {cache = 1 : i32, evict = 1 : i32, isVolatile = false} : tensor<64x16xf16, #blocked>
-      %19 = triton_gpu.convert_layout %9 : tensor<128x64xf16, #blocked1> -> tensor<128x64xf16, #shared>
-      %20 = triton_gpu.convert_layout %18 : tensor<64x16xf16, #blocked> -> tensor<64x16xf16, #shared1>
-      %21 = tt.dot %19, %20, %cst_2 {allowTF32 = true, maxNumImpreciseAcc = 0 : i32} : tensor<128x64xf16, #shared> * tensor<64x16xf16, #shared1> -> tensor<128x16xf32, #mma1>
+      %19 = triton_gpu.alloc %9 : (tensor<128x64xf16, #blocked1>) -> !tt.memdesc<128x64xf16, #shared>
+      %20 = triton_gpu.alloc %18 : (tensor<64x16xf16, #blocked>) -> !tt.memdesc<64x16xf16, #shared1>
+      %21 = tt.dot %19, %20, %cst_2 {allowTF32 = true, maxNumImpreciseAcc = 0 : i32} : !tt.memdesc<128x64xf16, #shared> * !tt.memdesc<64x16xf16, #shared1> -> tensor<128x16xf32, #mma1>
       %22 = arith.truncf %21 : tensor<128x16xf32, #mma1> to tensor<128x16xf16, #mma1>
-      %23 = tt.trans %20 {order=array<i32: 1,0>} : tensor<64x16xf16, #shared1> -> tensor<16x64xf16, #shared>
+      %23 = tt.trans %20 {order=array<i32: 1,0>} : !tt.memdesc<64x16xf16, #shared1> -> !tt.memdesc<16x64xf16, #shared>
       %24 = triton_gpu.convert_layout %22 : tensor<128x16xf16, #mma1> -> tensor<128x16xf16, #triton_gpu.dot_op<{opIdx = 0, parent = #mma1}>>
-      %25 = tt.dot %24, %23, %arg4 {allowTF32 = true, maxNumImpreciseAcc = 0 : i32} : tensor<128x16xf16, #triton_gpu.dot_op<{opIdx = 0, parent = #mma1}>> * tensor<16x64xf16, #shared> -> tensor<128x64xf32, #mma>
+      %25 = tt.dot %24, %23, %arg4 {allowTF32 = true, maxNumImpreciseAcc = 0 : i32} : tensor<128x16xf16, #triton_gpu.dot_op<{opIdx = 0, parent = #mma1}>> * !tt.memdesc<16x64xf16, #shared> -> tensor<128x64xf32, #mma>
       %26 = tt.addptr %arg5, %cst : tensor<64x16x!tt.ptr<f16, 1>, #blocked>, tensor<64x16xi32, #blocked>
       scf.yield %25, %26 : tensor<128x64xf32, #mma>, tensor<64x16x!tt.ptr<f16, 1>, #blocked>
     }
@@ -427,19 +446,19 @@ module attributes {"triton_gpu.compute-capability" = 90 : i32, "triton_gpu.num-c
     %18 = tt.load %16 {cache = 1 : i32, evict = 1 : i32, isVolatile = false} : tensor<64x16xf16, #blocked>
     // CHECK: %[[R:.+]]:{{.+}} = scf.for
     // CHECK:   triton_nvidia_gpu.dot_async
-    // CHECK:   triton_gpu.async_wait {num = 1 : i32}
+    // CHECK:   triton_gpu.async_wait {{.*}} {num = 1 : i32}
     // CHECK:   triton_nvidia_gpu.dot_async
     // CHECK:   triton_nvidia_gpu.dot_wait %{{.*}} {pendings = 2 : i32}
     // CHECK:   scf.yield
     // CHECK: %{{.*}}:2 = triton_nvidia_gpu.dot_wait %[[R]]#{{.+}}, %[[R]]#{{.+}} {pendings = 0 : i32} : tensor<128x16xf32, #{{.*}}>, tensor<128x64xf32, #{{.*}}>
     %17:3 = scf.for %arg3 = %c0_i32 to %c8_i32 step %c1_i32 iter_args(%arg4 = %cst_3, %arg5 = %16, %arg6 = %cst_2) -> (tensor<128x64xf32, #mma>, tensor<64x16x!tt.ptr<f16, 1>, #blocked>, tensor<128x16xf32, #mma1>)  : i32 {
-      %19 = triton_gpu.convert_layout %9 : tensor<128x64xf16, #blocked1> -> tensor<128x64xf16, #shared>
-      %20 = triton_gpu.convert_layout %18 : tensor<64x16xf16, #blocked> -> tensor<64x16xf16, #shared1>
-      %21 = tt.dot %19, %20, %arg6 {allowTF32 = true, maxNumImpreciseAcc = 0 : i32} : tensor<128x64xf16, #shared> * tensor<64x16xf16, #shared1> -> tensor<128x16xf32, #mma1>
+      %19 = triton_gpu.alloc %9 : (tensor<128x64xf16, #blocked1>) -> !tt.memdesc<128x64xf16, #shared>
+      %20 = triton_gpu.alloc %18 : (tensor<64x16xf16, #blocked>) -> !tt.memdesc<64x16xf16, #shared1>
+      %21 = tt.dot %19, %20, %arg6 {allowTF32 = true, maxNumImpreciseAcc = 0 : i32} : !tt.memdesc<128x64xf16, #shared> * !tt.memdesc<64x16xf16, #shared1> -> tensor<128x16xf32, #mma1>
       %l = tt.load %arg5 {cache = 1 : i32, evict = 1 : i32, isVolatile = false} : tensor<64x16xf16, #blocked>
-      %c = triton_gpu.convert_layout %l : tensor<64x16xf16, #blocked> -> tensor<64x16xf16, #shared1>
-      %23 = tt.trans %c {order=array<i32: 1,0>} : tensor<64x16xf16, #shared1> -> tensor<16x64xf16, #shared>
-      %25 = tt.dot %cst_4, %23, %arg4 {allowTF32 = true, maxNumImpreciseAcc = 0 : i32} : tensor<128x16xf16, #triton_gpu.dot_op<{opIdx = 0, parent = #mma1}>> * tensor<16x64xf16, #shared> -> tensor<128x64xf32, #mma>
+      %c = triton_gpu.alloc %l : (tensor<64x16xf16, #blocked>) -> !tt.memdesc<64x16xf16, #shared1>
+      %23 = tt.trans %c {order=array<i32: 1,0>} : !tt.memdesc<64x16xf16, #shared1> -> !tt.memdesc<16x64xf16, #shared>
+      %25 = tt.dot %cst_4, %23, %arg4 {allowTF32 = true, maxNumImpreciseAcc = 0 : i32} : tensor<128x16xf16, #triton_gpu.dot_op<{opIdx = 0, parent = #mma1}>> * !tt.memdesc<16x64xf16, #shared> -> tensor<128x64xf32, #mma>
       %26 = tt.addptr %arg5, %cst : tensor<64x16x!tt.ptr<f16, 1>, #blocked>, tensor<64x16xi32, #blocked>
       scf.yield %25, %26, %21 : tensor<128x64xf32, #mma>, tensor<64x16x!tt.ptr<f16, 1>, #blocked>, tensor<128x16xf32, #mma1>
     }
@@ -495,16 +514,16 @@ module attributes {"triton_gpu.compute-capability" = 90 : i32, "triton_gpu.num-c
     %19 = arith.addi %17, %18 : tensor<64x256xi32, #blocked2>
     %20 = tt.splat %arg1 : !tt.ptr<f8E5M2, 1> -> tensor<64x256x!tt.ptr<f8E5M2, 1>, #blocked2>
     %21 = tt.addptr %20, %19 : tensor<64x256x!tt.ptr<f8E5M2, 1>, #blocked2>, tensor<64x256xi32, #blocked2>
-    // CHECK: triton_gpu.alloc_tensor
+    // CHECK: triton_gpu.alloc
     // CHECK: scf.for
     // CHECK:   tt.dot
     // CHECK-NOT:  triton_nvidia_gpu.dot_async
     %22:3 = scf.for %arg3 = %c0_i32 to %c8_i32 step %c1_i32 iter_args(%arg4 = %cst_0, %arg5 = %12, %arg6 = %21) -> (tensor<128x256xf32, #blocked>, tensor<128x64x!tt.ptr<f8E5M2, 1>, #blocked1>, tensor<64x256x!tt.ptr<f8E5M2, 1>, #blocked2>)  : i32 {
       %35 = tt.load %arg5 {cache = 1 : i32, evict = 1 : i32, isVolatile = false} : tensor<128x64xf8E5M2, #blocked1>
       %36 = tt.load %arg6 {cache = 1 : i32, evict = 1 : i32, isVolatile = false} : tensor<64x256xf8E5M2, #blocked2>
-      %37 = triton_gpu.convert_layout %35 : tensor<128x64xf8E5M2, #blocked1> -> tensor<128x64xf8E5M2, #shared>
-      %38 = triton_gpu.convert_layout %36 : tensor<64x256xf8E5M2, #blocked2> -> tensor<64x256xf8E5M2, #shared1>
-      %39 = tt.dot %37, %38, %cst {allowTF32 = true, maxNumImpreciseAcc = 1073741824 : i32} : tensor<128x64xf8E5M2, #shared> * tensor<64x256xf8E5M2, #shared1> -> tensor<128x256xf32, #mma>
+      %37 = triton_gpu.alloc %35 : (tensor<128x64xf8E5M2, #blocked1>) -> !tt.memdesc<128x64xf8E5M2, #shared>
+      %38 = triton_gpu.alloc %36 : (tensor<64x256xf8E5M2, #blocked2>) -> !tt.memdesc<64x256xf8E5M2, #shared1>
+      %39 = tt.dot %37, %38, %cst {allowTF32 = true, maxNumImpreciseAcc = 1073741824 : i32} : !tt.memdesc<128x64xf8E5M2, #shared> * !tt.memdesc<64x256xf8E5M2, #shared1> -> tensor<128x256xf32, #mma>
       %40 = triton_gpu.convert_layout %39 : tensor<128x256xf32, #mma> -> tensor<128x256xf32, #blocked>
       %41 = arith.addf %arg4, %40 : tensor<128x256xf32, #blocked>
       %42 = tt.addptr %arg5, %cst_7 : tensor<128x64x!tt.ptr<f8E5M2, 1>, #blocked1>, tensor<128x64xi32, #blocked1>
