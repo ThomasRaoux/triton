@@ -30,7 +30,7 @@ void MembarAnalysis::resolve(FunctionOpInterface funcOp,
     for (auto &op : block->getOperations()) {
       // Check if the operation belongs to scf dialect, if so, we need to
       // throw an error
-      if (op.getDialect()->getNamespace() == "scf") {
+      if (op.getDialect() && op.getDialect()->getNamespace() == "scf") {
         llvm::report_fatal_error(
             "scf dialect is not supported in membar. Please lower it "
             "to cf dialect first.");

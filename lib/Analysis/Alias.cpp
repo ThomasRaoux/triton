@@ -26,14 +26,21 @@ void SharedMemoryAliasAnalysis::visitOperation(
   bool pessimistic = true;
   // These ops may allocate a new shared memory buffer.
   auto result = op->getResult(0);
-  // XXX(Keren): the following ops are always aliasing for now
-  if (isa<triton::gpu::SubviewOp, triton::TransOp>(op)) {
+
+  // Only AllocOp creates a new buffer.
+  if (isa<triton::gpu::AllocOp>(op)) {
+    aliasInfo.insert(result);
+    pessimistic = false;
+  } else if (isa<triton::gpu::SubviewOp, triton::TransOp>(op)) {
     // extract_slice %src
     // trans %src
     aliasInfo = AliasInfo(operands[0]->getValue());
     pessimistic = false;
   } else if (result.getType().isa<triton::MemDescType>()) {
-    aliasInfo.insert(result);
+    for (int i = 0; i < op->getNumOperands(); i++) {
+      if (op->getOperandTypes()[i].isa<triton::MemDescType>())
+        aliasInfo.insert(op->getOperand(i));
+    }
     pessimistic = false;
   }
 
