@@ -291,13 +291,7 @@ struct MMAV3UseRegOperand : public OpRewritePattern<DotOp> {
     if (!srcEnc || srcEnc.getVersionMajor() != 3 || !dstEnc ||
         dstEnc.getVersionMajor() != 3)
       return failure();
-
-    // We currently only support convert from f16 and bf16 mma to f16 and bf16
-    // dot operand, as the other types require shuffling data across threads.
-    // TODO: extend it to more types.
     auto srcTy = alloc.getInit().getType().cast<RankedTensorType>();
-    if (!(srcTy.getElementType().isF16() || srcTy.getElementType().isBF16()))
-      return failure();
 
     auto dotOperandEnc = DotOperandEncodingAttr::get(
         dotOp.getContext(), /*opIdx=*/0, srcEnc, /*kWidth=*/0);
