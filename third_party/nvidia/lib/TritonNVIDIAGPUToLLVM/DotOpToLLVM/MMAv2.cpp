@@ -59,7 +59,34 @@ ValueTableV2 getValuesFromDotOperandLayoutStruct(
     ConversionPatternRewriter &rewriter, Value value, int batch, int n0, int n1,
     RankedTensorType type) {
 
+  auto encoding = type.getEncoding().cast<DotOperandEncodingAttr>();
+  unsigned bitwidth = type.getElementType().getIntOrFloatBitWidth();
   auto elems = unpackLLElements(loc, value, rewriter);
+  assert(bitwidth <= 32);
+  if (32 / bitwidth != encoding.getKWidth()) {
+    unsigned typeDefaultKWidth = 32 / bitwidth;
+    assert(typeDefaultKWidth == 2 || typeDefaultKWidth == 1);
+    unsigned encodingKWidth = encoding.getKWidth();
+    assert(encodingKWidth == 4 || encodingKWidth == 2 || encodingKWidth == 1);
+    // If the kwidth doesn't match the element type we may need to swap
+    // values.
+    if (std::max(typeDefaultKWidth, encodingKWidth) /
+            std::min(typeDefaultKWidth, encodingKWidth) ==
+        2) {
+      SmallVector<Value> reOrdered;
+      for (unsigned i = 0; i < elems.size(); i += 8) {
+        reOrdered.push_back(elems[i + 0]);
+        reOrdered.push_back(elems[i + 1]);
+        reOrdered.push_back(elems[i + 4]);
+        reOrdered.push_back(elems[i + 5]);
+        reOrdered.push_back(elems[i + 2]);
+        reOrdered.push_back(elems[i + 3]);
+        reOrdered.push_back(elems[i + 6]);
+        reOrdered.push_back(elems[i + 7]);
+      }
+      elems = reOrdered;
+    }
+  }
   int offset{};
   ValueTableV2 vals;
   for (auto b = 0; b < batch; ++b)

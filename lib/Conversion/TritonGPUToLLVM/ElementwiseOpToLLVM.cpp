@@ -43,67 +43,6 @@ Type getElementType(Value value) {
     return tensorType.getElementType();
   return type;
 }
-// MMA encoding has a different order depending on the element's bit width;
-// reorder if we're in this case.
-SmallVector<Value> reorderValues(const SmallVector<Value> &values, Type inType,
-                                 Type ouType) {
-  auto inTensorTy = inType.dyn_cast<RankedTensorType>();
-  auto ouTensorTy = ouType.dyn_cast<RankedTensorType>();
-  if (!inTensorTy || !ouTensorTy)
-    return values;
-  auto inEncoding = dyn_cast<DotOperandEncodingAttr>(inTensorTy.getEncoding());
-  auto ouEncoding = dyn_cast<DotOperandEncodingAttr>(ouTensorTy.getEncoding());
-  assert(inEncoding == ouEncoding);
-  if (!inEncoding)
-    return values;
-  // If the parent of the dot operand is in block encoding, we don't need to
-  // reorder elements
-  auto parentEncoding = dyn_cast<NvidiaMmaEncodingAttr>(ouEncoding.getParent());
-  if (!parentEncoding)
-    return values;
-  size_t inBitWidth = inTensorTy.getElementType().getIntOrFloatBitWidth();
-  size_t ouBitWidth = ouTensorTy.getElementType().getIntOrFloatBitWidth();
-  auto ouEltTy = ouTensorTy.getElementType();
-  if (inBitWidth == ouBitWidth)
-    return values;
-  if (inBitWidth == 16 && ouBitWidth == 32) {
-    SmallVector<Value> ret;
-    for (unsigned i = 0; i < values.size(); i += 8) {
-      ret.push_back(values[i]);
-      ret.push_back(values[i + 1]);
-      ret.push_back(values[i + 4]);
-      ret.push_back(values[i + 5]);
-      ret.push_back(values[i + 2]);
-      ret.push_back(values[i + 3]);
-      ret.push_back(values[i + 6]);
-      ret.push_back(values[i + 7]);
-    }
-    return ret;
-  }
-  if (inBitWidth == 8 && ouBitWidth == 16) {
-    SmallVector<Value> ret;
-    for (unsigned i = 0; i < values.size(); i += 16) {
-      ret.push_back(values[i + 0]);
-      ret.push_back(values[i + 1]);
-      ret.push_back(values[i + 2]);
-      ret.push_back(values[i + 3]);
-      ret.push_back(values[i + 8]);
-      ret.push_back(values[i + 9]);
-      ret.push_back(values[i + 10]);
-      ret.push_back(values[i + 11]);
-      ret.push_back(values[i + 4]);
-      ret.push_back(values[i + 5]);
-      ret.push_back(values[i + 6]);
-      ret.push_back(values[i + 7]);
-      ret.push_back(values[i + 12]);
-      ret.push_back(values[i + 13]);
-      ret.push_back(values[i + 14]);
-      ret.push_back(values[i + 15]);
-    }
-    return ret;
-  }
-  llvm_unreachable("unimplemented code path");
-}
 
 SmallVector<Value> unpackI32(const SmallVector<Value> &inValues, Type srcTy,
                              ConversionPatternRewriter &rewriter, Location loc,
@@ -555,13 +494,6 @@ struct ElementwiseInlineAsmOpConversion
     // Reorder and pack the results.
     SmallVector<Value> outs;
     for (int i = 0; i < unpackedResults.size(); i++) {
-      // We reordered all the inputs so they match operand 0.  Reorder the
-      // outputs accordingly.
-      if (op->getNumOperands() > 0) {
-        unpackedResults[i] = reorderValues(
-            unpackedResults[i], /*inType=*/op->getOperand(0).getType(),
-            /*ouType=*/op->getResult(i).getType());
-      }
       auto packed = packI32(unpackedResults[i], op->getResult(i).getType(),
                             rewriter, loc, getTypeConverter());
       outs.push_back(packLLElements(loc, getTypeConverter(), packed, rewriter,
