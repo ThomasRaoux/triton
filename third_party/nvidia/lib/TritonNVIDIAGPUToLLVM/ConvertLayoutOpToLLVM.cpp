@@ -733,6 +733,21 @@ private:
         reorderedVals.push_back(bitcast(vecVals[i + 3], i32_ty));
       }
 
+      {//if (dstTy.getEncoding().cast<DotOperandEncodingAttr>().getKWidth() != 2) {
+        SmallVector<Value> reOrdered;
+        for (unsigned i = 0; i < reorderedVals.size(); i += 8) {
+          reOrdered.push_back(reorderedVals[i + 0]);
+          reOrdered.push_back(reorderedVals[i + 1]);
+          reOrdered.push_back(reorderedVals[i + 4]);
+          reOrdered.push_back(reorderedVals[i + 5]);
+          reOrdered.push_back(reorderedVals[i + 2]);
+          reOrdered.push_back(reorderedVals[i + 3]);
+          reOrdered.push_back(reorderedVals[i + 6]);
+          reOrdered.push_back(reorderedVals[i + 7]);
+        }
+        reorderedVals = reOrdered;
+      }
+
       Value view = packLLElements(loc, getTypeConverter(), reorderedVals,
                                   rewriter, dstTy);
       rewriter.replaceOp(op, view);
