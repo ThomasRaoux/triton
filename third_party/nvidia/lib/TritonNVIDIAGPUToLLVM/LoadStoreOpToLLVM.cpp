@@ -906,6 +906,61 @@ struct AsyncCopyGlobalToLocalOpConversion
   }
 };
 
+struct AsyncTMACopyGlobalToLocalOpConversion
+    : public ConvertOpToLLVMPattern<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp> {
+  using ConvertOpToLLVMPattern<
+      triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp op,
+                  OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto barrierMemObj = LLVM::getSharedMemoryObjectFromStruct(
+        op.getLoc(), adaptor.getBarrier(),
+        typeConverter->convertType(op.getBarrier().getType().getElementType()),
+        rewriter);
+    auto dstMemObj = LLVM::getSharedMemoryObjectFromStruct(
+        op.getLoc(), adaptor.getResult(),
+        typeConverter->convertType(op.getResult().getType().getElementType()),
+        rewriter);
+
+    int64_t size =
+        (product(op.getResult().getType().getShape()) *
+         op.getResult().getType().getElementType().getIntOrFloatBitWidth()) /
+        8;
+    ::mlir::triton::PTXBuilder ptxBuilder;
+    auto &arrive =
+        *ptxBuilder.create<>("mbarrier.arrive.expect_tx.shared.b64 _,");
+    arrive(ptxBuilder.newOperand(barrierMemObj.getBase(), "r"),
+           ptxBuilder.newConstantOperand(size));
+    auto voidTy = void_ty(op->getContext());
+    ptxBuilder.launch(rewriter, op->getLoc(), voidTy);           
+
+    int rank = op.getCoord().size();
+    ::mlir::triton::PTXBuilder ptxBuilderTMA;
+    SmallVector<PTXBuilder::Operand *> operands = {
+        ptxBuilderTMA.newOperand(dstMemObj.getBase(), "r"),
+        ptxBuilderTMA.newOperand(adaptor.getDescPtr(), "l")};
+    std::string tmaInst = "cp.async.bulk.tensor." + std::to_string(rank) +
+                          "d.shared::cluster.global.mbarrier::complete_tx.L2::"
+                          "cache_hint [$0], [$1, {";
+    for (int i = 0; i < rank; i++) {
+      operands.push_back(ptxBuilderTMA.newOperand(adaptor.getCoord()[i], "r"));
+      tmaInst += "$" + std::to_string(i + 2);
+      if (i != rank - 1)
+        tmaInst += ", ";
+    }
+    operands.push_back(ptxBuilderTMA.newOperand(barrierMemObj.getBase(), "r"));
+    tmaInst += "}], [$" + std::to_string(rank + 2) + "];";
+    auto &tma = *ptxBuilderTMA.create<>(tmaInst);
+    tma(operands, /*onlyAttachMLIRArgs=*/true);
+    ptxBuilderTMA.launch(rewriter, op.getLoc(), voidTy);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct AsyncWaitOpConversion
     : public ConvertOpToLLVMPattern<triton::gpu::AsyncWaitOp> {
   using ConvertOpToLLVMPattern<
@@ -965,4 +1020,5 @@ void mlir::triton::NVIDIA::populateLoadStoreOpToLLVMPatterns(
                                                    axisInfoAnalysis, benefit);
   patterns.add<AsyncCommitGroupOpConversion>(typeConverter, benefit);
   patterns.add<AsyncWaitOpConversion>(typeConverter, benefit);
+  patterns.add<AsyncTMACopyGlobalToLocalOpConversion>(typeConverter, benefit);
 }

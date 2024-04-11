@@ -132,4 +132,33 @@ def TTNG_WaitBarrierOp : TTNG_Op<"wait_barrier", []> {
     let assemblyFormat = "$alloc `,` $phase attr-dict `:` type($alloc)";
 }
 
+
+def TTNG_AsyncTMACopyGlobalToLocalOp : TTNG_Op<"async_tma_copy_global_to_local", [
+  MemoryEffects<[MemRead<GlobalMemory>, MemWrite<SharedMemory>]>]> {
+  let summary = "copy data based on descriptor from global memory to local memory asynchronously";
+
+  let description = [{
+    This operation copies data from global memory to local memory asynchronously.
+    This is analogue to tt.load except the data are copied to local memory pointed
+    by the memory descriptor instread of a distributed tensor. The rest of the
+    operands are the same as tt.load.
+  }];
+
+  let arguments = (
+    ins TT_PtrOf<[I64]>:$desc_ptr,
+    Variadic<I32>:$coord,
+    TT_MemDescType:$barrier,
+    TT_MemDescType:$result,
+    DefaultValuedAttr<TT_CacheModifierAttr, "triton::CacheModifier::NONE">:$cache,
+    DefaultValuedAttr<TT_EvictionPolicyAttr, "triton::EvictionPolicy::NORMAL">:$evict,
+    DefaultValuedAttr<BoolAttr, "false">:$isVolatile
+  );
+
+  let assemblyFormat = [{
+    $desc_ptr `[` $coord `]` $result `,` $barrier
+    oilist(`cacheModifier` `=` $cache | `evictionPolicy` `=` $evict)
+    attr-dict `:` type($desc_ptr) `,` type($barrier) `->` type($result)
+  }];
+}
+
 #endif
