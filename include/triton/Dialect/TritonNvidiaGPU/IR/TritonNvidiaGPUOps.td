@@ -120,4 +120,16 @@ def TTNG_InitBarrierOp : TTNG_Op<"init_barrier", [MemoryEffects<[MemWrite<Shared
     let assemblyFormat = "$alloc `,` $count attr-dict `:` type($alloc)";
 }
 
+def TTNG_WaitBarrierOp : TTNG_Op<"wait_barrier", []> {
+    let summary = "wait until the barrier .";
+
+    let description = [{
+      //TODO:
+    }];
+
+    let arguments = (ins TT_MemDescType:$alloc,
+                         I32:$phase);
+    let assemblyFormat = "$alloc `,` $phase attr-dict `:` type($alloc)";
+}
+
 #endif

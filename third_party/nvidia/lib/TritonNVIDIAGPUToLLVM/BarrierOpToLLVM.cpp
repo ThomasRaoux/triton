@@ -85,8 +85,38 @@ struct InitBarrierOpConversion
 
     ::mlir::triton::PTXBuilder ptxBuilder;
     auto &barSyncOp = *ptxBuilder.create<>("mbarrier.init.shared::cta.b64");
-    barSyncOp(ptxBuilder.newOperand(smemObj.getBase(), "l"),
+    barSyncOp(ptxBuilder.newOperand(smemObj.getBase(), "r"),
               ptxBuilder.newConstantOperand(op.getCount()));
+    auto voidTy = void_ty(op->getContext());
+    ptxBuilder.launch(rewriter, op->getLoc(), voidTy);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct WaitBarrierOpConversion
+    : public ConvertOpToLLVMPattern<triton::nvidia_gpu::WaitBarrierOp> {
+  using ConvertOpToLLVMPattern<
+      triton::nvidia_gpu::WaitBarrierOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::nvidia_gpu::WaitBarrierOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto smemObj = LLVM::getSharedMemoryObjectFromStruct(
+        op.getLoc(), adaptor.getAlloc(),
+        typeConverter->convertType(op.getAlloc().getType().getElementType()),
+        rewriter);
+    const std::string ptx =
+        "{                                                           \n\t"
+        ".reg .pred P1;                                              \n\t"
+        "waitLoop:                                                   \n\t"
+        "mbarrier.try_wait.parity.shared.b64 P1, [$0], $1, 0x989680; \n\t"
+        "!@P1 bra.uni waitLoop;                                      \n\t"
+        "}                                                           \n\t";
+    ::mlir::triton::PTXBuilder ptxBuilder;
+    auto &waitLoop = *ptxBuilder.create<>(ptx);
+    waitLoop(ptxBuilder.newOperand(smemObj.getBase(), "r"),
+             ptxBuilder.newOperand(adaptor.getPhase(), "r"));
     auto voidTy = void_ty(op->getContext());
     ptxBuilder.launch(rewriter, op->getLoc(), voidTy);
     rewriter.eraseOp(op);
@@ -101,4 +131,5 @@ void mlir::triton::NVIDIA::populateBarrierOpToLLVMPatterns(
   patterns.add<BarrierOpConversion>(typeConverter, benefit);
   patterns.add<FenceAsyncSharedOpConversion>(typeConverter, benefit);
   patterns.add<InitBarrierOpConversion>(typeConverter, benefit);
+  patterns.add<WaitBarrierOpConversion>(typeConverter, benefit);
 }
