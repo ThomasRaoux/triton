@@ -106,4 +106,18 @@ def TTNG_DotWaitOp : TTNG_Op<"dot_wait", [DeclareOpInterfaceMethods<InferTypeOpI
   let assemblyFormat = "$inputs attr-dict `:` type($inputs)";
 }
 
+def TTNG_InitBarrierOp : TTNG_Op<"init_barrier", [MemoryEffects<[MemWrite<SharedMemory>]>]> {
+    let summary = "initialize a barrier in the given shared memory allocation.";
+
+    let description = [{
+        This allows initializing a shared memory allocation with mbarrier informations.
+        `alloc` is a descriptor to the shared memory allocation. `count` is the number of
+        arrive expected by the barrier.
+    }];
+
+    let arguments = (ins TT_MemDescType:$alloc,
+                         I32Attr:$count);
+    let assemblyFormat = "$alloc `,` $count attr-dict `:` type($alloc)";
+}
+
 #endif
