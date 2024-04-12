@@ -1090,4 +1090,32 @@ def ReturnOp : TT_Op<"return", [Pure, HasParent<"FuncOp">, /*MemRefsNormalizable
   let hasVerifier = 1;
 }
 
+
+//
+// Load/Store Ops
+//
+def TT_ExperimentalDescriptorLoadOp : TT_Op<"experimental_descriptor_load", [
+  MemoryEffects<[MemRead<GlobalMemory>]>]> {
+    let summary = "Load from descriptor";
+
+    let arguments = (
+      ins
+      TT_PtrType:$desc_ptr,
+      Variadic<I32>:$indices,
+      DefaultValuedAttr<TT_CacheModifierAttr, "::mlir::triton::CacheModifier::NONE">:$cache,
+      DefaultValuedAttr<TT_EvictionPolicyAttr, "::mlir::triton::EvictionPolicy::NORMAL">:$evict
+    );
+
+    let results = (outs TT_Tensor:$result);
+
+    let assemblyFormat = [{
+      $desc_ptr `[` $indices `]`
+      oilist(
+        `cacheModifier` `=` $cache |
+        `evictionPolicy` `=` $evict
+      )
+      attr-dict `:` type($desc_ptr) `->` type($result)
+    }];
+}
+
 #endif // Triton_OPS

@@ -145,7 +145,7 @@ def TTNG_AsyncTMACopyGlobalToLocalOp : TTNG_Op<"async_tma_copy_global_to_local",
   }];
 
   let arguments = (
-    ins TT_PtrOf<[I64]>:$desc_ptr,
+    ins TT_PtrType:$desc_ptr,
     Variadic<I32>:$coord,
     TT_MemDescType:$barrier,
     TT_MemDescType:$result,

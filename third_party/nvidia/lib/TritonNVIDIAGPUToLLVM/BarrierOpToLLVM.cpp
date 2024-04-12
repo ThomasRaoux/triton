@@ -84,9 +84,11 @@ struct InitBarrierOpConversion
         rewriter);
 
     ::mlir::triton::PTXBuilder ptxBuilder;
-    auto &barSyncOp = *ptxBuilder.create<>("mbarrier.init.shared::cta.b64");
+    const std::string ptx = "mbarrier.init.shared::cta.b64 [$0], " +
+                            std::to_string(op.getCount()) + ";";
+    auto &barSyncOp = *ptxBuilder.create<>(ptx);
     barSyncOp(ptxBuilder.newOperand(smemObj.getBase(), "r"),
-              ptxBuilder.newConstantOperand(op.getCount()));
+              /*onlyAttachMLIRArgs=*/true);
     auto voidTy = void_ty(op->getContext());
     ptxBuilder.launch(rewriter, op->getLoc(), voidTy);
     rewriter.eraseOp(op);
@@ -111,12 +113,13 @@ struct WaitBarrierOpConversion
         ".reg .pred P1;                                              \n\t"
         "waitLoop:                                                   \n\t"
         "mbarrier.try_wait.parity.shared.b64 P1, [$0], $1, 0x989680; \n\t"
-        "!@P1 bra.uni waitLoop;                                      \n\t"
+        "@!P1 bra.uni waitLoop;                                      \n\t"
         "}                                                           \n\t";
     ::mlir::triton::PTXBuilder ptxBuilder;
     auto &waitLoop = *ptxBuilder.create<>(ptx);
-    waitLoop(ptxBuilder.newOperand(smemObj.getBase(), "r"),
-             ptxBuilder.newOperand(adaptor.getPhase(), "r"));
+    waitLoop({ptxBuilder.newOperand(smemObj.getBase(), "r"),
+             ptxBuilder.newOperand(adaptor.getPhase(), "r")},
+             /*onlyAttachMLIRArgs=*/true);
     auto voidTy = void_ty(op->getContext());
     ptxBuilder.launch(rewriter, op->getLoc(), voidTy);
     rewriter.eraseOp(op);

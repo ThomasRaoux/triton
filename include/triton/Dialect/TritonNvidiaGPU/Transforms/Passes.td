@@ -59,4 +59,19 @@ def TritonGPUFenceInsertion : Pass<"triton-nvidia-gpu-fence-insertion", "mlir::M
   ];
 }
 
+
+def TritonNvidiaGPUTMALoweringPass : Pass<"triton-nvidia-tma-lowering", "mlir::ModuleOp"> {
+  let summary = "lower to TMA load/store operations";
+
+  let description = [{
+    Lower load descriptor to TMA load/store operations.
+  }];
+
+  let constructor = "mlir::createTritonNvidiaGPUTMALoweringPass()";
+
+  let dependentDialects = [
+    "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect"
+  ];
+}
+
 #endif

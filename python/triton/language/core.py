@@ -1590,6 +1590,18 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
                          volatile, _builder)
 
 
+
+@builtin
+def _experimental_descriptor_load(desc_pointer, offsets, shape, dtype, _builder=None):
+    """
+    TODO add docstring
+    """
+    # Convert dynamic offsets to IR values
+    type = block_type(dtype.element_ty, shape)
+    return semantic.descriptor_load(desc_pointer, offsets, "", "", type, _builder)
+
+
+
 @_tensor_member_fn
 @builtin
 def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", eviction_policy="", _builder=None):

@@ -930,20 +930,21 @@ struct AsyncTMACopyGlobalToLocalOpConversion
         8;
     ::mlir::triton::PTXBuilder ptxBuilder;
     auto &arrive =
-        *ptxBuilder.create<>("mbarrier.arrive.expect_tx.shared.b64 _,");
+        *ptxBuilder.create<>("mbarrier.arrive.expect_tx.shared.b64 _, [$0], " +
+                             std::to_string(size) + ";");
     arrive(ptxBuilder.newOperand(barrierMemObj.getBase(), "r"),
-           ptxBuilder.newConstantOperand(size));
+           /*onlyAttachMLIRArgs=*/true);
     auto voidTy = void_ty(op->getContext());
-    ptxBuilder.launch(rewriter, op->getLoc(), voidTy);           
+    ptxBuilder.launch(rewriter, op->getLoc(), voidTy);
 
     int rank = op.getCoord().size();
     ::mlir::triton::PTXBuilder ptxBuilderTMA;
     SmallVector<PTXBuilder::Operand *> operands = {
         ptxBuilderTMA.newOperand(dstMemObj.getBase(), "r"),
         ptxBuilderTMA.newOperand(adaptor.getDescPtr(), "l")};
-    std::string tmaInst = "cp.async.bulk.tensor." + std::to_string(rank) +
-                          "d.shared::cluster.global.mbarrier::complete_tx.L2::"
-                          "cache_hint [$0], [$1, {";
+    std::string tmaInst =
+        "cp.async.bulk.tensor." + std::to_string(rank) +
+        "d.shared::cluster.global.mbarrier::complete_tx::bytes [$0], [$1, {";
     for (int i = 0; i < rank; i++) {
       operands.push_back(ptxBuilderTMA.newOperand(adaptor.getCoord()[i], "r"));
       tmaInst += "$" + std::to_string(i + 2);

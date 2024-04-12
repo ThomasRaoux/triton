@@ -245,6 +245,29 @@ def test_empty_kernel(dtype_x, device):
 
 
 # generic test functions
+def test_descriptor_load(device):
+    SIZE = 128
+    # define the kernel / launch-grid
+    dtype_x = "float32"
+    @triton.jit
+    def kernel(Z, desc, SIZE: tl.constexpr):
+        off_desc = 0
+        off = tl.arange(0, SIZE)
+        x = tl._experimental_descriptor_load(desc, [off_desc], [SIZE], Z.dtype)
+        tl.store(Z + off, x)
+
+    # inputs
+    x = numpy_random(SIZE, dtype_str=dtype_x)
+    # triton result
+    x_tri = to_triton(x, device=device, dst_type=dtype_x)
+    z_tri = to_triton(np.empty_like(x), device=device, dst_type=dtype_x)
+    kernel[(1, )](z_tri, x_tri, SIZE=SIZE, num_warps=4)
+    # compare
+    np.testing.assert_equal(x, to_numpy(z_tri), rtol=0.01)
+
+
+
+# generic test functions
 def _test_unary(dtype_x, expr, numpy_expr=None, device='cuda', num_ctas=1):
     check_type_supported(dtype_x, device)  # early return if dtype_x is not supported
     SIZE = 128
