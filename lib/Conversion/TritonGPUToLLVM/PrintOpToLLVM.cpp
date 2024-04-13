@@ -171,7 +171,7 @@ struct PrintOpConversion : public ConvertOpToLLVMPattern<triton::PrintOp> {
   std::string getFormatSubstr(Value value, bool hex = false,
                               std::optional<int> width = std::nullopt) const {
     Type type = value.getType();
-    if (type.isa<LLVM::PointerType>()) {
+    if (type.isa<LLVM::LLVMPointerType>()) {
       return "%p";
     }
 

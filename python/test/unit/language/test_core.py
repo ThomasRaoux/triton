@@ -256,15 +256,13 @@ def test_descriptor_load(device):
         x = tl._experimental_descriptor_load(desc, [off_desc], [SIZE], Z.dtype)
         tl.store(Z + off, x)
 
-    # inputs
-    x = numpy_random(SIZE, dtype_str=dtype_x)
-    # triton result
-    x_tri = to_triton(x, device=device, dst_type=dtype_x)
-    z_tri = to_triton(np.empty_like(x), device=device, dst_type=dtype_x)
-    kernel[(1, )](z_tri, x_tri, SIZE=SIZE, num_warps=4)
-    # compare
-    np.testing.assert_equal(x, to_numpy(z_tri), rtol=0.01)
-
+    x = torch.randn(128, dtype=torch.float32, device=device)
+    desc = np.empty(128, dtype=np.int8)
+    triton.runtime.driver.active.utils.encoding(x.data_ptr(), desc)
+    desc = to_triton(desc, device=device, dst_type="int8")
+    z_tri = torch.empty_like(x)
+    kernel[(1, )](z_tri, desc, SIZE=SIZE, num_warps=4)
+    assert torch.equal(x, z_tri)
 
 
 # generic test functions
