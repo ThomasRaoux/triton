@@ -249,6 +249,27 @@ static PyObject *setPrintfFifoSize(PyObject *self, PyObject *args) {
   return Py_None;
 }
 
+static PyObject *encoding(PyObject *self, PyObject *args) {
+  unsigned long long global_address;
+  Py_buffer desc_buffer;
+  if (!PyArg_ParseTuple(args, "Ky*", &global_address, &desc_buffer)) {
+      return NULL;  // Properly handle errors
+  }
+  char* desc = (char*)desc_buffer.buf;
+  uint64_t dims[1] = {128};
+  uint64_t globalStrides[1] = {1};
+  uint32_t boxDim[1] = {128};
+  uint32_t elementStrides[1] = {1};
+  cuTensorMapEncodeTiled(
+      (CUtensorMap*)desc, 7, 1,
+      (void*)global_address, dims, globalStrides, boxDim, elementStrides,
+      0,
+      0,
+      0,
+      0);
+  return Py_None;
+}
+
 static PyMethodDef ModuleMethods[] = {
     {"load_binary", loadBinary, METH_VARARGS,
      "Load provided cubin into CUDA driver"},
@@ -262,6 +283,8 @@ static PyMethodDef ModuleMethods[] = {
      "being dropped.  This inherits all the limitations of this call; in "
      "particular it's an error to change this value after launching any kernel "
      "that calls printf()."},
+    {"encoding", encoding, METH_VARARGS,
+     "doc"},     
     {NULL, NULL, 0, NULL} // sentinel
 };
 

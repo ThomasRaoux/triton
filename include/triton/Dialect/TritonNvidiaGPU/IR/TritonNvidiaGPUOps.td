@@ -57,15 +57,6 @@ def TTNG_FenceAsyncSharedOp : TTNG_Op<"fence_async_shared"> {
   }];
 }
 
-def TTNG_GetClusterCTAIdOp : TTNG_Op<"get_cluster_cta_id", [Pure]> {
-  let description = [{
-    Returns the one dimensional cluster_cta_id.
-  }];
-
-  let results = (outs I32:$result);
-  let assemblyFormat = "attr-dict `:` type($result)";
-}
-
 def TTNG_ClusterArriveOp : TTNG_Op<"cluster_arrive", []> {
   let arguments = (ins I1Attr:$relaxed);
   let assemblyFormat = "attr-dict";
@@ -113,6 +104,61 @@ def TTNG_DotWaitOp : TTNG_Op<"dot_wait", [DeclareOpInterfaceMethods<InferTypeOpI
   }];
 
   let assemblyFormat = "$inputs attr-dict `:` type($inputs)";
+}
+
+def TTNG_InitBarrierOp : TTNG_Op<"init_barrier", [MemoryEffects<[MemWrite<SharedMemory>]>]> {
+    let summary = "initialize a barrier in the given shared memory allocation.";
+
+    let description = [{
+        This allows initializing a shared memory allocation with mbarrier informations.
+        `alloc` is a descriptor to the shared memory allocation. `count` is the number of
+        arrive expected by the barrier.
+    }];
+
+    let arguments = (ins TT_MemDescType:$alloc,
+                         I32Attr:$count);
+    let assemblyFormat = "$alloc `,` $count attr-dict `:` type($alloc)";
+}
+
+def TTNG_WaitBarrierOp : TTNG_Op<"wait_barrier", []> {
+    let summary = "wait until the barrier .";
+
+    let description = [{
+      //TODO:
+    }];
+
+    let arguments = (ins TT_MemDescType:$alloc,
+                         I32:$phase);
+    let assemblyFormat = "$alloc `,` $phase attr-dict `:` type($alloc)";
+}
+
+
+def TTNG_AsyncTMACopyGlobalToLocalOp : TTNG_Op<"async_tma_copy_global_to_local", [
+  MemoryEffects<[MemRead<GlobalMemory>, MemWrite<SharedMemory>]>]> {
+  let summary = "copy data based on descriptor from global memory to local memory asynchronously";
+
+  let description = [{
+    This operation copies data from global memory to local memory asynchronously.
+    This is analogue to tt.load except the data are copied to local memory pointed
+    by the memory descriptor instread of a distributed tensor. The rest of the
+    operands are the same as tt.load.
+  }];
+
+  let arguments = (
+    ins TT_PtrType:$desc_ptr,
+    Variadic<I32>:$coord,
+    TT_MemDescType:$barrier,
+    TT_MemDescType:$result,
+    DefaultValuedAttr<TT_CacheModifierAttr, "triton::CacheModifier::NONE">:$cache,
+    DefaultValuedAttr<TT_EvictionPolicyAttr, "triton::EvictionPolicy::NORMAL">:$evict,
+    DefaultValuedAttr<BoolAttr, "false">:$isVolatile
+  );
+
+  let assemblyFormat = [{
+    $desc_ptr `[` $coord `]` $result `,` $barrier
+    oilist(`cacheModifier` `=` $cache | `evictionPolicy` `=` $evict)
+    attr-dict `:` type($desc_ptr) `,` type($barrier) `->` type($result)
+  }];
 }
 
 #endif

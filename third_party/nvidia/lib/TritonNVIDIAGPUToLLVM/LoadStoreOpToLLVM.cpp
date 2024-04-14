@@ -906,6 +906,69 @@ struct AsyncCopyGlobalToLocalOpConversion
   }
 };
 
+struct AsyncTMACopyGlobalToLocalOpConversion
+    : public ConvertOpToLLVMPattern<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp> {
+  using ConvertOpToLLVMPattern<
+      triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp op,
+                  OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto barrierMemObj = LLVM::getSharedMemoryObjectFromStruct(
+        op.getLoc(), adaptor.getBarrier(),
+        typeConverter->convertType(op.getBarrier().getType().getElementType()),
+        rewriter);
+    auto dstMemObj = LLVM::getSharedMemoryObjectFromStruct(
+        op.getLoc(), adaptor.getResult(),
+        typeConverter->convertType(op.getResult().getType().getElementType()),
+        rewriter);
+    auto voidTy = void_ty(op->getContext());
+    auto id = getThreadId(rewriter, op.getLoc());
+    auto pred = icmp_eq(id, i32_val(0));
+
+
+    int rank = op.getCoord().size();
+    ::mlir::triton::PTXBuilder ptxBuilderTMA;
+    SmallVector<PTXBuilder::Operand *> operands = {
+        ptxBuilderTMA.newOperand(pred, "b"),
+        ptxBuilderTMA.newOperand(dstMemObj.getBase(), "r"),
+        ptxBuilderTMA.newOperand(adaptor.getDescPtr(), "l")};
+    std::string tmaInst =
+        "@$0 cp.async.bulk.tensor." + std::to_string(rank) +
+        "d.shared::cluster.global.mbarrier::complete_tx::bytes [$1], [$2, {";
+    for (int i = 0; i < rank; i++) {
+      operands.push_back(ptxBuilderTMA.newOperand(adaptor.getCoord()[i], "r"));
+      tmaInst += "$" + std::to_string(i + 3);
+      if (i != rank - 1)
+        tmaInst += ", ";
+    }
+    operands.push_back(ptxBuilderTMA.newOperand(barrierMemObj.getBase(), "r"));
+    tmaInst += "}], [$" + std::to_string(rank + 3) + "];";
+    auto &tma = *ptxBuilderTMA.create<>(tmaInst);
+    tma(operands, /*onlyAttachMLIRArgs=*/true);
+    ptxBuilderTMA.launch(rewriter, op.getLoc(), voidTy);
+
+
+    int64_t size =
+        (product(op.getResult().getType().getShape()) *
+         op.getResult().getType().getElementType().getIntOrFloatBitWidth()) /
+        8;
+    ::mlir::triton::PTXBuilder ptxBuilder;
+    auto &arrive =
+        *ptxBuilder.create<>("@$0 mbarrier.arrive.expect_tx.shared.b64 _, [$1], " +
+                             std::to_string(size) + ";");
+    arrive({ptxBuilder.newOperand(pred, "b"),
+            ptxBuilder.newOperand(barrierMemObj.getBase(), "r")},
+           /*onlyAttachMLIRArgs=*/true);
+    ptxBuilder.launch(rewriter, op->getLoc(), voidTy);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct AsyncWaitOpConversion
     : public ConvertOpToLLVMPattern<triton::gpu::AsyncWaitOp> {
   using ConvertOpToLLVMPattern<
@@ -952,48 +1015,6 @@ struct AsyncCommitGroupOpConversion
   }
 };
 
-struct AsyncBulkWaitOpConversion
-    : public ConvertOpToLLVMPattern<triton::gpu::AsyncBulkWaitOp> {
-  using ConvertOpToLLVMPattern<
-      triton::gpu::AsyncBulkWaitOp>::ConvertOpToLLVMPattern;
-
-  LogicalResult
-  matchAndRewrite(triton::gpu::AsyncBulkWaitOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    PTXBuilder ptxBuilder;
-    auto &asyncBulkWaitOp = *ptxBuilder.create<>("cp.async.bulk.wait_group");
-    auto num = op->getAttrOfType<IntegerAttr>("num").getInt();
-    asyncBulkWaitOp(ptxBuilder.newConstantOperand(num));
-
-    auto ctx = op.getContext();
-    auto loc = op.getLoc();
-    auto voidTy = void_ty(ctx);
-    ptxBuilder.launch(rewriter, loc, voidTy);
-
-    // Safe to remove the op since it doesn't have any return value.
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-struct AsyncBulkCommitGroupOpConversion
-    : public ConvertOpToLLVMPattern<triton::gpu::AsyncBulkCommitGroupOp> {
-  using ConvertOpToLLVMPattern<
-      triton::gpu::AsyncBulkCommitGroupOp>::ConvertOpToLLVMPattern;
-
-  LogicalResult
-  matchAndRewrite(triton::gpu::AsyncBulkCommitGroupOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-
-    PTXBuilder ptxBuilder;
-    ptxBuilder.create<>("cp.async.bulk.commit_group")->operator()();
-    ptxBuilder.launch(rewriter, op.getLoc(), void_ty(op.getContext()));
-    // Safe to remove the op since it doesn't have any return value.
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
 } // namespace
 
 void mlir::triton::NVIDIA::populateLoadStoreOpToLLVMPatterns(
@@ -1007,6 +1028,5 @@ void mlir::triton::NVIDIA::populateLoadStoreOpToLLVMPatterns(
                                                    axisInfoAnalysis, benefit);
   patterns.add<AsyncCommitGroupOpConversion>(typeConverter, benefit);
   patterns.add<AsyncWaitOpConversion>(typeConverter, benefit);
-  patterns.add<AsyncBulkCommitGroupOpConversion>(typeConverter, benefit);
-  patterns.add<AsyncBulkWaitOpConversion>(typeConverter, benefit);
+  patterns.add<AsyncTMACopyGlobalToLocalOpConversion>(typeConverter, benefit);
 }

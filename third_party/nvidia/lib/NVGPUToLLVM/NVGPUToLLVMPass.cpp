@@ -35,17 +35,6 @@ const std::string Cga_Barrier_Arrive_Op = "barrier.cluster.arrive;";
 const std::string Cga_Barrier_Wait_Op = "barrier.cluster.wait;";
 const std::string Reg_Dealloc_Op = "setmaxnreg.dec.sync.aligned.u32 #regCount;";
 
-const std::string Mbarrier_Init_Op =
-    "@$1 mbarrier.init.shared.b64 [$0], #count;";
-const std::string Mbarrier_Wait_Op =
-    "{                                                           \n"
-    ".reg .pred P1;                                              \n"
-    "LAB_WAIT:                                                   \n"
-    "mbarrier.try_wait.parity.shared.b64 P1, [$0], $1, 0x989680; \n"
-    "@P1 bra.uni DONE;                                           \n"
-    "bra.uni LAB_WAIT;                                           \n"
-    "DONE:                                                       \n"
-    "}                                                           \n";
 const std::string Named_Barrier_Arrive_Op = "bar.arrive $0, $1;";
 const std::string Named_Barrier_Wait_Op = "bar.sync $0, $1;";
 const std::string Sts64_Op = "st.shared.v2.b32 [$0], {$1, $2};";
