@@ -21,6 +21,7 @@ The [official documentation](https://triton-lang.org) contains installation inst
 
 You can install the latest stable release of Triton from pip:
 
+
 ```bash
 pip install triton
 ```
