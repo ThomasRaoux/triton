@@ -212,7 +212,7 @@ static void createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
                             Value insertIdx, Value extractIdx,
                             CoarseSchedule &schedule,
                             CoarseSchedule::Cluster prefetchCluster,
-                            llvm::MapVector<tt::LoadOp, LoadInfo> &loadToInfo,
+                            llvm::MapVector<Operation*, LoadInfo> &loadToInfo,
                             int numStages) {
   OpBuilder builder(forOp);
   Value zero = builder.create<arith::ConstantIntOp>(forOp.getLoc(), 0, 32);
@@ -373,8 +373,8 @@ getBlockedEncoding(tt::LoadOp loadOp, tt::ModuleAxisInfoAnalysis &axisInfo) {
 }
 
 static std::optional<ttg::SharedEncodingAttr>
-getSharedEncoding(tt::LoadOp loadOp, bool isMMAV3) {
-  auto ty = cast<RankedTensorType>(loadOp.getType());
+getSharedEncoding(Operation* loadOp, bool isMMAV3) {
+  auto ty = cast<RankedTensorType>(loadOp->getResultTypes()[0]);
   auto ctaLayout = ttg::getCTALayout(ty.getEncoding());
   auto blockedOrder = ttg::getOrder(ty.getEncoding());
   SmallVector<unsigned> order;
@@ -424,9 +424,9 @@ getSharedEncoding(tt::LoadOp loadOp, bool isMMAV3) {
 // final use of the load op (another load op, or a dot op).
 // Indirection level is "0" for the load op directly used by the dot op,
 // "1" for the load op used by the load op used by the dot op, and so on.
-static llvm::SmallVector<std::tuple<tt::LoadOp, int, Operation *>>
+static llvm::SmallVector<std::tuple<Operation*, int, Operation *>>
 loadOpsToIndirectionLevelAndUse(scf::ForOp forOp) {
-  llvm::SmallVector<std::tuple<tt::LoadOp, int, Operation *>>
+  llvm::SmallVector<std::tuple<Operation*, int, Operation *>>
       loadOpToIndLevelAndUse;
   DenseSet<Operation *> seen;
 
@@ -469,7 +469,7 @@ loadOpsToIndirectionLevelAndUse(scf::ForOp forOp) {
   return loadOpToIndLevelAndUse;
 }
 
-static bool loadIsMMAv3(tt::LoadOp loadOp) {
+static bool loadIsMMAv3(Operation* loadOp) {
   if (!loadOp->hasOneUse())
     return false;
   auto alloc = dyn_cast<ttg::LocalAllocOp>(*loadOp->getUsers().begin());
@@ -482,7 +482,7 @@ static bool loadIsMMAv3(tt::LoadOp loadOp) {
 
   // MMA V3 case.
   auto newOrder = sharedEnc.getOrder();
-  auto ty = cast<RankedTensorType>(loadOp.getType());
+  auto ty = cast<RankedTensorType>(loadOp->getResultTypes()[0]);
   auto oldOrder = ttg::getOrder(ty.getEncoding());
 
   // The operand of MMAv3 is in SharedEncoding and its order should not
@@ -492,51 +492,52 @@ static bool loadIsMMAv3(tt::LoadOp loadOp) {
   return oldOrder == newOrder;
 }
 
-static llvm::MapVector<tt::LoadOp, LoadInfo>
-assignMemoryLayouts(llvm::SmallVector<std::tuple<tt::LoadOp, int, Operation *>>
+static llvm::MapVector<Operation*, LoadInfo>
+assignMemoryLayouts(llvm::SmallVector<std::tuple<Operation*, int, Operation *>>
                         &loadOpToIndLevelAndUse,
                     tt::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
-  llvm::MapVector<tt::LoadOp, LoadInfo> loadToInfo;
+  llvm::MapVector<Operation*, LoadInfo> loadToInfo;
 
-  for (auto &[loadOp, dist, use] : loadOpToIndLevelAndUse) {
-    assert(!isLoadFromTensorPtr(loadOp) &&
-           "Block ptr should have been lowered before this pass.");
-
-    if (loadToInfo.count(loadOp))
+  for (auto &[op, dist, use] : loadOpToIndLevelAndUse) {
+    if (loadToInfo.count(op))
       // TODO pawel: err, we'd need to verify that the distance is the same
       continue;
-
     LoadInfo loadInfo;
-    auto ptr = loadOp.getPtr();
-    unsigned vec = axisInfoAnalysis.getPtrContiguity(ptr);
-    if (auto mask = loadOp.getMask())
-      vec = std::min<unsigned>(vec, axisInfoAnalysis.getMaskAlignment(mask));
 
-    auto tensorTy = ptr.getType().dyn_cast<RankedTensorType>();
-    if (!tensorTy)
-      continue;
-    auto ty =
-        tensorTy.getElementType().cast<tt::PointerType>().getPointeeType();
-    unsigned width = vec * ty.getIntOrFloatBitWidth();
+    if (auto loadOp = dyn_cast<tt::LoadOp>(op)) {
+      assert(!isLoadFromTensorPtr(loadOp) &&
+             "Block ptr should have been lowered before this pass.");
+      auto ptr = loadOp.getPtr();
+      unsigned vec = axisInfoAnalysis.getPtrContiguity(ptr);
+      if (auto mask = loadOp.getMask())
+        vec = std::min<unsigned>(vec, axisInfoAnalysis.getMaskAlignment(mask));
 
-    // We do not pipeline all loads for the following reasons:
-    // 1. On nvidia GPUs, cp.async's cp-size can only be 4, 8, or 16.
-    // 2. It's likely that pipling small loads won't offer much performance
-    //    improvement and may even hurt performance by increasing register
-    //    pressure.
-    LDBG("Load " << *loadOp << " has width " << width);
-    if (width < 32)
-      continue;
+      auto tensorTy = ptr.getType().dyn_cast<RankedTensorType>();
+      if (!tensorTy)
+        continue;
+      auto ty =
+          tensorTy.getElementType().cast<tt::PointerType>().getPointeeType();
+      unsigned width = vec * ty.getIntOrFloatBitWidth();
+
+      // We do not pipeline all loads for the following reasons:
+      // 1. On nvidia GPUs, cp.async's cp-size can only be 4, 8, or 16.
+      // 2. It's likely that pipling small loads won't offer much performance
+      //    improvement and may even hurt performance by increasing register
+      //    pressure.
+      LDBG("Load " << *loadOp << " has width " << width);
+      if (width < 32)
+        continue;
+    }
 
     if (auto dot = dyn_cast<tt::DotOp>(use)) {
       loadInfo.usedByDot = true;
-      if (loadIsMMAv3(loadOp)) {
+      if (loadIsMMAv3(op)) {
         loadInfo.loadIsMMAV3 = true;
         loadInfo.sharedEncoding =
-            getSharedEncoding(loadOp, /*loadIsMMAv3=*/true).value_or(nullptr);
+            getSharedEncoding(op, /*loadIsMMAv3=*/true).value_or(nullptr);
       } else {
         loadInfo.sharedEncoding =
-            getSharedEncIfAllUsersAreDotEnc(loadOp.getResult())
+            getSharedEncIfAllUsersAreDotEnc(op->getResult(0))
                 .value_or(nullptr);
 
         // HACK: Triton LLVM codegen has a bug where local_loads from #shared to
@@ -553,7 +554,7 @@ assignMemoryLayouts(llvm::SmallVector<std::tuple<tt::LoadOp, int, Operation *>>
                                 .getType()
                                 .getEncoding()
                                 .dyn_cast<ttg::NvidiaMmaEncodingAttr>()) {
-            auto loadTy = loadOp.getType().cast<RankedTensorType>();
+            auto loadTy = op->getResultTypes()[0].cast<RankedTensorType>();
             auto mmaInstrShape = dotEnc.getInstrShape();
             if (loadTy.getRank() < mmaInstrShape.size())
               continue;
@@ -589,22 +590,24 @@ assignMemoryLayouts(llvm::SmallVector<std::tuple<tt::LoadOp, int, Operation *>>
     // encoding.
     if (!loadInfo.sharedEncoding && !isMMAv3Dot(use)) {
       loadInfo.sharedEncoding =
-          getSharedEncoding(loadOp, /*isMMAV3=*/loadInfo.loadIsMMAV3)
+          getSharedEncoding(op, /*isMMAV3=*/loadInfo.loadIsMMAV3)
               .value_or(nullptr);
-      loadInfo.blockedEncoding = getBlockedEncoding(loadOp, axisInfoAnalysis);
+      if (auto loadOp = dyn_cast<tt::LoadOp>(op)) {
+        loadInfo.blockedEncoding = getBlockedEncoding(loadOp, axisInfoAnalysis);
+      }
     }
 
     // If that still didn't work, bail on pipelining this load.
     if (!loadInfo.sharedEncoding) {
       continue;
     }
-    loadToInfo[loadOp] = loadInfo;
+    loadToInfo[op] = loadInfo;
   }
 
   return loadToInfo;
 }
 
-static llvm::MapVector<tt::LoadOp, LoadInfo>
+static llvm::MapVector<Operation*, LoadInfo>
 scheduleLoads(scf::ForOp forOp, CoarseSchedule &schedule,
               DenseSet<Operation *> &rootUsers, int numStages) {
   ModuleOp moduleOp = forOp->getParentOfType<ModuleOp>();
@@ -612,7 +615,7 @@ scheduleLoads(scf::ForOp forOp, CoarseSchedule &schedule,
 
   // Get all loads that are (transitively) used by dot ops and their distance
   // to the dot op.
-  llvm::SmallVector<std::tuple<tt::LoadOp, int, Operation *>>
+  llvm::SmallVector<std::tuple<Operation*, int, Operation *>>
       loadOpToIndLevelAndUse = loadOpsToIndirectionLevelAndUse(forOp);
   LLVM_DEBUG({
     LDBG("Found " << loadOpToIndLevelAndUse.size() << " loads to pipeline:");
@@ -627,7 +630,7 @@ scheduleLoads(scf::ForOp forOp, CoarseSchedule &schedule,
 
   // Check which loads are good for pipelining, and assign them
   // memory layouts.
-  llvm::MapVector<tt::LoadOp, LoadInfo> loadToInfo =
+  llvm::MapVector<Operation*, LoadInfo> loadToInfo =
       assignMemoryLayouts(loadOpToIndLevelAndUse, axisInfoAnalysis);
 
   if (loadToInfo.empty())
@@ -801,16 +804,16 @@ static void scheduleDistanceOneDependencies(scf::ForOp forOp,
 }
 
 // Create an allocation that can hold distance number of loadOp shapes.
-static Value createAlloc(scf::ForOp &forOp, tt::LoadOp loadOp,
+static Value createAlloc(scf::ForOp &forOp, Operation* loadOp,
                          ttg::SharedEncodingAttr sharedEnc, unsigned distance) {
   OpBuilder builder(forOp);
-  auto ty = cast<RankedTensorType>(loadOp.getType());
+  auto ty = cast<RankedTensorType>(loadOp->getResultTypes()[0]);
   SmallVector<int64_t> bufferShape(ty.getShape().begin(), ty.getShape().end());
   bufferShape.insert(bufferShape.begin(), distance);
   Type memdescType = mlir::triton::MemDescType::get(
       bufferShape, ty.getElementType(), sharedEnc, /*mutableMemory*/ true);
   Value alloc = builder.create<mlir::triton::gpu::LocalAllocOp>(
-      loadOp.getLoc(), memdescType, Value());
+      loadOp->getLoc(), memdescType, Value());
   return alloc;
 }
 
@@ -818,11 +821,11 @@ static Value createAlloc(scf::ForOp &forOp, tt::LoadOp loadOp,
 // the required number of buffers.
 static SmallVector<Value>
 createAsyncOps(scf::ForOp &forOp, CoarseSchedule &schedule,
-               llvm::MapVector<tt::LoadOp, LoadInfo> &loadToInfo,
+               llvm::MapVector<Operation*, LoadInfo> &loadToInfo,
                int numStages) {
   struct AsyncLoad {
-    AsyncLoad(tt::LoadOp loadOp, Value alloc) : loadOp(loadOp), alloc(alloc) {}
-    tt::LoadOp loadOp;
+    AsyncLoad(Operation* loadOp, Value alloc) : loadOp(loadOp), alloc(alloc) {}
+    Operation* loadOp;
     Value alloc;
   };
   // Calculate the number of buffers needed for each load.
@@ -895,9 +898,14 @@ createAsyncOps(scf::ForOp &forOp, CoarseSchedule &schedule,
   CoarseSchedule::Cluster prefetchCluster = schedule.clusters.newAtBack();
 
   for (AsyncLoad &asyncLoad : asyncLoads) {
-    createAsyncCopy(forOp, asyncLoad.loadOp, asyncLoad.alloc, insertIdx,
-                    extractIdx, schedule, prefetchCluster, loadToInfo,
-                    numStages);
+    if (auto loadOp = dyn_cast<tt::LoadOp>(asyncLoad.loadOp)) {
+      createAsyncCopy(forOp, loadOp, asyncLoad.alloc, insertIdx, extractIdx,
+                      schedule, prefetchCluster, loadToInfo, numStages);
+    } else {
+    //  createTMAAsyncCopy(forOp, asyncLoad.loadOp, asyncLoad.alloc, insertIdx,
+    //                     extractIdx, schedule, prefetchCluster, loadToInfo,
+    //                     numStages);
+    }
   }
   SmallVector<Value> newYieldOperands = {insertIdx, extractIdx};
   // Patch the yield with the updated counters.
@@ -912,7 +920,7 @@ bool mlir::triton::preProcessLoopAndGetSchedule(
   // a scaffold for the final schedule.
   DenseSet<Operation *> rootUsers;
   CoarseSchedule coarseSchedule(numStages);
-  llvm::MapVector<tt::LoadOp, LoadInfo> loadToInfo =
+  llvm::MapVector<Operation*, LoadInfo> loadToInfo =
       scheduleLoads(forOp, coarseSchedule, rootUsers, numStages);
   if (loadToInfo.empty())
     return false;
