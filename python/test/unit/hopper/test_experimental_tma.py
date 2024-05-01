@@ -100,8 +100,8 @@ def test_experimental_tma_matmul():
         pytest.skip("Test requires Hopper target.")
         return
     device = "cuda"
-    M, N, K = 1024, 512, 256
-    BLOCK_M, BLOCK_N, BLOCK_K = 128, 256, 64
+    M, N, K = 1024, 512, 1024
+    BLOCK_M, BLOCK_N, BLOCK_K = 64, 64, 64
     torch.manual_seed(42)
     A = torch.randn((M, K), dtype=torch.float16, device=device)
     B = torch.randn((K, N), dtype=torch.float16, device=device)

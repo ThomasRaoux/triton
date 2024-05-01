@@ -325,8 +325,9 @@ static PyObject *fill2DTMADescriptor(PyObject *self, PyObject *args) {
   CUresult result = cuTensorMapEncodeTiled(
       (CUtensorMap *)desc, type, rank, (void *)global_address, dims,
       globalStrides, tensorDims, elementStrides, CU_TENSOR_MAP_INTERLEAVE_NONE,
-      CU_TENSOR_MAP_SWIZZLE_NONE, CU_TENSOR_MAP_L2_PROMOTION_NONE,
+      CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_NONE,
       CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+  printf("result: %d\n", result);
   assert(result == CUDA_SUCCESS);
   return Py_None;
 }
