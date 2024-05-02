@@ -94,14 +94,14 @@ def matmul_kernel_tma(a_desc_ptr, b_desc_ptr, c_ptr,  #
     c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
     tl.store(c_ptrs, accumulator)
 
-
-def test_experimental_tma_matmul():
+@pytest.mark.parametrize("num_stages", [1, 7])
+def test_experimental_tma_matmul(num_stages):
     if not torch.cuda.is_available() or not torch.cuda.get_device_capability()[0] == 9:
         pytest.skip("Test requires Hopper target.")
         return
     device = "cuda"
-    M, N, K = 1024, 512, 1024
-    BLOCK_M, BLOCK_N, BLOCK_K = 64, 64, 64
+    M, N, K = 8192, 8192, 1024
+    BLOCK_M, BLOCK_N, BLOCK_K = 128, 128, 64
     torch.manual_seed(42)
     A = torch.randn((M, K), dtype=torch.float16, device=device)
     B = torch.randn((K, N), dtype=torch.float16, device=device)
@@ -119,6 +119,6 @@ def test_experimental_tma_matmul():
     matmul_kernel_tma[(triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1, 1)](desc_a,
                                                                                  desc_b, C, M, N, K, C.stride(0),
                                                                                  C.stride(1), BLOCK_M, BLOCK_N, BLOCK_K,
-                                                                                 num_warps=4)
+                                                                                 num_warps=4, num_stages=num_stages)
     ref_out = torch.matmul(A.to(torch.float32), B.to(torch.float32))
     torch.testing.assert_close(ref_out, C, rtol=1e-3, atol=1e-3)

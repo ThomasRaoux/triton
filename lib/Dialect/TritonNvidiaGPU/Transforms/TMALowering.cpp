@@ -26,8 +26,9 @@ public:
     auto tensorType = op.getResult().getType();
     auto order = getOrder(tensorType.getEncoding());
     auto ctaLayout = getCTALayout(tensorType.getEncoding());
-    auto encoding = SharedEncodingAttr::get(tensorType.getContext(), 1, 1, 1,
-                                            order, ctaLayout);
+    auto encoding =
+        SharedEncodingAttr::get(tensorType.getContext(), tensorType.getShape(),
+                                order, ctaLayout, tensorType.getElementType());
     MemDescType memDescType =
         MemDescType::get(tensorType.getShape(), tensorType.getElementType(),
                          encoding, /*mutableMemory=*/true);
