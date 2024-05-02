@@ -43,8 +43,9 @@ public:
         rewriter.create<LocalAllocOp>(loc, barrierMemDescType, Value());
     rewriter.create<InitBarrierOp>(loc, barrierAlloc, 1);
 
+    Value pred = rewriter.create<arith::ConstantIntOp>(loc, 1, 1);
     rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
-        loc, op.getDescPtr(), op.getIndices(), barrierAlloc, alloc);
+        loc, op.getDescPtr(), op.getIndices(), barrierAlloc, alloc, pred);
     Value phase = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
     rewriter.create<WaitBarrierOp>(loc, barrierAlloc, phase);
     rewriter.replaceOpWithNewOp<LocalLoadOp>(op, op.getType(), alloc);

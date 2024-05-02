@@ -924,7 +924,24 @@ struct AsyncTMACopyGlobalToLocalOpConversion
         rewriter);
     auto voidTy = void_ty(op->getContext());
     auto id = getThreadId(rewriter, loc);
-    auto pred = icmp_eq(id, i32_val(0));
+    Value pred = icmp_eq(id, i32_val(0));
+    pred = and_(pred, adaptor.getPred());
+    int64_t size =
+        (product(op.getResult().getType().getShape()) *
+         op.getResult().getType().getElementType().getIntOrFloatBitWidth()) /
+        8;
+    ::mlir::triton::PTXBuilder ptxBuilder;
+    auto &arrive = *ptxBuilder.create<>(
+        "@$0 mbarrier.arrive.expect_tx.shared.b64 _, [$1], " +
+        std::to_string(size) + ";");
+    arrive({ptxBuilder.newOperand(pred, "b"),
+            ptxBuilder.newOperand(barrierMemObj.getBase(), "r")},
+           /*onlyAttachMLIRArgs=*/true);
+    ptxBuilder.launch(rewriter, loc, voidTy);
+
+
+    barrier();
+
 
     int rank = op.getCoord().size();
     ::mlir::triton::PTXBuilder ptxBuilderTMA;
@@ -948,21 +965,6 @@ struct AsyncTMACopyGlobalToLocalOpConversion
     auto &tma = *ptxBuilderTMA.create<>(tmaInst);
     tma(operands, /*onlyAttachMLIRArgs=*/true);
     ptxBuilderTMA.launch(rewriter, loc, voidTy);
-
-    barrier();
-
-    int64_t size =
-        (product(op.getResult().getType().getShape()) *
-         op.getResult().getType().getElementType().getIntOrFloatBitWidth()) /
-        8;
-    ::mlir::triton::PTXBuilder ptxBuilder;
-    auto &arrive = *ptxBuilder.create<>(
-        "@$0 mbarrier.arrive.expect_tx.shared.b64 _, [$1], " +
-        std::to_string(size) + ";");
-    arrive({ptxBuilder.newOperand(pred, "b"),
-            ptxBuilder.newOperand(barrierMemObj.getBase(), "r")},
-           /*onlyAttachMLIRArgs=*/true);
-    ptxBuilder.launch(rewriter, loc, voidTy);
 
     rewriter.eraseOp(op);
     return success();

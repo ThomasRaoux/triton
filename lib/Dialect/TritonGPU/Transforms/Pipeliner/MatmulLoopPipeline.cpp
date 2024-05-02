@@ -334,9 +334,9 @@ static void createTMAAsyncCopy(
       /*mutableMemory=*/true);
   Value barrierViewCopy = builder.create<ttg::MemDescSubviewOp>(
       loc, barrierTy, barrier, ArrayRef<Value>({insertIdx}));
-
+  Value pred = builder.create<arith::ConstantIntOp>(loc, 1, 1);
   Operation *copy = builder.create<ttng::AsyncTMACopyGlobalToLocalOp>(
-      loc, loadOp.getDescPtr(), loadOp.getIndices(), barrierViewCopy, view);
+      loc, loadOp.getDescPtr(), loadOp.getIndices(), barrierViewCopy, view, pred);
 
   Value barrierViewWait = builder.create<ttg::MemDescSubviewOp>(
       loc, barrierTy, barrier, ArrayRef<Value>({extractIdx}));

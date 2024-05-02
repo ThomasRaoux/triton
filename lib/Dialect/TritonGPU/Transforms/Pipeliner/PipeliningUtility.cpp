@@ -38,8 +38,6 @@ Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
     return op;
   if (isa<ttg::LocalLoadOp>(op))
     return op;
-  if (isa<ttng::AsyncTMACopyGlobalToLocalOp>(op))
-    return op;
   if (auto asyncCopyOp = dyn_cast<ttg::AsyncCopyGlobalToLocalOp>(op)) {
     rewriter.setInsertionPoint(asyncCopyOp);
     Value mask = getPredMask(rewriter, asyncCopyOp.getSrc().getType(),
@@ -52,6 +50,13 @@ Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
     Value mask = getPredMask(rewriter, loadOp.getPtr().getType(),
                              loadOp.getMask(), pred);
     loadOp.getMaskMutable().assign(mask);
+    return op;
+  }
+  if (auto copyOp = dyn_cast<ttng::AsyncTMACopyGlobalToLocalOp>(op)) {
+    rewriter.setInsertionPoint(copyOp);
+    Value mask = getPredMask(rewriter, copyOp.getPred().getType(),
+                             copyOp.getPred(), pred);
+    copyOp.getPredMutable().assign(mask);
     return op;
   }
 
