@@ -914,22 +914,22 @@ struct AsyncTMACopyGlobalToLocalOpConversion
     assert(op.getEvict() == triton::EvictionPolicy::NORMAL &&
            "eviction policy not supported yet.");
     auto loc = op.getLoc();
+    Type llvmElemTy =
+        typeConverter->convertType(op.getResult().getType().getElementType());
     auto barrierMemObj = LLVM::getSharedMemoryObjectFromStruct(
         loc, adaptor.getBarrier(),
         typeConverter->convertType(op.getBarrier().getType().getElementType()),
         rewriter);
     auto dstMemObj = LLVM::getSharedMemoryObjectFromStruct(
-        loc, adaptor.getResult(),
-        typeConverter->convertType(op.getResult().getType().getElementType()),
-        rewriter);
+        loc, adaptor.getResult(), llvmElemTy, rewriter);
     auto voidTy = void_ty(op->getContext());
     auto id = getThreadId(rewriter, loc);
     Value pred = icmp_eq(id, i32_val(0));
     pred = and_(pred, adaptor.getPred());
     int elementSizeInBytes =
         op.getResult().getType().getElementType().getIntOrFloatBitWidth() / 8;
-    int64_t size =
-        product(op.getResult().getType().getShape()) * elementSizeInBytes;
+    int totalNumElements = product(op.getResult().getType().getShape());
+    int64_t size = totalNumElements * elementSizeInBytes;
     ::mlir::triton::PTXBuilder ptxBuilder;
     auto &arrive = *ptxBuilder.create<>(
         "@$0 mbarrier.arrive.expect_tx.shared.b64 _, [$1], " +
@@ -944,8 +944,11 @@ struct AsyncTMACopyGlobalToLocalOpConversion
 
     int innerBlockSize = op.getResult().getType().getShape().back();
     int contigDimSizeInByte = innerBlockSize * elementSizeInBytes;
-    int numCopies = ceil<int>(contigDimSizeInByte, 128);
+    int numCopies = 1;
     int rank = op.getCoord().size();
+    if (rank > 1)
+      numCopies = ceil<int>(contigDimSizeInByte, 128);
+
     // The bounding box inner dimension must be less than or equal to the
     // swizzle size.
     // https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__TENSOR__MEMORY.html#group__CUDA__TENSOR__MEMORY_1ga7c7d2aaac9e49294304e755e6f341d7
@@ -953,9 +956,12 @@ struct AsyncTMACopyGlobalToLocalOpConversion
     // operations.
     for (int copyIdx = 0; copyIdx < numCopies; copyIdx++) {
       ::mlir::triton::PTXBuilder ptxBuilderTMA;
+      Type elemPtrTy = ptr_ty(rewriter.getContext(), 3);
+      Value shMemPtr = gep(elemPtrTy, llvmElemTy, dstMemObj.getBase(),
+                           i32_val(copyIdx * (totalNumElements / numCopies)));
       SmallVector<PTXBuilder::Operand *> operands = {
           ptxBuilderTMA.newOperand(pred, "b"),
-          ptxBuilderTMA.newOperand(dstMemObj.getBase(), "r"),
+          ptxBuilderTMA.newOperand(shMemPtr, "r"),
           ptxBuilderTMA.newOperand(adaptor.getDescPtr(), "l")};
       std::string tmaInst =
           "@$0 cp.async.bulk.tensor." + std::to_string(rank) +
@@ -972,8 +978,7 @@ struct AsyncTMACopyGlobalToLocalOpConversion
         if (i != rank - 1)
           tmaInst += ", ";
       }
-      operands.push_back(
-          ptxBuilderTMA.newOperand(barrierMemObj.getBase(), "r"));
+      operands.push_back(ptxBuilderTMA.newOperand(barrierMemObj.getBase(), "r"));
       tmaInst += "}], [$" + std::to_string(operandIdx++) + "];";
       auto &tma = *ptxBuilderTMA.create<>(tmaInst);
       tma(operands, /*onlyAttachMLIRArgs=*/true);

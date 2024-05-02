@@ -24,7 +24,8 @@ def test_descriptor_load_ttgir():
         %1 = triton_gpu.local_alloc  : () -> !tt.memdesc<{SIZE}xf32, #shared, mutable>
         %2 = triton_gpu.local_alloc  : () -> !tt.memdesc<1xi64, #shared, mutable>
         triton_nvidia_gpu.init_barrier %2, 1 : <1xi64, #shared, mutable>
-        triton_nvidia_gpu.async_tma_copy_global_to_local %arg1[%c0_i32] %1, %2 : <i8>, <1xi64, #shared, mutable> -> <{SIZE}xf32, #shared, mutable>
+        %true = arith.constant 1 : i1
+        triton_nvidia_gpu.async_tma_copy_global_to_local %arg1[%c0_i32] %1, %2, %true : <i8>, <1xi64, #shared, mutable> -> <{SIZE}xf32, #shared, mutable>
         triton_nvidia_gpu.wait_barrier %2, %c0_i32 : <1xi64, #shared, mutable>
         %3 = triton_gpu.local_load %1 : !tt.memdesc<{SIZE}xf32, #shared, mutable> -> tensor<{SIZE}xf32, #blocked>
         %4 = tt.splat %arg0 : !tt.ptr<f32> -> tensor<{SIZE}x!tt.ptr<f32>, #blocked>
@@ -94,14 +95,14 @@ def matmul_kernel_tma(a_desc_ptr, b_desc_ptr, c_ptr,  #
     c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
     tl.store(c_ptrs, accumulator)
 
-@pytest.mark.parametrize("num_stages", [1, 7])
+@pytest.mark.parametrize("num_stages", [1, 4])
 def test_experimental_tma_matmul(num_stages):
     if not torch.cuda.is_available() or not torch.cuda.get_device_capability()[0] == 9:
         pytest.skip("Test requires Hopper target.")
         return
     device = "cuda"
     M, N, K = 8192, 8192, 1024
-    BLOCK_M, BLOCK_N, BLOCK_K = 128, 128, 64
+    BLOCK_M, BLOCK_N, BLOCK_K = 128, 256, 64
     torch.manual_seed(42)
     A = torch.randn((M, K), dtype=torch.float16, device=device)
     B = torch.randn((K, N), dtype=torch.float16, device=device)
