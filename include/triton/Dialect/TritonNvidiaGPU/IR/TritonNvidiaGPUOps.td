@@ -144,6 +144,25 @@ def TTNG_WaitBarrierOp : TTNG_Op<"wait_barrier", []> {
 }
 
 
+def TTNG_BarrierExpectOp : TTNG_Op<"barrier_expect", [
+  MemoryEffects<[MemRead<GlobalMemory>, MemWrite<SharedMemory>]>]> {
+  let summary = "barrier expect";
+
+  let description = [{
+
+  }];
+
+  let arguments = (
+    ins TT_MemDescType:$barrier,
+    I32Attr:$size,
+    I1:$pred
+  );
+
+  let assemblyFormat = [{
+    $barrier `,` $size attr-dict `,` $pred `:` type($barrier)
+  }];
+}
+
 def TTNG_AsyncTMACopyGlobalToLocalOp : TTNG_Op<"async_tma_copy_global_to_local", [
   MemoryEffects<[MemRead<GlobalMemory>, MemWrite<SharedMemory>]>]> {
   let summary = "copy data based on descriptor from global memory to local memory asynchronously";

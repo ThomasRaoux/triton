@@ -311,7 +311,7 @@ static void createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
 static void
 createTMAAsyncCopy(scf::ForOp &forOp, tt::ExperimentalDescriptorLoadOp loadOp,
                    Value alloc, Value insertIdx, Value extractIdx,
-                   Value barrier, Value phase, CoarseSchedule &schedule,
+                   Value barrier, Operation* waitOp, Value phase, CoarseSchedule &schedule,
                    llvm::MapVector<Operation *, LoadInfo> &loadToInfo,
                    int numStages) {
   assert(phase && "Phase value is required for TMA async copy.");
@@ -328,26 +328,18 @@ createTMAAsyncCopy(scf::ForOp &forOp, tt::ExperimentalDescriptorLoadOp loadOp,
   auto view =
       builder.create<ttg::MemDescSubviewOp>(loc, subviewTy, alloc, copyOffsets);
 
-  tt::MemDescType barrierTy = tt::MemDescType::get(
-      {1}, builder.getI64Type(),
-      barrier.getType().cast<tt::MemDescType>().getEncoding(),
-      /*mutableMemory=*/true);
-  Value barrierViewCopy = builder.create<ttg::MemDescSubviewOp>(
-      loc, barrierTy, barrier, ArrayRef<Value>({insertIdx}));
   Value pred = builder.create<arith::ConstantIntOp>(loc, 1, 1);
   Operation *copy = builder.create<ttng::AsyncTMACopyGlobalToLocalOp>(
-      loc, loadOp.getDescPtr(), loadOp.getIndices(), barrierViewCopy, view,
+      loc, loadOp.getDescPtr(), loadOp.getIndices(), barrier, view,
       pred);
 
-  Value barrierViewWait = builder.create<ttg::MemDescSubviewOp>(
-      loc, barrierTy, barrier, ArrayRef<Value>({extractIdx}));
-  Operation *wait =
-      builder.create<ttng::WaitBarrierOp>(loc, barrierViewWait, phase);
 
   bool isMMV3Load = loadToInfo[loadOp].loadIsMMAV3;
   auto [stage, cluster] = schedule[loadOp];
   schedule.erase(loadOp);
   schedule.insert(copy, stage, cluster);
+
+  builder.setInsertionPointAfter(waitOp);
 
   // Extract part.
   SmallVector<Value> loadOffsets(allocTy.getRank(), zero);
@@ -950,18 +942,67 @@ static Value createBarrierAlloc(scf::ForOp &forOp, unsigned distance) {
   return barrierAlloc;
 }
 
+struct AsyncLoad {
+  AsyncLoad(Operation *loadOp, Value alloc) : loadOp(loadOp), alloc(alloc) {}
+  Operation *loadOp;
+  Value alloc;
+  Value barrier;
+  Operation *waitOp = nullptr;
+  bool isTMALoad = false;
+};
+
+void createTMABarrierAndWait(scf::ForOp &forOp,
+                             SmallVector<AsyncLoad> &asyncLoads,
+                             Value insertIdx,
+                             Value extractIdx, Value phase, int numBuffers,
+                             CoarseSchedule &schedule) {
+  int size = 0;
+  for (AsyncLoad &asyncLoad : asyncLoads) {
+    if (!asyncLoad.isTMALoad)
+      continue;
+    auto shape = asyncLoad.loadOp->getResult(0).getType().cast<RankedTensorType>().getShape();
+    int loadSize = 1;
+    for (int i = 0; i < shape.size(); i++) {
+      loadSize *= shape[i];
+    }
+    size += loadSize * asyncLoad.loadOp->getResult(0).getType().cast<RankedTensorType>().getElementType().getIntOrFloatBitWidth() / 8;
+  }
+  if (size == 0)
+    return;
+
+  Value barrierAlloc = createBarrierAlloc(forOp, numBuffers);
+  Location loc = forOp.getLoc();
+  OpBuilder builder(forOp);
+  tt::MemDescType barrierTy = tt::MemDescType::get(
+      {1}, builder.getI64Type(),
+      barrierAlloc.getType().cast<tt::MemDescType>().getEncoding(),
+      /*mutableMemory=*/true);
+  builder.setInsertionPoint(asyncLoads[0].loadOp);
+  Value barrier = builder.create<ttg::MemDescSubviewOp>(
+      loc, barrierTy, barrierAlloc, ArrayRef<Value>({insertIdx}));
+  Value pred = builder.create<arith::ConstantIntOp>(loc, 1, 1);
+  Operation* expect = builder.create<ttng::BarrierExpectOp>(forOp.getLoc(), barrier, size, pred);
+  auto [stage, cluster] = schedule[asyncLoads[0].loadOp];
+  schedule.insert(expect, stage, cluster);
+
+  builder.setInsertionPointAfter(asyncLoads.back().loadOp);
+  Value barrierViewWait = builder.create<ttg::MemDescSubviewOp>(
+      loc, barrierTy, barrierAlloc, ArrayRef<Value>({extractIdx}));
+  Operation *wait =
+      builder.create<ttng::WaitBarrierOp>(loc, barrierViewWait, phase);
+  for (AsyncLoad &asyncLoad : asyncLoads) {
+    asyncLoad.barrier = barrier;
+    asyncLoad.waitOp = wait;
+  }
+
+}
+
 // Convert load ops into their asyn version and apply multi-buffering based on
 // the required number of buffers.
 static SmallVector<Value>
 createAsyncOps(scf::ForOp &forOp, CoarseSchedule &schedule,
                llvm::MapVector<Operation *, LoadInfo> &loadToInfo,
                int numStages) {
-  struct AsyncLoad {
-    AsyncLoad(Operation *loadOp, Value alloc) : loadOp(loadOp), alloc(alloc) {}
-    Operation *loadOp;
-    Value alloc;
-    Value barrier;
-  };
   // Calculate the number of buffers needed for each load.
   // TODO pawel: we could do more fine-grained allocation here and
   // allocate only the number of buffers that specific loads need.
@@ -990,7 +1031,7 @@ createAsyncOps(scf::ForOp &forOp, CoarseSchedule &schedule,
     asyncLoads.emplace_back(loadOp, alloc);
     if (isa<tt::ExperimentalDescriptorLoadOp>(loadOp)) {
       hasTMALoad = true;
-      asyncLoads.back().barrier = createBarrierAlloc(forOp, numBuffers);
+      asyncLoads.back().isTMALoad = true;
     }
   }
 
@@ -1043,6 +1084,8 @@ createAsyncOps(scf::ForOp &forOp, CoarseSchedule &schedule,
     phase = builder.create<arith::SelectOp>(loc, cndExt, phase, nextPhase);
   }
 
+  createTMABarrierAndWait(forOp, asyncLoads, insertIdx, extractIdx, phase, numBuffers, schedule);
+
   // Create a cluster for the prefetches. It may end up being empty, but this
   // is OK.
   CoarseSchedule::Cluster prefetchCluster = schedule.clusters.newAtBack();
@@ -1054,7 +1097,7 @@ createAsyncOps(scf::ForOp &forOp, CoarseSchedule &schedule,
     } else {
       auto descLoad = cast<tt::ExperimentalDescriptorLoadOp>(asyncLoad.loadOp);
       createTMAAsyncCopy(forOp, descLoad, asyncLoad.alloc, insertIdx,
-                         extractIdx, asyncLoad.barrier, phase, schedule,
+                         extractIdx, asyncLoad.barrier, asyncLoad.waitOp, phase, schedule,
                          loadToInfo, numStages);
     }
   }
