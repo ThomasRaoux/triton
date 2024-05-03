@@ -115,6 +115,19 @@ struct BarrierExpectConversion
     auto id = getThreadId(rewriter, loc);
     Value pred = icmp_eq(id, i32_val(0));
     pred = and_(pred, adaptor.getPred());
+
+    {
+      // elect.sync    _|%p80, 0xffffffff;
+      // and.pred  	%p7, %p7, %p80;
+      // Value uniformPred = int_val(1, 1);
+      PTXBuilder ptxBuilder;
+      auto &elect = *ptxBuilder.create<>("elect.sync _|$0, 0xffffffff;");
+      elect({ptxBuilder.newOperand("=b")}, /*onlyAttachMLIRArgs=*/true);
+      Value uniformPred =
+          ptxBuilder.launch(rewriter, loc, i1_ty, /*hasSideEffect=*/false);
+      pred = and_(pred, uniformPred);
+    }
+
     ::mlir::triton::PTXBuilder ptxBuilder;
     const std::string ptx = "@$0 mbarrier.arrive.expect_tx.shared.b64 _, [$1], " +
                             std::to_string(op.getSize()) + ";";

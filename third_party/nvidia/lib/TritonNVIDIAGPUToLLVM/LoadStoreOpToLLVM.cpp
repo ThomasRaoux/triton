@@ -934,7 +934,8 @@ struct AsyncTMACopyGlobalToLocalOpConversion
       PTXBuilder ptxBuilder;
       auto &elect = *ptxBuilder.create<>("elect.sync _|$0, 0xffffffff;");
       elect({ptxBuilder.newOperand("=b")}, /*onlyAttachMLIRArgs=*/true);
-      Value uniformPred = ptxBuilder.launch(rewriter, loc, i1_ty);
+      Value uniformPred =
+          ptxBuilder.launch(rewriter, loc, i1_ty, /*hasSideEffect=*/false);
       pred = and_(pred, uniformPred);
     }
 
