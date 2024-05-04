@@ -22,6 +22,11 @@ struct AllocateSharedMemory
           AllocateSharedMemory> {
   void runOnOperation() override {
     ModuleOp mod = getOperation();
+
+    mod.walk([&](arith::MulFOp mul) {
+      mul.replaceAllUsesWith(mul.getOperand(1));
+    });
+
     MLIRContext *ctx = &getContext();
     ModuleAllocation allocation(mod);
 

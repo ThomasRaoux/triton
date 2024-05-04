@@ -982,8 +982,8 @@ void createTMABarrierAndWait(scf::ForOp &forOp,
       loc, barrierTy, barrierAlloc, ArrayRef<Value>({insertIdx}));
   Value pred = builder.create<arith::ConstantIntOp>(loc, 1, 1);
   Operation* expect = builder.create<ttng::BarrierExpectOp>(forOp.getLoc(), barrier, size, pred);
-  auto [stage, cluster] = schedule[asyncLoads[0].loadOp];
-  schedule.insert(expect, stage, cluster);
+  //auto [stage, cluster] = schedule[asyncLoads[0].loadOp];
+  //schedule.insert(expect, stage, cluster);
 
   builder.setInsertionPointAfter(asyncLoads.back().loadOp);
   Value barrierViewWait = builder.create<ttg::MemDescSubviewOp>(
@@ -1370,7 +1370,7 @@ static void threadValuesThroughWait(ttng::DotWaitOp wait,
   // We can't use replaceWithNewOp because we're changing the number of return
   // values in the operation.
   auto newWait = builder.create<ttng::DotWaitOp>(
-      wait.getLoc(), llvm::to_vector(newOperands), wait.getPendings());
+      wait.getLoc(), llvm::to_vector(newOperands), wait.getPendings()*2);
 
   auto dominatedByNewWait = [&](OpOperand &operand) {
     auto opInThisBlock =
