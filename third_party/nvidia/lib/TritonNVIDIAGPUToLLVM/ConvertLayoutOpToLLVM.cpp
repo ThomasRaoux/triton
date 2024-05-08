@@ -45,6 +45,10 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
 
 namespace {
 
+using namespace mlir;
+using namespace mlir::triton;
+using namespace mlir::triton::gpu;
+
 struct LocalLoadOpConversion
     : public ConvertOpToLLVMPattern<triton::gpu::LocalLoadOp> {
 public:
@@ -751,12 +755,55 @@ private:
 private:
   const NVIDIA::TargetInfo &targetInfo;
 };
+
+struct LocalAllocOpConversion
+    : public ConvertOpToLLVMPattern<triton::gpu::LocalAllocOp> {
+  LocalAllocOpConversion(const LLVMTypeConverter &converter,
+                         const NVIDIA::TargetInfo &targetInfo,
+                         PatternBenefit benefit = 1)
+      : ConvertOpToLLVMPattern<triton::gpu::LocalAllocOp>(converter, benefit),
+        targetInfo(targetInfo) {}
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::LocalAllocOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!op.getSrc())
+      return failure();
+    auto mmaEncoding = dyn_cast<triton::gpu::NvidiaMmaEncodingAttr>(
+        op.getSrc().getType().getEncoding());
+    if (!mmaEncoding)
+      return failure();
+    auto sharedEncoding =
+        cast<triton::gpu::SharedEncodingAttr>(op.getType().getEncoding());
+    Location loc = op->getLoc();
+    RankedTensorType srcTy = op.getSrc().getType();
+    Value smemBase =
+        LLVM::getSharedMemoryBase(loc, rewriter, op.getOperation());
+    auto srcs = unpackLLElements(loc, adaptor.getSrc(), rewriter);
+    SmallVector<unsigned> shape;
+    for (int64_t dim : srcTy.getShape())
+      shape.push_back(dim);
+    bool loweredToStMatrix = targetInfo.processReplicaUsingStMatrix(
+        rewriter, loc, smemBase, srcs, srcTy,
+        getTypeConverter()->convertType(srcTy.getElementType()), shape, shape,
+        sharedEncoding.getOrder(), 1);
+    if (loweredToStMatrix)
+      return failure();
+    return success();
+  }
+
+private:
+  const NVIDIA::TargetInfo &targetInfo;
+};
+
 } // namespace
 
 void mlir::triton::NVIDIA::populateConvertLayoutOpToLLVMOptimizedPatterns(
     LLVMTypeConverter &typeConverter, const TargetInfo &targetInfo,
     RewritePatternSet &patterns, PatternBenefit benefit) {
-  patterns.add<ConvertLayoutOpOptimizedConversion>(typeConverter, benefit);
+  patterns.add<ConvertLayoutOpOptimizedConversion>(
+      typeConverter, benefit);
+  //patterns.add<LocalAllocOpConversion>(typeConverter, targetInfo, benefit);      
 }
 
 void mlir::triton::NVIDIA::populateConvertLayoutOpToLLVMPatterns(
