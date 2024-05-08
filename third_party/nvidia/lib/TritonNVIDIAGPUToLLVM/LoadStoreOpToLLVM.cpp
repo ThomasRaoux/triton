@@ -1073,11 +1073,11 @@ struct AsyncTMACopyLocalToGlobalOpConversion
 
     // TODO: Separate the syncronizations operations into separate TTGIR ops to
     // be able to schedule them at the high level.
-    const std::string ptx = "cp.async.bulk.commit_group; \n\t"
-                            "cp.async.bulk.wait_group 0";
-    PTXBuilder ptxBuilderSync;
-    ptxBuilderSync.create<>(ptx)->operator()();
-    ptxBuilderSync.launch(rewriter, op.getLoc(), void_ty(op.getContext()));
+   // const std::string ptx = "cp.async.bulk.commit_group; \n\t"
+   //                         "cp.async.bulk.wait_group 0";
+   // PTXBuilder ptxBuilderSync;
+   // ptxBuilderSync.create<>(ptx)->operator()();
+   // ptxBuilderSync.launch(rewriter, op.getLoc(), void_ty(op.getContext()));
 
     rewriter.eraseOp(op);
     return success();
