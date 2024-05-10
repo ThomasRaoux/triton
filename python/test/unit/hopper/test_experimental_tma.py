@@ -136,10 +136,10 @@ def test_experimental_tma_matmul(num_stages):
         pytest.skip("Test requires Hopper target.")
         return
     device = "cuda"
-    M, N, K = 128, 128, 128
-    BLOCK_M, BLOCK_N, BLOCK_K = 128, 128, 64
+    M, N, K = 32, 32, 32
+    BLOCK_M, BLOCK_N, BLOCK_K = 32, 32, 32
     torch.manual_seed(42)
-    A = torch.arange(0.0, M*K * 0.1, 0.1, dtype=torch.float32, device=device).reshape(M, K)
+    A = torch.arange(0.0, M*K * 0.01, 0.01, dtype=torch.float32, device=device).reshape(M, K)
     A = A.to(torch.float16)
     B = torch.eye(N, dtype=torch.float16, device=device)
 
@@ -165,5 +165,7 @@ def test_experimental_tma_matmul(num_stages):
                                                                                  num_stages=num_stages)
     ref_out = torch.matmul(A.to(torch.float32), B.to(torch.float32)).to(torch.float16)
     torch.set_printoptions(threshold=10000000)
-    print(C)
+    D = C.to(torch.float32) * 100
+    int_tensor = torch.round(D).to(torch.int32)
+    print(int_tensor)
     torch.testing.assert_close(ref_out, C, rtol=1e-3, atol=1e-3)

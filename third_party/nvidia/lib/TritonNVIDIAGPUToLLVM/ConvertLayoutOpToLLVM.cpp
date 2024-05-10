@@ -786,7 +786,7 @@ struct LocalAllocOpConversion
     bool loweredToStMatrix = targetInfo.processReplicaUsingStMatrix(
         rewriter, loc, smemBase, srcs, srcTy,
         getTypeConverter()->convertType(srcTy.getElementType()), shape, shape,
-        sharedLayout.getOrder(), 1);
+        sharedLayout.getOrder(), 1, 128);
     if (!loweredToStMatrix)
       return failure();
 

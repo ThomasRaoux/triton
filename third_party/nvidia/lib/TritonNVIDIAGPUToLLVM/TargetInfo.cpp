@@ -23,6 +23,7 @@ Value computeStMatrixAddr(Value laneId, int matStride, Location loc,
   Value s0 = urem(matIndex, i32_val(2));
   Value s1 = udiv(matIndex, i32_val(2));
   Value mIndex = add(rowInMat, mul(s0, i32_val(8)));
+  s1 = xor_(s1, and_(mIndex, i32_val(3)));
   int m8n8Stride = 8;
   Value offset =
       add(mul(mIndex, i32_val(matStride)), mul(s1, i32_val(m8n8Stride)));
@@ -51,7 +52,7 @@ void storeDistributedToSharedWithStMatrix(
     RankedTensorType tensorTy, Type elemTy, SmallVector<Value> &inVals,
     Value smemBase, ArrayRef<unsigned> paddedRepShape,
     ArrayRef<unsigned> origRepShape, Location loc,
-    ConversionPatternRewriter &rewriter) {
+    ConversionPatternRewriter &rewriter, int swizzlingByteWidth) {
   auto shapePerCTA = getShapePerCTA(tensorTy);
   auto mmaLayout = mlir::cast<NvidiaMmaEncodingAttr>(tensorTy.getEncoding());
   auto order = triton::gpu::getOrder(mmaLayout);
@@ -329,12 +330,12 @@ bool TargetInfo::processReplicaUsingStMatrix(
     ConversionPatternRewriter &rewriter, Location loc, Value smemBase,
     SmallVector<Value> &vals, RankedTensorType srcTy, Type elemTy,
     ArrayRef<unsigned> paddedRepShape, ArrayRef<unsigned> origRepShape,
-    ArrayRef<unsigned> outOrd, unsigned accumNumReplicates) const {
+    ArrayRef<unsigned> outOrd, unsigned accumNumReplicates, int swizzlingByteWidth) const {
   if (isStMatrixCompatible(srcTy) && accumNumReplicates == 1 &&
       outOrd[0] == 1 && paddedRepShape[1] % 8 == 0) {
     storeDistributedToSharedWithStMatrix(srcTy, elemTy, vals, smemBase,
                                          paddedRepShape, origRepShape, loc,
-                                         rewriter);
+                                         rewriter, swizzlingByteWidth);
     return true;
   }
   return false;
