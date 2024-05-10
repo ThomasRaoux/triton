@@ -14,16 +14,19 @@ using ::mlir::triton::gpu::getShapePerCTA;
 using ::mlir::triton::gpu::getShapePerCTATile;
 namespace {
 Value computeStMatrixAddr(Value laneId, int matStride, Location loc,
-                          ConversionPatternRewriter &rewriter) {
+                          ConversionPatternRewriter &rewriter,
+                          int swizzleByteWidth) {
   Value rowInMat = urem(laneId, i32_val(8)); // row in the 8x8 matrix
   // linear index of the matrix in the 2x2 matrices
   // Decompose matIndex => s_0, s_1, that is the coordinate in 2x2 matrices in
   // a warp.
+  // Apply swizzling.
+  int swizzle = (swizzleByteWidth / 16) - 1;
+  rowInMat = xor_(rowInMat, and_(laneId, i32_val(swizzle)));
   Value matIndex = udiv(laneId, i32_val(8));
   Value s0 = urem(matIndex, i32_val(2));
   Value s1 = udiv(matIndex, i32_val(2));
   Value mIndex = add(rowInMat, mul(s0, i32_val(8)));
-  s1 = xor_(s1, and_(mIndex, i32_val(3)));
   int m8n8Stride = 8;
   Value offset =
       add(mul(mIndex, i32_val(matStride)), mul(s1, i32_val(m8n8Stride)));
@@ -74,8 +77,8 @@ void storeDistributedToSharedWithStMatrix(
       delinearize(rewriter, loc, warp, warpsPerCTA);
 
   // Compute the relative offset for each lane.
-  Value stMatrixLaneOffset =
-      computeStMatrixAddr(lane, paddedRepShape[1], loc, rewriter);
+  Value stMatrixLaneOffset = computeStMatrixAddr(lane, paddedRepShape[1], loc,
+                                                 rewriter, swizzlingByteWidth);
   multiDimWarpId[0] = mul(multiDimWarpId[0], i32_val(mmaShape[0]));
   multiDimWarpId[1] = mul(multiDimWarpId[1], i32_val(mmaShape[1]));
   SmallVector<Value> multiDimOffsetWrapped =

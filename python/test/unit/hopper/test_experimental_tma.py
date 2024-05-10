@@ -136,8 +136,8 @@ def test_experimental_tma_matmul(num_stages):
         pytest.skip("Test requires Hopper target.")
         return
     device = "cuda"
-    M, N, K = 32, 32, 32
-    BLOCK_M, BLOCK_N, BLOCK_K = 32, 32, 32
+    M, N, K = 64, 64, 64
+    BLOCK_M, BLOCK_N, BLOCK_K = 64, 64, 64
     torch.manual_seed(42)
     A = torch.arange(0.0, M*K * 0.01, 0.01, dtype=torch.float32, device=device).reshape(M, K)
     A = A.to(torch.float16)
@@ -161,7 +161,7 @@ def test_experimental_tma_matmul(num_stages):
     desc_b = torch.tensor(desc_b, device=device)
     desc_c = torch.tensor(desc_c, device=device)
     matmul_kernel_tma[(triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1, 1)](desc_a, desc_b, desc_c, M, N, K,
-                                                                                 BLOCK_M, BLOCK_N, BLOCK_K, num_warps=8,
+                                                                                 BLOCK_M, BLOCK_N, BLOCK_K, num_warps=4,
                                                                                  num_stages=num_stages)
     ref_out = torch.matmul(A.to(torch.float32), B.to(torch.float32)).to(torch.float16)
     torch.set_printoptions(threshold=10000000)
