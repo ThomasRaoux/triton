@@ -72,6 +72,44 @@ def test_experimetal_descriptor_load():
     assert torch.equal(x, z_tri)
 
 
+
+def test_experimental_2d_tma_load_store():
+    if not torch.cuda.is_available() or not torch.cuda.get_device_capability()[0] == 9:
+        pytest.skip("Test requires Hopper target.")
+        return
+    @triton.jit
+    def test_load_store_2d(a_desc_ptr, b_desc_ptr, 
+                          M, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr):
+        pid = tl.program_id(axis=0)
+        num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+        pid_m = pid % num_pid_m
+        pid_n = pid // num_pid_m
+        offs_am = pid_m * BLOCK_SIZE_M
+        offs_bn = pid_n * BLOCK_SIZE_N
+        a = tl._experimental_descriptor_load(a_desc_ptr, [offs_am, offs_bn], [BLOCK_SIZE_M, BLOCK_SIZE_N], tl.float16)
+        tl._experimental_descriptor_store(b_desc_ptr, a, [offs_am, offs_bn])
+
+    device = "cuda"
+    M, N = 1024, 1024
+    BLOCK_M = 128
+    BLOCK_N = 128
+    A = torch.arange(0.0, M*N * 0.1, 0.1, dtype=torch.float32, device=device).reshape(M, N)
+    A = A.to(torch.float16)
+    B = torch.empty((M, N), dtype=torch.float16, device=device)
+    TMA_SIZE = 128
+    desc_a = np.empty(TMA_SIZE, dtype=np.int8)
+    desc_b = np.empty(TMA_SIZE, dtype=np.int8)
+    triton.runtime.driver.active.utils.fill_2d_tma_descriptor(A.data_ptr(), M, N, BLOCK_M, BLOCK_N, A.element_size(),
+                                                              desc_a)
+    triton.runtime.driver.active.utils.fill_2d_tma_descriptor(B.data_ptr(), M, N, BLOCK_M, BLOCK_N, B.element_size(),
+                                                              desc_b)
+    desc_a = torch.tensor(desc_a, device=device)
+    desc_b = torch.tensor(desc_b, device=device)
+    test_load_store_2d[(triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1, 1)](desc_a, desc_b, M, N,
+                                                                                 BLOCK_M, BLOCK_N)
+    assert torch.equal(A, B), "Tensors are not equal"
+
+
 @triton.jit
 def matmul_kernel_tma(a_desc_ptr, b_desc_ptr, c_desc_ptr,  #
                       M, N, K, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr):
@@ -88,6 +126,7 @@ def matmul_kernel_tma(a_desc_ptr, b_desc_ptr, c_desc_ptr,  #
         b = tl._experimental_descriptor_load(b_desc_ptr, [offs_k, offs_bn], [BLOCK_SIZE_K, BLOCK_SIZE_N], tl.float16)
         accumulator = tl.dot(a, b, acc=accumulator)
         offs_k += BLOCK_SIZE_K
+    accumulator = accumulator.to(tl.float16)
     tl._experimental_descriptor_store(c_desc_ptr, accumulator, [offs_am, offs_bn])
 
 
@@ -97,12 +136,15 @@ def test_experimental_tma_matmul(num_stages):
         pytest.skip("Test requires Hopper target.")
         return
     device = "cuda"
-    M, N, K = 8192, 8192, 1024
-    BLOCK_M, BLOCK_N, BLOCK_K = 128, 256, 64
+    M, N, K = 1024, 1024, 1024
+    BLOCK_M, BLOCK_N, BLOCK_K = 64, 64, 64
     torch.manual_seed(42)
     A = torch.randn((M, K), dtype=torch.float16, device=device)
+
     B = torch.randn((K, N), dtype=torch.float16, device=device)
-    C = torch.empty((M, N), dtype=torch.float32, device=device)
+
+
+    C = torch.empty((M, N), dtype=torch.float16, device=device)
     TMA_SIZE = 128
     desc_a = np.empty(TMA_SIZE, dtype=np.int8)
     desc_b = np.empty(TMA_SIZE, dtype=np.int8)
@@ -120,5 +162,9 @@ def test_experimental_tma_matmul(num_stages):
     matmul_kernel_tma[(triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1, 1)](desc_a, desc_b, desc_c, M, N, K,
                                                                                  BLOCK_M, BLOCK_N, BLOCK_K, num_warps=8,
                                                                                  num_stages=num_stages)
-    ref_out = torch.matmul(A.to(torch.float32), B.to(torch.float32))
+    ref_out = torch.matmul(A.to(torch.float32), B.to(torch.float32)).to(torch.float16)
+    torch.set_printoptions(threshold=10000000)
+    D = C.to(torch.float32) * 100
+    int_tensor = torch.round(D).to(torch.int32)
+   # print(int_tensor)
     torch.testing.assert_close(ref_out, C, rtol=1e-3, atol=1e-3)

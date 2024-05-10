@@ -14,14 +14,19 @@ using ::mlir::triton::gpu::getShapePerCTA;
 using ::mlir::triton::gpu::getShapePerCTATile;
 namespace {
 Value computeStMatrixAddr(Value laneId, int matStride, Location loc,
-                          ConversionPatternRewriter &rewriter) {
+                          ConversionPatternRewriter &rewriter,
+                          int swizzleByteWidth) {
   Value rowInMat = urem(laneId, i32_val(8)); // row in the 8x8 matrix
   // linear index of the matrix in the 2x2 matrices
   // Decompose matIndex => s_0, s_1, that is the coordinate in 2x2 matrices in
   // a warp.
+  // Apply swizzling.
+  //int swizzle = (swizzleByteWidth / 16) - 1;
+  //rowInMat = xor_(rowInMat, and_(laneId, i32_val(1)));
   Value matIndex = udiv(laneId, i32_val(8));
   Value s0 = urem(matIndex, i32_val(2));
   Value s1 = udiv(matIndex, i32_val(2));
+  s1 = xor_(s1, and_(laneId, i32_val(1)));
   Value mIndex = add(rowInMat, mul(s0, i32_val(8)));
   int m8n8Stride = 8;
   Value offset =
@@ -51,7 +56,7 @@ void storeDistributedToSharedWithStMatrix(
     RankedTensorType tensorTy, Type elemTy, SmallVector<Value> &inVals,
     Value smemBase, ArrayRef<unsigned> paddedRepShape,
     ArrayRef<unsigned> origRepShape, Location loc,
-    ConversionPatternRewriter &rewriter) {
+    ConversionPatternRewriter &rewriter, int swizzlingByteWidth) {
   auto shapePerCTA = getShapePerCTA(tensorTy);
   auto mmaLayout = mlir::cast<NvidiaMmaEncodingAttr>(tensorTy.getEncoding());
   auto order = triton::gpu::getOrder(mmaLayout);
@@ -73,8 +78,8 @@ void storeDistributedToSharedWithStMatrix(
       delinearize(rewriter, loc, warp, warpsPerCTA);
 
   // Compute the relative offset for each lane.
-  Value stMatrixLaneOffset =
-      computeStMatrixAddr(lane, paddedRepShape[1], loc, rewriter);
+  Value stMatrixLaneOffset = computeStMatrixAddr(lane, paddedRepShape[1], loc,
+                                                 rewriter, swizzlingByteWidth);
   multiDimWarpId[0] = mul(multiDimWarpId[0], i32_val(mmaShape[0]));
   multiDimWarpId[1] = mul(multiDimWarpId[1], i32_val(mmaShape[1]));
   SmallVector<Value> multiDimOffsetWrapped =
@@ -89,9 +94,13 @@ void storeDistributedToSharedWithStMatrix(
   for (int m = 0; m < numRep[0]; m++) {
     for (int n = 0; n < numRep[1]; n++) {
       for (int k = 0; k < numNChunk; k++) {
+        Value o = lshr(and_(lane, i32_val(6)), i32_val(1));
+        Value kV = xor_(o, i32_val(k));
+        Value off = mul(kV, i32_val(m8n8x4Stride));
         Value addr =
-            add(relativeOffset, i32_val(k * m8n8x4Stride + n * instrN +
+            add(relativeOffset, i32_val(n * instrN +
                                         m * instrM * paddedRepShape[1]));
+        addr = add(addr, off);
         stMatrixm8n8x4(addr, inVals, indexOffset, smemBase, elemTy, loc,
                        rewriter);
         indexOffset += 8;
@@ -329,12 +338,12 @@ bool TargetInfo::processReplicaUsingStMatrix(
     ConversionPatternRewriter &rewriter, Location loc, Value smemBase,
     SmallVector<Value> &vals, RankedTensorType srcTy, Type elemTy,
     ArrayRef<unsigned> paddedRepShape, ArrayRef<unsigned> origRepShape,
-    ArrayRef<unsigned> outOrd, unsigned accumNumReplicates) const {
+    ArrayRef<unsigned> outOrd, unsigned accumNumReplicates, int swizzlingByteWidth) const {
   if (isStMatrixCompatible(srcTy) && accumNumReplicates == 1 &&
       outOrd[0] == 1 && paddedRepShape[1] % 8 == 0) {
     storeDistributedToSharedWithStMatrix(srcTy, elemTy, vals, smemBase,
                                          paddedRepShape, origRepShape, loc,
-                                         rewriter);
+                                         rewriter, swizzlingByteWidth);
     return true;
   }
   return false;
