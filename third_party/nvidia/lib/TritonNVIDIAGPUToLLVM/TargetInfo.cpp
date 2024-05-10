@@ -21,12 +21,11 @@ Value computeStMatrixAddr(Value laneId, int matStride, Location loc,
   // Decompose matIndex => s_0, s_1, that is the coordinate in 2x2 matrices in
   // a warp.
   // Apply swizzling.
-  //int swizzle = (swizzleByteWidth / 16) - 1;
-  //rowInMat = xor_(rowInMat, and_(laneId, i32_val(1)));
   Value matIndex = udiv(laneId, i32_val(8));
   Value s0 = urem(matIndex, i32_val(2));
   Value s1 = udiv(matIndex, i32_val(2));
-  s1 = xor_(s1, and_(laneId, i32_val(1)));
+  if (swizzleByteWidth >= 32)
+    s1 = xor_(s1, and_(laneId, i32_val(1)));
   Value mIndex = add(rowInMat, mul(s0, i32_val(8)));
   int m8n8Stride = 8;
   Value offset =
@@ -69,7 +68,14 @@ void storeDistributedToSharedWithStMatrix(
   int instrM = mmaShape[0] * warpsPerCTA[0];
   std::array<int, 2> numRep = {ceil((int)origRepShape[0], instrM),
                                ceil((int)origRepShape[1], instrN)};
-
+  int numBoxes = 1;
+  if (swizzlingByteWidth == 128) {
+    int contigDimSizeInByte =
+        origRepShape[1] * elemTy.getIntOrFloatBitWidth() / 8;
+    numBoxes = ceil<int>(contigDimSizeInByte, 128);
+  }
+  SmallVector<unsigned> boxShape = {origRepShape[0], origRepShape[1]};
+  boxShape[1] = boxShape[1] / numBoxes;
   Value thread = getThreadId(rewriter, loc);
   Value warp = udiv(thread, i32_val(32));
   Value lane = urem(thread, i32_val(32));
@@ -78,32 +84,43 @@ void storeDistributedToSharedWithStMatrix(
       delinearize(rewriter, loc, warp, warpsPerCTA);
 
   // Compute the relative offset for each lane.
-  Value stMatrixLaneOffset = computeStMatrixAddr(lane, paddedRepShape[1], loc,
+  Value stMatrixLaneOffset = computeStMatrixAddr(lane, boxShape[1], loc,
                                                  rewriter, swizzlingByteWidth);
   multiDimWarpId[0] = mul(multiDimWarpId[0], i32_val(mmaShape[0]));
   multiDimWarpId[1] = mul(multiDimWarpId[1], i32_val(mmaShape[1]));
   SmallVector<Value> multiDimOffsetWrapped =
-      getWrappedMultiDimOffset(rewriter, loc, multiDimWarpId, origRepShape,
+      getWrappedMultiDimOffset(rewriter, loc, multiDimWarpId, boxShape,
                                shapePerCTATile, shapePerCTA);
   Value relativeOffset =
-      linearize(rewriter, loc, multiDimOffsetWrapped, paddedRepShape, order);
+      linearize(rewriter, loc, multiDimOffsetWrapped, boxShape, order);
   relativeOffset = add(relativeOffset, stMatrixLaneOffset);
   int indexOffset = 0;
   int m8n8x4Stride = 16;
   int numNChunk = mmaShape[1] / m8n8x4Stride;
+  unsigned totalNumElements = product(origRepShape);
+  numNChunk = numNChunk / numBoxes;
   for (int m = 0; m < numRep[0]; m++) {
     for (int n = 0; n < numRep[1]; n++) {
-      for (int k = 0; k < numNChunk; k++) {
-        Value o = lshr(and_(lane, i32_val(6)), i32_val(1));
-        Value kV = xor_(o, i32_val(k));
-        Value off = mul(kV, i32_val(m8n8x4Stride));
-        Value addr =
-            add(relativeOffset, i32_val(n * instrN +
-                                        m * instrM * paddedRepShape[1]));
-        addr = add(addr, off);
-        stMatrixm8n8x4(addr, inVals, indexOffset, smemBase, elemTy, loc,
-                       rewriter);
-        indexOffset += 8;
+      for (int box = 0; box < numBoxes; box++) {
+        for (int k = 0; k < numNChunk; k++) {
+          Value kOffset;
+          if (swizzlingByteWidth >= 64) {
+            int swizzleBits = swizzlingByteWidth == 128 ? 6 : 2;
+            Value o = lshr(and_(lane, i32_val(swizzleBits)), i32_val(1));
+            Value kV = xor_(o, i32_val(k));
+            kOffset = mul(kV, i32_val(m8n8x4Stride));
+          } else {
+            Value kOffset = i32_val(k * m8n8x4Stride);
+          }
+          Value addr = add(relativeOffset,
+                           i32_val(n * instrN + m * instrM * boxShape[1] +
+                                   box * (totalNumElements / numBoxes)));
+          addr = add(addr, kOffset);
+
+          stMatrixm8n8x4(addr, inVals, indexOffset, smemBase, elemTy, loc,
+                         rewriter);
+          indexOffset += 8;
+        }
       }
     }
   }

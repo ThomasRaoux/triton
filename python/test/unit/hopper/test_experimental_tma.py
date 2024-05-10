@@ -137,13 +137,10 @@ def test_experimental_tma_matmul(num_stages):
         return
     device = "cuda"
     M, N, K = 1024, 1024, 1024
-    BLOCK_M, BLOCK_N, BLOCK_K = 64, 64, 64
+    BLOCK_M, BLOCK_N, BLOCK_K = 128, 256, 64
     torch.manual_seed(42)
     A = torch.randn((M, K), dtype=torch.float16, device=device)
-
     B = torch.randn((K, N), dtype=torch.float16, device=device)
-
-
     C = torch.empty((M, N), dtype=torch.float16, device=device)
     TMA_SIZE = 128
     desc_a = np.empty(TMA_SIZE, dtype=np.int8)
@@ -160,11 +157,10 @@ def test_experimental_tma_matmul(num_stages):
     desc_b = torch.tensor(desc_b, device=device)
     desc_c = torch.tensor(desc_c, device=device)
     matmul_kernel_tma[(triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1, 1)](desc_a, desc_b, desc_c, M, N, K,
-                                                                                 BLOCK_M, BLOCK_N, BLOCK_K, num_warps=8,
+                                                                                 BLOCK_M, BLOCK_N, BLOCK_K, num_warps=4,
                                                                                  num_stages=num_stages)
     ref_out = torch.matmul(A.to(torch.float32), B.to(torch.float32)).to(torch.float16)
     torch.set_printoptions(threshold=10000000)
     D = C.to(torch.float32) * 100
     int_tensor = torch.round(D).to(torch.int32)
-   # print(int_tensor)
     torch.testing.assert_close(ref_out, C, rtol=1e-3, atol=1e-3)
