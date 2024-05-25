@@ -106,6 +106,7 @@ def TT_MemDescType : TritonTypeDef<"MemDesc", "memdesc", [ShapedTypeInterface]> 
     ArrayRefParameter<"int64_t">:$shape,
     "Type":$elementType,
     "Attribute":$encoding,
+    "Attribute":$memorySpace,
     "bool":$mutable_memory
   );
   let extraClassDeclaration = [{
@@ -122,7 +123,7 @@ def TT_MemDescType : TritonTypeDef<"MemDesc", "memdesc", [ShapedTypeInterface]> 
             "Type":$elementType,
             "Attribute":$encoding
         ), [{
-            return $_get(elementType.getContext(), shape, elementType, encoding, /*mutableMemory=*/false);
+            return $_get(elementType.getContext(), shape, elementType, encoding, Attribute(), /*mutableMemory=*/false);
         }]>,
         TypeBuilderWithInferredContext<(ins
             "llvm::ArrayRef<int64_t>":$shape,
@@ -130,7 +131,16 @@ def TT_MemDescType : TritonTypeDef<"MemDesc", "memdesc", [ShapedTypeInterface]> 
             "Attribute":$encoding,
             "bool":$mutableMemory
         ), [{
-            return $_get(elementType.getContext(), shape, elementType, encoding, mutableMemory);
+            return $_get(elementType.getContext(), shape, elementType, encoding, Attribute(), mutableMemory);
+        }]>,
+        TypeBuilderWithInferredContext<(ins
+            "llvm::ArrayRef<int64_t>":$shape,
+            "Type":$elementType,
+            "Attribute":$encoding,
+            "Attribute":$memorySpace,
+            "bool":$mutableMemory
+        ), [{
+            return $_get(elementType.getContext(), shape, elementType, encoding, memorySpace, mutableMemory);
         }]>
     ];
   let hasCustomAssemblyFormat = 1;

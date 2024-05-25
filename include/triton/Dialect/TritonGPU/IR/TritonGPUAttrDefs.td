@@ -1298,4 +1298,9 @@ elements along the K dim, or they use all elements of the tensor along the K dim
   }];
 }
 
+def TTG_SharedMemorySpace : AttrDef<TritonGPU_Dialect, "SharedMemorySpace", [], "::mlir::Attribute"> {
+    let attrName = "triton.gpu.shared_memory";
+    let assemblyFormat = "`<`  `>`";
+}
+
 #endif
