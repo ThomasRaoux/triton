@@ -286,6 +286,23 @@ jobs:
         path: |
           ${{ github.workspace }}/llvm-*-${{ matrix.config.target-os }}-${{ matrix.config.arch }}.tar.gz
 
+    - name: Generate Hashes of Artifacts
+      run: |
+        mkdir -p ${{ github.workspace }}/hashes
+        for tarfile in ${{ github.workspace }}/llvm-*-${{ matrix.config.target-os }}-${{ matrix.config.arch }}.tar.gz; do
+          sha256sum $tarfile >> ${{ github.workspace }}/hashes/hashes.txt
+        done
+
+    - name: Commit changes
+      run: |
+          git config --global user.name 'Your Name'
+          git config --global user.email 'your-email@example.com'
+          git checkout ${{ github.head_ref }}
+          # Make changes here
+          git add hashes/hashes.txt
+          git commit -m "Add hashes of LLVM build artifacts"
+          git push origin ${{ github.head_ref }}
+
     - name: Azure Login
       if: ${{ (github.repository == 'triton-lang/triton') }}
       uses: azure/login@v2
