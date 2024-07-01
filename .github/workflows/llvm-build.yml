@@ -3,7 +3,7 @@ name: LLVM Build
 on:
   push:
     branches:
-      - llvm-head
+      - github_action
     paths:
       - cmake/llvm-hash.txt
   workflow_dispatch:
