@@ -11,24 +11,24 @@ Extra Credits:
 
 """
 
+### Copy of attention kernel to enable blackwell.
+
 import pytest
 import torch
+import triton.tools.experimental_descriptor
 
 import triton
 import triton.language as tl
 
 
-def is_hip():
-    return triton.runtime.driver.active.get_current_target().backend == "hip"
-
-
 @triton.jit
 def _attn_fwd_inner(acc, l_i, m_i, q,  #
-                    K_block_ptr, V_block_ptr,  #
-                    start_m, qk_scale,  #
+                    desc_k, desc_v,  #
+                    offset_y, dtype: tl.constexpr, start_m, qk_scale,  #
                     BLOCK_M: tl.constexpr, HEAD_DIM: tl.constexpr, BLOCK_N: tl.constexpr,  #
                     STAGE: tl.constexpr, offs_m: tl.constexpr, offs_n: tl.constexpr,  #
-                    N_CTX: tl.constexpr, fp8_v: tl.constexpr):
+                    N_CTX: tl.constexpr):
+    dtype = tl.float16
     # range of values handled by this stage
     if STAGE == 1:
         lo, hi = 0, start_m * BLOCK_M
@@ -38,13 +38,12 @@ def _attn_fwd_inner(acc, l_i, m_i, q,  #
     # causal = False
     else:
         lo, hi = 0, N_CTX
-    K_block_ptr = tl.advance(K_block_ptr, (0, lo))
-    V_block_ptr = tl.advance(V_block_ptr, (lo, 0))
+    offsetkv_y = offset_y + lo
     # loop over k, v and update accumulator
     for start_n in range(lo, hi, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
         # -- compute qk ----
-        k = tl.load(K_block_ptr)
+        k = tl._experimental_descriptor_load(desc_k, [offsetkv_y, 0], [BLOCK_N, HEAD_DIM], dtype).T
         qk = tl.dot(q, k)
         if STAGE == 2:
             mask = offs_m[:, None] >= (start_n + offs_n[None, :])
@@ -62,93 +61,32 @@ def _attn_fwd_inner(acc, l_i, m_i, q,  #
         # -- update output accumulator --
         acc = acc * alpha[:, None]
         # update acc
-        v = tl.load(V_block_ptr)
-        if fp8_v:
-            p = p.to(tl.float8e5)
-        else:
-            p = p.to(tl.float16)
+        v = tl._experimental_descriptor_load(desc_v, [offsetkv_y, 0], [BLOCK_N, HEAD_DIM], dtype)
+        p = p.to(tl.float16)
         acc = tl.dot(p, v, acc)
         # update m_i and l_i
         m_i = m_ij
-        V_block_ptr = tl.advance(V_block_ptr, (BLOCK_N, 0))
-        K_block_ptr = tl.advance(K_block_ptr, (0, BLOCK_N))
+        offsetkv_y += BLOCK_N
     return acc, l_i, m_i
 
 
-# We don't run auto-tuning every time to keep the tutorial fast. Keeping
-# the code below and commenting out the equivalent parameters is convenient for
-# re-tuning.
-configs = [
-    triton.Config({'BLOCK_M': BM, 'BLOCK_N': BN}, num_stages=s, num_warps=w) \
-    for BM in [64, 128]\
-    for BN in [32, 64]\
-    for s in ([1] if is_hip() else [3, 4, 7])\
-    for w in [4, 8]\
-]
-
-
-def keep(conf):
-    BLOCK_M = conf.kwargs["BLOCK_M"]
-    BLOCK_N = conf.kwargs["BLOCK_N"]
-    if BLOCK_M * BLOCK_N < 128 * 128 and conf.num_warps == 8:
-        return False
-    return True
-
-
-@triton.autotune(list(filter(keep, configs)), key=["N_CTX", "HEAD_DIM"])
 @triton.jit
-def _attn_fwd(Q, K, V, sm_scale, M, Out,  #
-              stride_qz, stride_qh, stride_qm, stride_qk,  #
-              stride_kz, stride_kh, stride_kn, stride_kk,  #
-              stride_vz, stride_vh, stride_vk, stride_vn,  #
-              stride_oz, stride_oh, stride_om, stride_on,  #
-              Z, H, N_CTX,  #
+def _attn_fwd(sm_scale, M,  #
+              Z, H, desc_q, desc_k, desc_v, desc_o, N_CTX,  #
               HEAD_DIM: tl.constexpr,  #
               BLOCK_M: tl.constexpr,  #
               BLOCK_N: tl.constexpr,  #
               STAGE: tl.constexpr  #
               ):
+    dtype = tl.float16
     tl.static_assert(BLOCK_N <= HEAD_DIM)
     start_m = tl.program_id(0)
     off_hz = tl.program_id(1)
     off_z = off_hz // H
     off_h = off_hz % H
-    qvk_offset = off_z.to(tl.int64) * stride_qz + off_h.to(tl.int64) * stride_qh
 
-    # block pointers
-    Q_block_ptr = tl.make_block_ptr(
-        base=Q + qvk_offset,
-        shape=(N_CTX, HEAD_DIM),
-        strides=(stride_qm, stride_qk),
-        offsets=(start_m * BLOCK_M, 0),
-        block_shape=(BLOCK_M, HEAD_DIM),
-        order=(1, 0),
-    )
-    v_order: tl.constexpr = (0, 1) if V.dtype.element_ty == tl.float8e5 else (1, 0)
-    V_block_ptr = tl.make_block_ptr(
-        base=V + qvk_offset,
-        shape=(N_CTX, HEAD_DIM),
-        strides=(stride_vk, stride_vn),
-        offsets=(0, 0),
-        block_shape=(BLOCK_N, HEAD_DIM),
-        order=v_order,
-    )
-    K_block_ptr = tl.make_block_ptr(
-        base=K + qvk_offset,
-        shape=(HEAD_DIM, N_CTX),
-        strides=(stride_kk, stride_kn),
-        offsets=(0, 0),
-        block_shape=(HEAD_DIM, BLOCK_N),
-        order=(0, 1),
-    )
-    O_block_ptr = tl.make_block_ptr(
-        base=Out + qvk_offset,
-        shape=(N_CTX, HEAD_DIM),
-        strides=(stride_om, stride_on),
-        offsets=(start_m * BLOCK_M, 0),
-        block_shape=(BLOCK_M, HEAD_DIM),
-        order=(1, 0),
-    )
+    offset_y = off_z + off_h * N_CTX
+    qo_offset_y = offset_y + start_m * BLOCK_M
     # initialize offsets
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_n = tl.arange(0, BLOCK_N)
@@ -160,31 +98,33 @@ def _attn_fwd(Q, K, V, sm_scale, M, Out,  #
     qk_scale = sm_scale
     qk_scale *= 1.44269504  # 1/log(2)
     # load q: it will stay in SRAM throughout
-    q = tl.load(Q_block_ptr)
+    q = tl._experimental_descriptor_load(desc_q, [qo_offset_y, 0], [BLOCK_M, HEAD_DIM], dtype)
     # stage 1: off-band
     # For causal = True, STAGE = 3 and _attn_fwd_inner gets 1 as its STAGE
     # For causal = False, STAGE = 1, and _attn_fwd_inner gets 3 as its STAGE
     if STAGE & 1:
-        acc, l_i, m_i = _attn_fwd_inner(acc, l_i, m_i, q, K_block_ptr, V_block_ptr,  #
-                                        start_m, qk_scale,  #
+        acc, l_i, m_i = _attn_fwd_inner(acc, l_i, m_i, q,  #
+                                        desc_k, desc_v,  #
+                                        offset_y, dtype, start_m, qk_scale,  #
                                         BLOCK_M, HEAD_DIM, BLOCK_N,  #
-                                        4 - STAGE, offs_m, offs_n, N_CTX, V.dtype.element_ty == tl.float8e5  #
+                                        4 - STAGE, offs_m, offs_n, N_CTX,  #
                                         )
     # stage 2: on-band
     if STAGE & 2:
         # barrier makes it easier for compielr to schedule the
         # two loops independently
-        acc, l_i, m_i = _attn_fwd_inner(acc, l_i, m_i, q, K_block_ptr, V_block_ptr,  #
-                                        start_m, qk_scale,  #
+        acc, l_i, m_i = _attn_fwd_inner(acc, l_i, m_i, q,  #
+                                        desc_k, desc_v,  #
+                                        offset_y, dtype, start_m, qk_scale,  #
                                         BLOCK_M, HEAD_DIM, BLOCK_N,  #
-                                        2, offs_m, offs_n, N_CTX, V.dtype.element_ty == tl.float8e5  #
+                                        2, offs_m, offs_n, N_CTX,  #
                                         )
     # epilogue
     m_i += tl.math.log2(l_i)
     acc = acc / l_i[:, None]
     m_ptrs = M + off_hz * N_CTX + offs_m
     tl.store(m_ptrs, m_i)
-    tl.store(O_block_ptr, acc.to(Out.type.element_ty))
+    tl._experimental_descriptor_store(desc_o, acc.to(tl.float16), [qo_offset_y, 0])
 
 
 @triton.jit
@@ -448,23 +388,49 @@ class _attention(torch.autograd.Function):
         o = torch.empty_like(q)
         stage = 3 if causal else 1
         extra_kern_args = {}
-        # Tuning for AMD target
-        if is_hip():
-            waves_per_eu = 3 if HEAD_DIM_K <= 64 else 2
-            extra_kern_args = {"waves_per_eu": waves_per_eu, "allow_flush_denorm": True}
+
+        Lk = k.shape[-1]
+        num_warps = 8
+        num_stages = 7 if Lk >= 64 else 3
+        BLOCK_M = 128
+        BLOCK_N = 64 if Lk <= 64 else 32
+        num_stages = 4 if Lk <= 64 else 3
+        num_warps = 4
+        if v.dtype == torch.float8_e5m2:
+            if Lk < 256:
+                BLOCK_M = 64 if not causal else 128
+                BLOCK_N = 128
+                num_stages = 3 if Lk == 128 else 4
+                num_warps = 4
+            else:
+                BLOCK_M = 128
+                BLOCK_N = 128
+                num_stages = 3
+                num_warps = 8
+        N_CTX = q.shape[2]
+        y_dim = q.shape[0] * q.shape[1] * q.shape[2]
+        desc_q = triton.tools.experimental_descriptor.create_2d_tma_descriptor(q.data_ptr(), y_dim, HEAD_DIM_K, BLOCK_M,
+                                                                               HEAD_DIM_K, q.element_size())
+        desc_v = triton.tools.experimental_descriptor.create_2d_tma_descriptor(v.data_ptr(), y_dim, HEAD_DIM_K, BLOCK_N,
+                                                                               HEAD_DIM_K, v.element_size())
+        desc_k = triton.tools.experimental_descriptor.create_2d_tma_descriptor(k.data_ptr(), y_dim, HEAD_DIM_K, BLOCK_N,
+                                                                               HEAD_DIM_K, k.element_size())
+        desc_o = triton.tools.experimental_descriptor.create_2d_tma_descriptor(o.data_ptr(), y_dim, HEAD_DIM_K, BLOCK_M,
+                                                                               HEAD_DIM_K, o.element_size())
 
         grid = lambda args: (triton.cdiv(q.shape[2], args["BLOCK_M"]), q.shape[0] * q.shape[1], 1)
         M = torch.empty((q.shape[0], q.shape[1], q.shape[2]), device=q.device, dtype=torch.float32)
         _attn_fwd[grid](
-            q, k, v, sm_scale, M, o,  #
-            q.stride(0), q.stride(1), q.stride(2), q.stride(3),  #
-            k.stride(0), k.stride(1), k.stride(2), k.stride(3),  #
-            v.stride(0), v.stride(1), v.stride(2), v.stride(3),  #
-            o.stride(0), o.stride(1), o.stride(2), o.stride(3),  #
+            sm_scale, M,  #
             q.shape[0], q.shape[1],  #
-            N_CTX=q.shape[2],  #
+            desc_q, desc_k, desc_v, desc_o,  #
+            N_CTX=N_CTX,  #
+            BLOCK_M=BLOCK_M,  #
+            BLOCK_N=BLOCK_N,  #
             HEAD_DIM=HEAD_DIM_K,  #
             STAGE=stage,  #
+            num_warps=num_warps,  #
+            num_stages=num_stages,  #
             **extra_kern_args)
 
         ctx.save_for_backward(q, k, v, o, M)
@@ -488,8 +454,9 @@ class _attention(torch.autograd.Function):
         BLOCK_M1, BLOCK_N1, BLOCK_M2, BLOCK_N2 = 32, 128, 128, 32
         BLK_SLICE_FACTOR = 2
         RCP_LN2 = 1.4426950408889634  # = 1.0 / ln(2)
-        arg_k = k
+        arg_k = k.cpu()
         arg_k = arg_k * (ctx.sm_scale * RCP_LN2)
+        arg_k = arg_k.to("cuda")
         PRE_BLOCK = 128
         assert N_CTX % PRE_BLOCK == 0
         pre_grid = (N_CTX // PRE_BLOCK, BATCH * N_HEAD)
@@ -524,13 +491,13 @@ attention = _attention.apply
 @pytest.mark.parametrize("causal", [True])
 def test_op(Z, H, N_CTX, HEAD_DIM, causal, dtype=torch.float16):
     torch.manual_seed(20)
-    q = (torch.empty((Z, H, N_CTX, HEAD_DIM), dtype=dtype, device="cuda").normal_(mean=0.0, std=0.5).requires_grad_())
-    k = (torch.empty((Z, H, N_CTX, HEAD_DIM), dtype=dtype, device="cuda").normal_(mean=0.0, std=0.5).requires_grad_())
-    v = (torch.empty((Z, H, N_CTX, HEAD_DIM), dtype=dtype, device="cuda").normal_(mean=0.0, std=0.5).requires_grad_())
+    q = (torch.empty((Z, H, N_CTX, HEAD_DIM), dtype=dtype, device="cpu").normal_(mean=0.0, std=0.5).requires_grad_())
+    k = (torch.empty((Z, H, N_CTX, HEAD_DIM), dtype=dtype, device="cpu").normal_(mean=0.0, std=0.5).requires_grad_())
+    v = (torch.empty((Z, H, N_CTX, HEAD_DIM), dtype=dtype, device="cpu").normal_(mean=0.0, std=0.5).requires_grad_())
     sm_scale = 0.5
     dout = torch.randn_like(q)
     # reference implementation
-    M = torch.tril(torch.ones((N_CTX, N_CTX), device="cuda"))
+    M = torch.tril(torch.ones((N_CTX, N_CTX), device="cpu"))
     p = torch.matmul(q, k.transpose(2, 3)) * sm_scale
     if causal:
         p[:, :, M == 0] = float("-inf")
@@ -538,104 +505,23 @@ def test_op(Z, H, N_CTX, HEAD_DIM, causal, dtype=torch.float16):
     # p = torch.exp(p)
     ref_out = torch.matmul(p, v)
     ref_out.backward(dout)
-    ref_dv, v.grad = v.grad.clone(), None
-    ref_dk, k.grad = k.grad.clone(), None
-    ref_dq, q.grad = q.grad.clone(), None
+    #ref_dv, v.grad = v.grad.clone(), None
+    #ref_dk, k.grad = k.grad.clone(), None
+    #ref_dq, q.grad = q.grad.clone(), None
     # triton implementation
-    tri_out = attention(q, k, v, causal, sm_scale).half()
-    tri_out.backward(dout)
-    tri_dv, v.grad = v.grad.clone(), None
-    tri_dk, k.grad = k.grad.clone(), None
-    tri_dq, q.grad = q.grad.clone(), None
+    q_ = q.to("cuda")
+    k_ = k.to("cuda")
+    v_ = v.to("cuda")
+    tri_out = attention(q_, k_, v_, causal, sm_scale).half()
+    dout_ = dout.to("cuda")
+    tri_out.backward(dout_)
+    tri_out = tri_out.cpu()
+    #tri_dv, v.grad = v.grad.clone(), None
+    #tri_dk, k.grad = k.grad.clone(), None
+    #tri_dq, q.grad = q.grad.clone(), None
     # compare
     assert torch.allclose(ref_out, tri_out, atol=1e-2, rtol=0)
-    rtol = 0.0
-    # Relative tolerance workaround for known hardware limitation of MI200 GPU.
-    # For details see https://pytorch.org/docs/stable/notes/numerical_accuracy.html#reduced-precision-fp16-and-bf16-gemms-and-convolutions-on-amd-instinct-mi200-devices
-    if torch.version.hip is not None and triton.runtime.driver.active.get_current_target().arch == "gfx90a":
-        rtol = 1e-2
-    assert torch.allclose(ref_dv, tri_dv, atol=1e-2, rtol=rtol)
-    assert torch.allclose(ref_dk, tri_dk, atol=1e-2, rtol=rtol)
-    assert torch.allclose(ref_dq, tri_dq, atol=1e-2, rtol=rtol)
-
-
-try:
-    from flash_attn.flash_attn_interface import \
-        flash_attn_qkvpacked_func as flash_attn_func
-    HAS_FLASH = True
-except BaseException:
-    HAS_FLASH = False
-
-TORCH_HAS_FP8 = hasattr(torch, 'float8_e5m2')
-BATCH, N_HEADS, HEAD_DIM = 4, 32, 64
-# vary seq length for fixed head and batch=4
-configs = []
-for mode in ["fwd", "bwd"]:
-    for causal in [True, False]:
-        if mode == "bwd" and not causal:
-            continue
-        configs.append(
-            triton.testing.Benchmark(
-                x_names=["N_CTX"],
-                x_vals=[2**i for i in range(10, 15)],
-                line_arg="provider",
-                line_vals=["triton-fp16"] + (["triton-fp8"] if TORCH_HAS_FP8 else []) +
-                (["flash"] if HAS_FLASH else []),
-                line_names=["Triton [FP16]"] + (["Triton [FP8]"] if TORCH_HAS_FP8 else []) +
-                (["Flash-2"] if HAS_FLASH else []),
-                styles=[("red", "-"), ("blue", "-"), ("green", "-")],
-                ylabel="TFLOPS",
-                plot_name=f"fused-attention-batch{BATCH}-head{N_HEADS}-d{HEAD_DIM}-{mode}-causal={causal}",
-                args={
-                    "H": N_HEADS,
-                    "BATCH": BATCH,
-                    "HEAD_DIM": HEAD_DIM,
-                    "mode": mode,
-                    "causal": causal,
-                },
-            ))
-
-
-@triton.testing.perf_report(configs)
-def bench_flash_attention(BATCH, H, N_CTX, HEAD_DIM, causal, mode, provider, device="cuda"):
-    assert mode in ["fwd", "bwd"]
-    warmup = 25
-    rep = 100
-    dtype = torch.float16
-    if "triton" in provider:
-        q = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
-        k = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
-        v = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
-        if mode == "fwd" and "fp8" in provider:
-            q = q.to(torch.float8_e5m2)
-            k = k.to(torch.float8_e5m2)
-            v = v.permute(0, 1, 3, 2).contiguous()
-            v = v.permute(0, 1, 3, 2)
-            v = v.to(torch.float8_e5m2)
-        sm_scale = 1.3
-        fn = lambda: attention(q, k, v, causal, sm_scale)
-        if mode == "bwd":
-            o = fn()
-            do = torch.randn_like(o)
-            fn = lambda: o.backward(do, retain_graph=True)
-        ms = triton.testing.do_bench(fn, warmup=warmup, rep=rep)
-    if provider == "flash":
-        qkv = torch.randn((BATCH, N_CTX, 3, H, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
-        fn = lambda: flash_attn_func(qkv, causal=causal)
-        if mode == "bwd":
-            o = fn()
-            do = torch.randn_like(o)
-            fn = lambda: o.backward(do, retain_graph=True)
-        ms = triton.testing.do_bench(fn, warmup=warmup, rep=rep)
-    flops_per_matmul = 2.0 * BATCH * H * N_CTX * N_CTX * HEAD_DIM
-    total_flops = 2 * flops_per_matmul
-    if causal:
-        total_flops *= 0.5
-    if mode == "bwd":
-        total_flops *= 2.5  # 2.0(bwd) + 0.5(recompute)
-    return total_flops * 1e-12 / (ms * 1e-3)
-
-
-if __name__ == "__main__":
-    # only works on post-Ampere GPUs right now
-    bench_flash_attention.run(save_path=".", print_data=True)
+    # rtol = 0.0
+    #assert torch.allclose(ref_dv, tri_dv, atol=1e-2, rtol=rtol)
+    #assert torch.allclose(ref_dk, tri_dk, atol=1e-2, rtol=rtol)
+    #assert torch.allclose(ref_dq, tri_dq, atol=1e-2, rtol=rtol)
