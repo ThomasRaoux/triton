@@ -82,29 +82,30 @@ def matmul_kernel_tma(a_desc_ptr, b_desc_ptr, c_desc_ptr,  #
 
 @requires_tma
 @pytest.mark.parametrize("num_stages", [1, 4])
-@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(32, 32, 32), (128, 64, 64), (128, 128, 64), (128, 256, 64)])
+@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K, num_ctas", [(32, 32, 32, 1), (128, 64, 64, 1), (128, 128, 64, 1), (128, 256, 64, 1), (256, 128, 64, 2), (256, 128, 64, 4)])
 @pytest.mark.parametrize("byval_tma", [True, False])
-def test_experimental_tma_matmul(num_stages, BLOCK_M, BLOCK_N, BLOCK_K, byval_tma):
+def test_experimental_tma_matmul(num_stages, BLOCK_M, BLOCK_N, BLOCK_K, num_ctas, byval_tma):
     device = "cuda"
     M, N, K = 8192, 8192, 1024
     torch.manual_seed(42)
     A = torch.randn((M, K), dtype=torch.float16, device=device)
     B = torch.randn((K, N), dtype=torch.float16, device=device)
     C = torch.empty((M, N), dtype=torch.float16, device=device)
+    adjusted_M = BLOCK_M // num_ctas
     if byval_tma:
-        desc_a = create_2d_tma_descriptor(A.data_ptr(), M, K, BLOCK_M, BLOCK_K, A.element_size())
+        desc_a = create_2d_tma_descriptor(A.data_ptr(), M, K, adjusted_M, BLOCK_K, A.element_size())
         desc_b = create_2d_tma_descriptor(B.data_ptr(), K, N, BLOCK_K, BLOCK_N, B.element_size())
-        desc_c = create_2d_tma_descriptor(C.data_ptr(), M, N, BLOCK_M, BLOCK_N, C.element_size())
+        desc_c = create_2d_tma_descriptor(C.data_ptr(), M, N, adjusted_M, BLOCK_N, C.element_size())
     else:
-        desc_a = create_tma_desc_gmem_ptr(A.data_ptr(), [M, K], [BLOCK_M, BLOCK_K], A.element_size())
+        desc_a = create_tma_desc_gmem_ptr(A.data_ptr(), [M, K], [adjusted_M, BLOCK_K], A.element_size())
         desc_b = create_tma_desc_gmem_ptr(B.data_ptr(), [K, N], [BLOCK_K, BLOCK_N], B.element_size())
-        desc_c = create_tma_desc_gmem_ptr(C.data_ptr(), [M, N], [BLOCK_M, BLOCK_N], C.element_size())
+        desc_c = create_tma_desc_gmem_ptr(C.data_ptr(), [M, N], [adjusted_M, BLOCK_N], C.element_size())
     kernel = matmul_kernel_tma[(triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1,
                                 1)](desc_a, desc_b, desc_c, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, BYVAL_TMA=byval_tma,
-                                    num_warps=8, num_stages=num_stages, dtype=tl.float16)
+                                    num_warps=8, num_stages=num_stages, num_ctas=num_ctas, dtype=tl.float16)
     ref_out = torch.matmul(A.to(torch.float32), B.to(torch.float32)).to(torch.float16)
     torch.testing.assert_close(ref_out, C, rtol=1e-3, atol=1e-3)
-    if BLOCK_M >= 64 and BLOCK_N >= 64:
+    if BLOCK_M >= 64 and BLOCK_N >= 64 and BLOCK_M <= 128:
         assert "stmatrix.sync.aligned.m8n8.x4.shared.b16" in kernel.asm["ptx"]
     if byval_tma:
         assert ".param .align 64 .b8" in kernel.asm["ptx"]

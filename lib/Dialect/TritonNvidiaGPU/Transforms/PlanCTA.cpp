@@ -585,7 +585,8 @@ void CTAPlanner::eliminateAdjacentCasts(CastOp cast0, CastOp cast1) {
 
 bool CTAPlanner::isLoadStoreOp(Operation *op) const {
   return llvm::isa<triton::LoadOp, triton::StoreOp, triton::AtomicRMWOp,
-                   triton::AtomicCASOp>(op);
+                   triton::AtomicCASOp, triton::ExperimentalDescriptorLoadOp,
+                   triton::ExperimentalDescriptorStoreOp>(op);
 }
 
 bool CTAPlanner::processLoadStore(Operation *op, Attribute layout) {
@@ -615,7 +616,11 @@ bool CTAPlanner::processLoadStore(Operation *op, Attribute layout) {
     auto type = op->getOperand(i).getType();
     if (auto ptrTy = dyn_cast<triton::PointerType>(type))
       type = ptrTy.getPointeeType();
-    auto tensorTy = cast<RankedTensorType>(type);
+    auto tensorTy = dyn_cast<RankedTensorType>(type);
+    if (!tensorTy) {
+      newOperandLayouts.push_back(Attribute());
+      continue;
+    }
     auto newLayout = replaceCTALayout(tensorTy.getEncoding(),
                                       tensorTy.getShape(), CTALayout);
     newOperandLayouts.push_back(newLayout);

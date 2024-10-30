@@ -1007,6 +1007,9 @@ bool canUseStMatrix(RankedTensorType tensorTy, ArrayRef<unsigned> repShape,
     return false;
   auto numIterations = ceil<unsigned>(tensorShapePerCTA[1], repShape[1]) *
                        ceil<unsigned>(tensorShapePerCTA[0], repShape[0]);
+  // Workaround for failures in the current implementation.
+  if (tensorShapePerCTA[0] > 128)                       
+    return false;
   if (numIterations > 1)
     return false;
   if (paddedRepShape[1] % 8 != 0)

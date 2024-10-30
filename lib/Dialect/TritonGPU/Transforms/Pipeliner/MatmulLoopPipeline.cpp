@@ -863,8 +863,10 @@ static void createTMABarrierAndWait(
       auto tensorTy =
           cast<RankedTensorType>(asyncLoad->loadOp->getResult(0).getType());
       int loadSize = product(tensorTy.getShape());
-      sizeInBytes +=
-          loadSize * tensorTy.getElementType().getIntOrFloatBitWidth() / 8;
+      SmallVector<unsigned> CTASplitNum = triton::gpu::getCTASplitNum(tensorTy.getEncoding());
+      int byteCopiedPerCTA =
+          (loadSize * tensorTy.getElementType().getIntOrFloatBitWidth() / 8) / product(CTASplitNum);
+      sizeInBytes += byteCopiedPerCTA;
     }
 
     Value barrierAlloc = createBarrierAlloc(forOp, numBuffers);

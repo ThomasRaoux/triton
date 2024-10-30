@@ -1027,7 +1027,13 @@ struct AsyncCopyGlobalToLocalOpConversion
 struct AsyncTMACopyGlobalToLocalOpConversion
     : public ConvertOpToLLVMPattern<
           triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp> {
-  using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
+  AsyncTMACopyGlobalToLocalOpConversion(
+      LLVMTypeConverter &converter,
+      const NVIDIA::TargetInfo &targetInfo,
+      PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
+            converter, benefit),
+        targetInfo(targetInfo) {}
 
   LogicalResult
   matchAndRewrite(triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp op,
@@ -1059,17 +1065,23 @@ struct AsyncTMACopyGlobalToLocalOpConversion
     // figure out that the op is uniform.
     pred = and_(pred, LLVM::NVIDIA::createElectPredicate(loc, rewriter));
 
+    auto shapePerCTA = triton::gpu::getShapePerCTA(op.getResult().getType());
+
     int elementSizeInBytes =
         op.getResult().getType().getElementType().getIntOrFloatBitWidth() / 8;
-    int totalNumElements = product(op.getResult().getType().getShape());
+    int totalNumElements = product(shapePerCTA);
     int64_t size = totalNumElements * elementSizeInBytes;
 
-    int innerBlockSize = op.getResult().getType().getShape().back();
+    int innerBlockSize = shapePerCTA.back();
     int contigDimSizeInByte = innerBlockSize * elementSizeInBytes;
     int numCopies = 1;
     int rank = op.getCoord().size();
     if (rank > 1)
       numCopies = ceil<int>(contigDimSizeInByte, 128);
+
+    SmallVector<Value> ctaOffsets = emitCTAOffsetForLayout(
+        loc, rewriter, targetInfo, op.getResult().getType().getEncoding(),
+        op.getResult().getType().getShape());
 
     // The bounding box inner dimension must be less than or equal to the
     // swizzle size.
@@ -1098,11 +1110,13 @@ struct AsyncTMACopyGlobalToLocalOpConversion
           "d.shared::cluster.global.mbarrier::complete_tx::bytes [$1], [$2, {";
       int operandIdx = 3;
       for (int i = 0; i < rank; i++) {
-        Value coord = adaptor.getCoord()[rank - i - 1];
+        int idx = rank - i - 1;
+        Value coord = adaptor.getCoord()[idx];
         if (i == 0) {
           Value offset = mul(copyIdxVal, i32_val(128 / elementSizeInBytes));
           coord = add(coord, offset);
         }
+        coord = add(coord, ctaOffsets[idx]);
         operands.push_back(ptxBuilderTMA.newOperand(coord, "r"));
         tmaInst += "$" + std::to_string(operandIdx++);
         if (i != rank - 1)
@@ -1118,12 +1132,19 @@ struct AsyncTMACopyGlobalToLocalOpConversion
     rewriter.eraseOp(op);
     return success();
   }
+private:
+  const NVIDIA::TargetInfo &targetInfo;
 };
 
 struct AsyncTMACopyLocalToGlobalOpConversion
     : public ConvertOpToLLVMPattern<
           triton::nvidia_gpu::AsyncTMACopyLocalToGlobalOp> {
-  using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
+  AsyncTMACopyLocalToGlobalOpConversion(LLVMTypeConverter &converter,
+                                        const NVIDIA::TargetInfo &targetInfo,
+                                        PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::nvidia_gpu::AsyncTMACopyLocalToGlobalOp>(
+            converter, benefit),
+        targetInfo(targetInfo) {}
 
   LogicalResult
   matchAndRewrite(triton::nvidia_gpu::AsyncTMACopyLocalToGlobalOp op,
@@ -1141,7 +1162,8 @@ struct AsyncTMACopyLocalToGlobalOpConversion
     Value pred = LLVM::NVIDIA::createElectPredicate(loc, rewriter);
     int elementSizeInBytes =
         op.getSrc().getType().getElementType().getIntOrFloatBitWidth() / 8;
-    int totalNumElements = product(op.getSrc().getType().getShape());
+    auto shapePerCTA = triton::gpu::getShapePerCTA(op.getSrc().getType());
+    int totalNumElements = product(shapePerCTA);
     int64_t size = totalNumElements * elementSizeInBytes;
 
     auto mod = op->getParentOfType<ModuleOp>();
@@ -1149,13 +1171,16 @@ struct AsyncTMACopyLocalToGlobalOpConversion
     int warpSize = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
     Value warpID = udiv(id, i32_val(warpSize));
     warpID = LLVM::NVIDIA::shuffleIdx(loc, rewriter, warpID, 0);
-    int innerBlockSize = op.getSrc().getType().getShape().back();
+    int innerBlockSize = shapePerCTA.back();
     int contigDimSizeInByte = innerBlockSize * elementSizeInBytes;
     int numCopies = 1;
     int rank = op.getCoord().size();
     if (rank > 1)
       numCopies = ceil<int>(contigDimSizeInByte, 128);
 
+    SmallVector<Value> ctaOffsets = emitCTAOffsetForLayout(
+        loc, rewriter, targetInfo, op.getSrc().getType().getEncoding(),
+        op.getSrc().getType().getShape());
     // The bounding box inner dimension must be less than or equal to the
     // swizzle size.
     // https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__TENSOR__MEMORY.html#group__CUDA__TENSOR__MEMORY_1ga7c7d2aaac9e49294304e755e6f341d7
@@ -1181,11 +1206,13 @@ struct AsyncTMACopyLocalToGlobalOpConversion
                             "d.global.shared::cta.bulk_group [$1, {";
       int operandIdx = 2;
       for (int i = 0; i < rank; i++) {
-        Value coord = adaptor.getCoord()[rank - i - 1];
+        int idx = rank - i - 1;
+        Value coord = adaptor.getCoord()[idx];
         if (i == 0) {
           Value offset = mul(copyIdxVal, i32_val(128 / elementSizeInBytes));
           coord = add(coord, offset);
         }
+        coord = add(coord, ctaOffsets[idx]);
         operands.push_back(ptxBuilderTMA.newOperand(coord, "r"));
         tmaInst += "$" + std::to_string(operandIdx++);
         if (i != rank - 1)
@@ -1208,6 +1235,9 @@ struct AsyncTMACopyLocalToGlobalOpConversion
     rewriter.eraseOp(op);
     return success();
   }
+
+private:
+  const NVIDIA::TargetInfo &targetInfo;
 };
 
 struct AsyncWaitOpConversion
@@ -1290,8 +1320,8 @@ void mlir::triton::NVIDIA::populateLoadStoreOpToLLVMPatterns(
                AtomicRMWOpConversion, LoadOpConversion, StoreOpConversion>(
       typeConverter, targetInfo, axisInfoAnalysis, benefit);
   patterns.add<AsyncCommitGroupOpConversion>(typeConverter, benefit);
-  patterns.add<AsyncWaitOpConversion>(typeConverter, benefit);
+  patterns.add<AsyncWaitOpConversion, TMAStoreWaitConversion>(typeConverter, benefit);
   patterns.add<AsyncTMACopyGlobalToLocalOpConversion,
-               AsyncTMACopyLocalToGlobalOpConversion, TMAStoreWaitConversion>(
-      typeConverter, benefit);
+               AsyncTMACopyLocalToGlobalOpConversion>(
+      typeConverter, targetInfo, benefit);
 }

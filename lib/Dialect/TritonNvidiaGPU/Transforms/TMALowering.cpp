@@ -53,8 +53,11 @@ public:
                          sharedMemorySpace, /*mutableMemory=*/true);
     Value barrierAlloc = rewriter.create<LocalAllocOp>(loc, barrierMemDescType);
     rewriter.create<InitBarrierOp>(loc, barrierAlloc, 1);
+    SmallVector<unsigned> CTASplitNum = triton::gpu::getCTASplitNum(tensorType.getEncoding());
+    
     int sizeInBytes = product(tensorType.getShape()) *
                       tensorType.getElementType().getIntOrFloatBitWidth() / 8;
+    sizeInBytes = sizeInBytes / product(CTASplitNum);                      
     Value pred = rewriter.create<arith::ConstantIntOp>(loc, 1, 1);
     rewriter.create<triton::nvidia_gpu::BarrierExpectOp>(loc, barrierAlloc,
                                                          sizeInBytes, pred);
