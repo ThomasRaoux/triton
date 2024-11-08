@@ -675,6 +675,7 @@ def TT_DotOp : TT_Op<"dot", [Pure,
 // DotScaled Op
 //
 def TT_DotScaledOp : TT_Op<"dot_scaled", [Pure,
+                             AttrSizedOperandSegments,
                              DotLike,
                              TypesMatchWith<"result's type matches accumulator's type",
                                             "d", "c", "$_self">]> {
@@ -692,7 +693,7 @@ def TT_DotScaledOp : TT_Op<"dot_scaled", [Pure,
       RankedTensorOf<[TT_Float,I8]>:$lhs,
       RankedTensorOf<[TT_Float,I8]>:$rhs,
       TT_FloatTensor:$c,
-      RankedTensorOf<[I8]>:$lhs_scale,
+      Optional<RankedTensorOf<[I8]>>:$lhs_scale,
       Optional<RankedTensorOf<[I8]>>:$rhs_scale,
       TT_ScaleDotElemTypeAttr:$lhs_type,
       TT_ScaleDotElemTypeAttr:$rhs_type
@@ -702,8 +703,8 @@ def TT_DotScaledOp : TT_Op<"dot_scaled", [Pure,
 
     // Not sure why I need to fully specify the optional group, but otherwise it complains when loading the mlir file
     let assemblyFormat = [{
-      $lhs `,` $lhs_scale `,` $rhs (`,`) : (`,` $rhs_scale^ `,`)? $c `lhs` `=` $lhs_type `rhs` `=` $rhs_type attr-dict
-      `:` type($lhs) `,` type($lhs_scale) `*` type($rhs) (`,` type($rhs_scale)^)? `->` type($d)
+      $lhs (`,` $lhs_scale^)? `,` $rhs (`,`) : (`,` $rhs_scale^)? $c `lhs` `=` $lhs_type `rhs` `=` $rhs_type attr-dict
+      `:` type($lhs) (`,` type($lhs_scale)^)? `*` type($rhs) (`,` type($rhs_scale)^)? `->` type($d)
     }];
 }
 

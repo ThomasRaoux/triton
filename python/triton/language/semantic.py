@@ -1560,10 +1560,11 @@ def dot_scaled(lhs: tl.tensor, lhs_scale: tl.tensor, lhs_format: str, rhs: tl.te
     rhs_format: str = rhs_format.value
     lhs_format_enum = _str_to_fp_type(lhs_format)
     rhs_format_enum = _str_to_fp_type(rhs_format)
-    assert lhs_format in ("e2m1", "e4m3", "e5m2"), f"NYI: lhs_format {lhs_format}"
-    assert rhs_format in ("e4m3", "e5m2", "bf16"), f"NYI: rhs_format {rhs_format}"
+    allowed_formats = {"e2m1", "e4m3", "e5m2", "bf16"}
+    assert lhs_format in allowed_formats, f"NYI: lhs_format {lhs_format}"
+    assert rhs_format in allowed_formats, f"NYI: rhs_format {rhs_format}"
     rhs_scale_is_none = isinstance(rhs_scale, tl.constexpr) and rhs_scale.value is None
-    assert rhs_scale_is_none, "NYI: rhs_scale not supported"
+    lhs_scale_is_none = isinstance(lhs_scale, tl.constexpr) and lhs_scale.value is None
     lhs = _bitcast_to_fp_type(lhs, lhs_format, builder)
     rhs = _bitcast_to_fp_type(rhs, rhs_format, builder)
 
@@ -1583,8 +1584,9 @@ def dot_scaled(lhs: tl.tensor, lhs_scale: tl.tensor, lhs_format: str, rhs: tl.te
         acc_handle = acc.handle
         assert acc.type == ret_ty
     rhs_scale_handle = None if rhs_scale_is_none else rhs_scale.handle
+    lhs_scale_handle = None if lhs_scale_is_none else lhs_scale.handle
     return tl.tensor(
-        builder.create_dot_scaled(lhs.handle, lhs_scale.handle, lhs_format_enum, rhs.handle, rhs_scale_handle,
+        builder.create_dot_scaled(lhs.handle, lhs_scale_handle, lhs_format_enum, rhs.handle, rhs_scale_handle,
                                   rhs_format_enum, acc_handle), ret_ty)
 
 

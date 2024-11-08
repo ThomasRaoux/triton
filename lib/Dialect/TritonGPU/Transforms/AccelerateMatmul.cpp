@@ -396,6 +396,24 @@ static void decomposeMixedModeDotOp(ModuleOp mod, int computeCapability) {
   });
 }
 
+static Value upscale(Value v, Value scale, unsigned dim, ScaleDotElemType dstType, mlir::PatternRewriter &rewriter, Location loc, CTALayoutAttr CTALayout, const SmallVector<unsigned>& warpsPerCTA) {
+  if (!scale)
+    return v;
+  auto threadsPerWarp = SmallVector<unsigned>{dim, 32 / dim};
+
+  auto newScaleEncoding = triton::gpu::BlockedEncodingAttr::get(
+      v.getContext(), {1, 1}, threadsPerWarp, warpsPerCTA, {1, 0}, CTALayout);
+
+  auto scaleType = cast<RankedTensorType>(scale.getType());
+  auto newScaleDotElemType = RankedTensorType::get(
+      scaleType.getShape(), scaleType.getElementType(), newScaleEncoding);
+  scale = rewriter.create<ConvertLayoutOp>(loc, newScaleDotElemType, scale);
+
+  auto scaled = rewriter.create<triton::gpu::UpcastMXFPOp>(loc, v, scale,
+                                                           dstType);
+  return scaled;
+}
+
 class ScaledBlockedToMMAv2
     : public mlir::OpRewritePattern<triton::DotScaledOp> {
   int computeCapability;
@@ -417,22 +435,24 @@ public:
       return failure();
     auto ctx = dotOp.getContext();
 
-    // Check that rhs scale is null
-    assert(dotOp.getRhsScale() == nullptr && "rhs scale NYI");
-
     // operands
     auto a = dotOp.getLhs();
     auto b = dotOp.getRhs();
-    auto scale = dotOp.getLhsScale();
+    auto aScale = dotOp.getLhsScale();
+    auto bScale = dotOp.getRhsScale();
     auto aType = dotOp.getLhsType();
     auto bType = dotOp.getRhsType();
 
     assert((aType == ScaleDotElemType::E4M3 ||
             aType == ScaleDotElemType::E5M2 ||
-            aType == ScaleDotElemType::E2M1) &&
-           "NYI: lhs supports fp4 or fp8");
-    assert(bType == ScaleDotElemType::E4M3 || bType == ScaleDotElemType::E5M2 ||
-           bType == ScaleDotElemType::BF16 && "NYI: rhs supports fp8 and bf16");
+            aType == ScaleDotElemType::E2M1 || 
+            aType == ScaleDotElemType::BF16) &&
+           "NYI: lhs supports fp4 or fp8 or bf16");
+    assert((bType == ScaleDotElemType::E4M3 ||
+            bType == ScaleDotElemType::E5M2 ||
+            bType == ScaleDotElemType::E2M1 || 
+            bType == ScaleDotElemType::BF16) &&
+           "NYI: lhs supports fp4 or fp8 or bf16");           
 
     // TODO run accelerate matmul on A and B first to choose their layouts
     // Set return type
@@ -510,26 +530,13 @@ public:
 
     assert(instrShape == ArrayRef<unsigned>({16, 8}) ||
            instrShape == ArrayRef<unsigned>({1, 16, 8}));
-    auto shapeTileA = std::array<unsigned, 2>{instrShape[0], instrShape[0]};
-    // Necessary choice to leave all the scales of the tile in that given warp
-    auto threadsPerWarp =
-        SmallVector<unsigned>{shapeTileA[0], 32 / shapeTileA[0]};
-
-    auto newScaleEncoding = triton::gpu::BlockedEncodingAttr::get(
-        ctx, {1, 1}, threadsPerWarp, warpsPerCTA, {1, 0}, CTALayout);
-
-    auto newScaleDotElemType = RankedTensorType::get(
-        scale.getType().getShape(), scale.getType().getElementType(),
-        newScaleEncoding);
-    scale = rewriter.create<ConvertLayoutOp>(scale.getLoc(),
-                                             newScaleDotElemType, scale);
-
-    auto scaledA = rewriter.create<triton::gpu::UpcastMXFPOp>(
-        dotOp.getLoc(), a, scale, dotOp.getLhsType());
-
+    Location loc = dotOp.getLoc();
+    auto scaledA = upscale(a, aScale, instrShape[0], dotOp.getLhsType(), rewriter, loc, CTALayout, warpsPerCTA);
+    auto scaledB = upscale(b, bScale, instrShape[0], dotOp.getRhsType(), rewriter, loc, CTALayout, warpsPerCTA);
+    
     // convert dot instruction
     auto newDot =
-        rewriter.create<DotOp>(dotOp.getLoc(), newRetType, scaledA, b, newAcc);
+        rewriter.create<DotOp>(dotOp.getLoc(), newRetType, scaledA, scaledB, newAcc);
     rewriter.replaceOpWithNewOp<ConvertLayoutOp>(dotOp, oldRetType, newDot);
     return success();
   }
