@@ -25,6 +25,10 @@ using namespace mlir::triton::gpu;
 static constexpr const char *ptxAsm =
     "{\n"
     ".reg .b32 a<14>;\n"
+//    "mov.b32 $0, $4;\n"
+//    "mov.b32 $1, $4;\n"
+//    "mov.b32 $2, $4;\n"
+//    "mov.b32 $3, $4;\n"
     "and.b32  	a0, $4, -2004318072;\n\t"
     "shr.u32 	a1, a0, 3;\n\t"
     "and.b32  	a2, $4, 2004318071;\n\t"
@@ -79,12 +83,21 @@ static SmallVector<Value> convertMxfp4x2ToBf16x2PTX(RewriterBase &rewriter,
     Value ret = createInlineAsmUpcast(loc, rewriter, retType, packedVec);
     for (int i = 0; i < 4; i++) {
       Value extractI32 = extract_val(ret, i);
-      Value vecbf16 = bitcast(extractI32, vec_ty(bf16_ty, 2));
-      results.push_back(extract_element(vecbf16, i32_val(0)));
-      results.push_back(extract_element(vecbf16, i32_val(1)));
+      results.push_back(extractI32);
     }
   }
   return results;
+}
+
+static Value mxfpScale2xBf16(RewriterBase &rewriter, Location loc,
+                                   Value a, Value b) {
+  PTXBuilder builder;
+  auto &mulbf16 = *builder.create("mul.bf16x2");
+  auto res = builder.newOperand("=r");
+  auto lhs = builder.newOperand(a, "r");
+  auto rhs = builder.newOperand(b, "r");
+  mulbf16(res, lhs, rhs);
+  return builder.launch(rewriter, loc, f32_ty, false);
 }
 
 namespace {
@@ -130,35 +143,73 @@ public:
     auto c = mul(udiv(laneId, i32_val(4)), i32_val(2));
     std::array<Value, 4> ci = {c, add(c, i32_val(16)), add(c, i32_val(1)),
                                add(c, i32_val(17))};
-
-    // TODO Move this logic to using LinearLayouts
-    // Each scale in a warp has to be replicated to cover a tile of shape mxk =
-    // 16x64 This 16x64 tile is split into 4 subtiles of shape 8x32, each of
-    // which will have to gather a scale and multiply its relevant part of the
-    // mxfp vector This tile of 8x32 is split in to 8x4 vectors, leaving each
-    // vector with 1x8 mxfp elements as long as kWidth * 4 <= 32
-    assert(kWidth <= 8 &&
-           "NYI for larger kWidth (but we could do it with less shuffles!)");
-    for (auto [i, scaleVal] : llvm::enumerate(scaleVals)) {
-      for (int mxfp = 0; mxfp < 2; ++mxfp) {
-        auto si = std::array<Value, 2>{
-            targetInfo.shuffleIdx(rewriter, loc, scaleVal, ci[mxfp * 2 + 0]),
-            targetInfo.shuffleIdx(rewriter, loc, scaleVal, ci[mxfp * 2 + 1])};
-        for (int rep = 0; rep < 8 / kWidth; ++rep) {
-          for (int subTile = 0; subTile < 2; ++subTile) {
-            for (int k = 0; k < kWidth; ++k) {
-              auto idx =
-                  32 * i + 16 * mxfp + rep * 2 * kWidth + subTile * kWidth + k;
-              xVals[idx] =
-                  LLVM::mxfpScaleBf16(rewriter, loc, xVals[idx], si[subTile]);
-            }
-          }
+    SmallVector<Value> scalesBroadcasted;
+    for (int i = 0; i < scaleVals.size(); i += 4) {
+      Value packedVec = undef(vec_ty(i8_ty, 4));
+      for (int j = 0; j < 4; j++) {
+        packedVec = insert_element(packedVec, scaleVals[i + j], i32_val(j));
+      }
+      packedVec = bitcast(packedVec, i32_ty);
+      for (int mxfp = 0; mxfp < 4; ++mxfp) {
+        Value broadcasted = targetInfo.shuffleIdx(rewriter, loc, packedVec, ci[mxfp]);
+        for (int j = 0; j < 4; j++) {
+          int shift = j * 8 - 7;
+          Value replicated;
+          if (shift < 0)
+            replicated = shl(broadcasted, i32_val(-shift));
+          else
+            replicated = lshr(broadcasted, i32_val(shift));
+          replicated = and_(replicated, i32_val(0x7F80));
+          replicated = or_(replicated, shl(replicated, i32_val(16)));
+          scalesBroadcasted.push_back(replicated);
         }
       }
     }
 
+    SmallVector<Value> results;
+    for (int i = 0; i < xVals.size(); i++) {
+      int scaleIdx = 0;
+      xVals[i] = mxfpScale2xBf16(rewriter, loc, xVals[i], scalesBroadcasted[scaleIdx]);
+      Value unpack = bitcast(xVals[i], vec_ty(bf16_ty, 2));
+      results.push_back(extract_element(unpack, i32_val(0)));
+      results.push_back(extract_element(unpack, i32_val(1)));
+    }
+
+   // // TODO Move this logic to using LinearLayouts
+   // // Each scale in a warp has to be replicated to cover a tile of shape mxk =
+   // // 16x64 This 16x64 tile is split into 4 subtiles of shape 8x32, each of
+   // // which will have to gather a scale and multiply its relevant part of the
+   // // mxfp vector This tile of 8x32 is split in to 8x4 vectors, leaving each
+   // // vector with 1x8 mxfp elements as long as kWidth * 4 <= 32
+   // assert(kWidth <= 8 &&
+   //        "NYI for larger kWidth (but we could do it with less shuffles!)");
+   // assert(scaleVals.size() % 4 == 0);
+   // for (int i = 0; i < scaleVals.size(); i += 4) {
+   //   Value packedVec = undef(vec_ty(i8_ty, 4));
+   //   for (int j = 0; j < 4; j++) {
+   //     packedVec = insert_element(packedVec, scaleVals[i + j], i32_val(j));
+   //   }
+   //   packedVec = bitcast(packedVec, i32_ty);
+   //   for (int mxfp = 0; mxfp < 2; ++mxfp) {
+   //     auto si = std::array<Value, 2>{
+   //         targetInfo.shuffleIdx(rewriter, loc, packedVec, ci[mxfp * 2 + 0]),
+   //         targetInfo.shuffleIdx(rewriter, loc, packedVec, ci[mxfp * 2 + 1])};
+   //     for (int rep = 0; rep < 8 / kWidth; ++rep) {
+   //       for (int subTile = 0; subTile < 2; ++subTile) {
+   //         for (int k = 0; k < kWidth; ++k) {
+   //           auto idx =
+   //               32 * i + 16 * mxfp + rep * 2 * kWidth + subTile * kWidth + k;
+   //           xVals[idx] =
+   //               LLVM::mxfpScaleBf16(rewriter, loc, xVals[idx], si[subTile]);
+   //         }
+   //       }
+   //     }
+   //   }
+   // }
+
+
     Value result =
-        packLLElements(loc, getTypeConverter(), xVals, rewriter, op.getType());
+        packLLElements(loc, getTypeConverter(), results, rewriter, op.getType());
     rewriter.replaceOp(op, result);
     return success();
   }
