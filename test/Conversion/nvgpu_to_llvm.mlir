@@ -106,7 +106,7 @@ llvm.func @wgmma(%desc: i64, %in: !struct_64xf32) {
 
 // -----
 
-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.swizzled_shared = 65544 : i32, ttg.target = "cuda:100", ttg.tensor_memory_size = 128 : i32, "ttg.threads-per-warp" = 32 : i32} {
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.shared = 65544 : i32, ttg.target = "cuda:100", ttg.tensor_memory_size = 128 : i32, "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: @tensor_memory_base_lowering
   //      CHECK:    %[[TID:.+]] = nvvm.read.ptx.sreg.tid.x : i32
   //      CHECK:    %[[C32:.+]] = llvm.mlir.constant(32 : i32) : i32

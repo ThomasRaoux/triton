@@ -120,10 +120,10 @@ mlir::triton::NVIDIA::DotOpMmaV3SmemLoader::DotOpMmaV3SmemLoader(
   elemsPerSwizzlingRow = (swizzlingByteWidth * 8) / elemBits;
   elemsPerSwizzlingRowVal = b.i32_val(elemsPerSwizzlingRow);
 
-  uint32_t widthInByte = shape[sharedLayout.getTransposed() ? 0 : 1] * elemBits / 8;
+  uint32_t widthInByte = shape[trans ? 0 : 1] * elemBits / 8;
   int64_t swizzling = getSwizzlingFromLayout(sharedLayout, widthInByte);
 
-  descriptor = createDescriptor(rewriter, loc, swizzling, shape[ord[1]]);
+  descriptor = createDescriptor(rewriter, loc, swizzling, shape[trans ? 0 : 1]);
 }
 
 Value mlir::triton::NVIDIA::DotOpMmaV3SmemLoader::smemLoad(
@@ -137,7 +137,7 @@ Value mlir::triton::NVIDIA::DotOpMmaV3SmemLoader::smemLoad(
   }
   Value leading_offset =
       tb.mul(tb.udiv(k, elemsPerSwizzlingRowVal),
-             tb.i32_val(shape[ord[1]] * elemsPerSwizzlingRow));
+             tb.i32_val(shape[trans ? 0 : 1] * elemsPerSwizzlingRow));
   Value stride_offset = tb.mul(m, elemsPerSwizzlingRowVal);
   Value offset = tb.add(tb.add(leading_offset, stride_offset),
                         tb.urem(k, elemsPerSwizzlingRowVal));
@@ -204,7 +204,7 @@ DotOpMmaV3SmemLoader loadB(const LLVMTypeConverter *typeConverter,
   assert(bSharedLayout && "only support load B from shared.");
   auto instrShape = mmaEncoding.getInstrShape();
   auto wpt = mmaEncoding.getWarpsPerCTA();
-  bool transB = bSharedLayout.getTransposed();
+  bool transB = !bSharedLayout.getTransposed();
   auto shapePerCTA = triton::gpu::getShapePerCTA(bTy);
 
   Value warp = b.and_(b.udiv(thread, b.i32_val(32)), b.i32_val(0xFFFFFFFC));
@@ -351,8 +351,7 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   auto dTensorTy = cast<RankedTensorType>(d.getType());
   auto aSharedLayout =
       dyn_cast<NVMMASharedEncodingAttr>(aTensorTy.getEncoding());
-  auto bSharedLayout =
-      cast<NVMMASharedEncodingAttr>(bTensorTy.getEncoding());
+  auto bSharedLayout = cast<NVMMASharedEncodingAttr>(bTensorTy.getEncoding());
   auto mmaEncoding = cast<NvidiaMmaEncodingAttr>(dTensorTy.getEncoding());
   bool transA = false;
   Value baseA;

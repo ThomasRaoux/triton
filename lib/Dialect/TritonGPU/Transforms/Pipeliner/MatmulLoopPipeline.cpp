@@ -380,12 +380,12 @@ getSharedEncoding(Operation *loadOp, bool isTMALoad) {
   if (llvm::any_of(loadOp->getUsers(), [&](Operation *user) {
         return isa<ttg::LocalAllocOp>(user);
       })) {
-    ttg::SwizzledSharedEncodingAttr localAllocEnc;
+    ttg::SharedEncodingTrait localAllocEnc;
     for (auto user : loadOp->getUsers()) {
       auto localAlloc = dyn_cast<ttg::LocalAllocOp>(user);
       if (!localAlloc)
         continue;
-      auto enc = mlir::cast<ttg::SwizzledSharedEncodingAttr>(
+      auto enc = mlir::cast<ttg::SharedEncodingTrait>(
           localAlloc.getType().getEncoding());
       if (!localAllocEnc) {
         localAllocEnc = enc;
@@ -408,12 +408,12 @@ static bool hasSharedEncodingHelper(Operation *loadOp) {
   if (llvm::any_of(loadOp->getUsers(), [&](Operation *user) {
         return isa<ttg::LocalAllocOp>(user);
       })) {
-    ttg::SwizzledSharedEncodingAttr localAllocEnc;
+    ttg::SharedEncodingTrait localAllocEnc;
     for (auto user : loadOp->getUsers()) {
       auto localAlloc = dyn_cast<ttg::LocalAllocOp>(user);
       if (!localAlloc)
         continue;
-      auto enc = mlir::cast<ttg::SwizzledSharedEncodingAttr>(
+      auto enc = mlir::cast<ttg::SharedEncodingTrait>(
           localAlloc.getType().getEncoding());
       if (!localAllocEnc) {
         localAllocEnc = enc;
@@ -1430,7 +1430,7 @@ static std::optional<int> dotCanBeProperlyAsync(ttng::WarpGroupDotOp dotOp,
 
   // Rule 1: All shmem operands are multi-buffered.
   auto checkOperand = [&](Value operand) {
-    if (!isa<ttg::SwizzledSharedEncodingAttr>(
+    if (!isa<ttg::SharedEncodingTrait>(
             cast<ttg::TensorOrMemDesc>(operand.getType()).getEncoding())) {
       // Rule 1a: Register operands must not be modified within the loop.
       // First, check for chained WGMMA as an exception.

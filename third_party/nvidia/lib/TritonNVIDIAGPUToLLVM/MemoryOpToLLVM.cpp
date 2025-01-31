@@ -217,8 +217,6 @@ struct LocalAllocOpConversion
     if (!op.getSrc())
       return failure();
     MemDescType memDescType = op.getType();
-    auto sharedLayout = cast<triton::gpu::SwizzledSharedEncodingAttr>(
-        memDescType.getEncoding());
     RankedTensorType srcTy = op.getSrc().getType();
     Type llvmElemTy = typeConverter->convertType(srcTy.getElementType());
     Value smemBase =

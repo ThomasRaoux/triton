@@ -39,8 +39,8 @@ namespace gpu {
 
 unsigned getTotalElemsPerThread(Attribute layout, ArrayRef<int64_t> shape,
                                 Type eltTy) {
-  if (auto tritonGPUAttr = mlir::dyn_cast<TritonGPU_AttrTrait>(layout)) {
-    return tritonGPUAttr.getTotalElemsPerThread(shape, eltTy);
+  if (auto distLayout = mlir::dyn_cast<DistributedEncodingTrait>(layout)) {
+    return distLayout.getTotalElemsPerThread(shape, eltTy);
   } else {
     llvm::report_fatal_error("getTotalElemsPerThread not implemented");
     return 0;
@@ -49,8 +49,8 @@ unsigned getTotalElemsPerThread(Attribute layout, ArrayRef<int64_t> shape,
 
 SmallVector<unsigned> getElemsPerThread(Attribute layout,
                                         ArrayRef<int64_t> shape, Type eltTy) {
-  if (auto tritonGPUAttr = mlir::dyn_cast<TritonGPU_AttrTrait>(layout)) {
-    return tritonGPUAttr.getElemsPerThread(shape, eltTy);
+  if (auto distLayout = mlir::dyn_cast<DistributedEncodingTrait>(layout)) {
+    return distLayout.getElemsPerThread(shape, eltTy);
   } else {
     llvm::report_fatal_error("getElemsPerThread not implemented");
     return SmallVector<unsigned>();
@@ -284,6 +284,10 @@ SmallVector<unsigned> getOrder(Attribute layout) {
   if (auto sharedLayout = mlir::dyn_cast<SwizzledSharedEncodingAttr>(layout)) {
     return llvm::to_vector(sharedLayout.getOrder());
   }
+  if (auto sharedLayout = mlir::dyn_cast<NVMMASharedEncodingAttr>(layout)) {
+    return sharedLayout.getTransposed() ? SmallVector<unsigned>({0, 1})
+                                        : SmallVector<unsigned>({1, 0});
+  }
   if (auto linearLayout = mlir::dyn_cast<LinearEncodingAttr>(layout)) {
     return linearLayout.getOrder();
   }
@@ -301,26 +305,19 @@ SmallVector<unsigned> getThreadOrder(Attribute layout) {
 }
 
 CTALayoutAttr getCTALayout(Attribute layout) {
-  if (auto distributedLayout =
-          mlir::dyn_cast<DistributedEncodingTrait>(layout)) {
-    return CTALayoutAttr::get(
-        layout.getContext(), getCTAsPerCGA(distributedLayout),
-        getCTASplitNum(distributedLayout), getCTAOrder(distributedLayout));
-  } else if (auto sharedLayout =
-                 mlir::dyn_cast<SwizzledSharedEncodingAttr>(layout))
-    return sharedLayout.getCTALayout();
-  else
-    llvm::report_fatal_error("Unimplemented usage of getCTALayout");
+  if (auto ttgLayout = mlir::dyn_cast<LayoutEncodingTrait>(layout)) {
+    return CTALayoutAttr::get(layout.getContext(), getCTAsPerCGA(ttgLayout),
+                              getCTASplitNum(ttgLayout),
+                              getCTAOrder(ttgLayout));
+  }
+  llvm::report_fatal_error("Unimplemented usage of getCTALayout");
   return {};
 }
 
 SmallVector<unsigned> getCTAsPerCGA(Attribute layout) {
   ArrayRef<unsigned> ref;
-  if (auto distributedLayout = mlir::dyn_cast<DistributedEncodingTrait>(layout))
-    return distributedLayout.getCTAsPerCGA();
-  else if (auto sharedLayout =
-               mlir::dyn_cast<SwizzledSharedEncodingAttr>(layout))
-    ref = sharedLayout.getCTALayout().getCTAsPerCGA();
+  if (auto ttgLayout = mlir::dyn_cast<LayoutEncodingTrait>(layout))
+    return ttgLayout.getCTAsPerCGA();
   else
     llvm::report_fatal_error("Unimplemented usage of getCTAsPerCGA");
   return SmallVector<unsigned>(ref.begin(), ref.end());
@@ -328,13 +325,8 @@ SmallVector<unsigned> getCTAsPerCGA(Attribute layout) {
 
 SmallVector<unsigned> getCTASplitNum(Attribute layout) {
   SmallVector<unsigned> res;
-  if (auto distributedLayout =
-          mlir::dyn_cast<DistributedEncodingTrait>(layout)) {
-    return distributedLayout.getCTASplitNum();
-  } else if (auto sharedLayout =
-                 mlir::dyn_cast<SwizzledSharedEncodingAttr>(layout)) {
-    res.assign(sharedLayout.getCTALayout().getCTASplitNum().begin(),
-               sharedLayout.getCTALayout().getCTASplitNum().end());
+  if (auto ttgLayout = mlir::dyn_cast<LayoutEncodingTrait>(layout)) {
+    return ttgLayout.getCTASplitNum();
   } else if (auto tmemLayout =
                  mlir::dyn_cast<triton::nvidia_gpu::TensorMemoryEncodingAttr>(
                      layout)) {
@@ -354,12 +346,8 @@ SmallVector<unsigned> getCTASplitNum(Attribute layout) {
 
 SmallVector<unsigned> getCTAOrder(Attribute layout) {
   SmallVector<unsigned> res;
-  if (auto distributedLayout =
-          mlir::dyn_cast<DistributedEncodingTrait>(layout)) {
-    res = distributedLayout.getCTAOrder();
-  } else if (auto sharedLayout =
-                 mlir::dyn_cast<SwizzledSharedEncodingAttr>(layout)) {
-    res = SmallVector<unsigned>(sharedLayout.getCTALayout().getCTAOrder());
+  if (auto ttgLayout = mlir::dyn_cast<LayoutEncodingTrait>(layout)) {
+    res = ttgLayout.getCTAOrder();
   } else {
     llvm::report_fatal_error("Unimplemented usage of getCTAOrder");
   }
@@ -379,12 +367,12 @@ SmallVector<int64_t> getShapePerCTA(ArrayRef<unsigned> CTASplitNum,
 }
 
 SmallVector<int64_t> getShapePerCTA(Attribute layout, ArrayRef<int64_t> shape) {
-  if (auto sharedLayout = mlir::dyn_cast<SwizzledSharedEncodingAttr>(layout)) {
+  if (mlir::isa<SharedEncodingTrait>(layout)) {
     // Special logic for pipeline pass, where shape is 3D and CTALayout is 2D.
     // The first dim of shape is numStages. This is a work around, otherwise
     // too many places would have to be modified in pipeline pass. Maybe we
     // need to refactor this logic in the future.
-    auto CTASplitNum = sharedLayout.getCTALayout().getCTASplitNum();
+    auto CTASplitNum = cast<LayoutEncodingTrait>(layout).getCTASplitNum();
     if (shape.size() == CTASplitNum.size() + 1) {
       auto res = getShapePerCTA(CTASplitNum, shape.drop_front());
       res.insert(res.begin(), shape.front());
@@ -874,40 +862,28 @@ unsigned NvidiaMmaEncodingAttr::getTotalElemsPerThread(ArrayRef<int64_t> shape,
   return product<unsigned>(getElemsPerThread(shape, eltTy));
 }
 
-//
+int32_t SwizzledSharedEncodingAttr::getAlignment() const { return 16; }
 
-SmallVector<unsigned>
-SwizzledSharedEncodingAttr::getElemsPerThread(ArrayRef<int64_t> shape,
-                                              Type eltTy) const {
-  llvm_unreachable("getElemsPerThread is not supported for shared layout");
-  return SmallVector<unsigned>();
+SmallVector<unsigned> SwizzledSharedEncodingAttr::getCTAsPerCGA() const {
+  return SmallVector<unsigned>(getCTALayout().getCTAsPerCGA());
 }
-unsigned
-SwizzledSharedEncodingAttr::getTotalElemsPerThread(ArrayRef<int64_t> shape,
-                                                   Type eltTy) const {
-  llvm_unreachable("getElemsPerThread is not supported for shared layout");
-  return 0;
+SmallVector<unsigned> SwizzledSharedEncodingAttr::getCTAOrder() const {
+  return SmallVector<unsigned>(getCTALayout().getCTAOrder());
 }
-int32_t SwizzledSharedEncodingAttr::getAlignment() const {
-  return 16;
+SmallVector<unsigned> SwizzledSharedEncodingAttr::getCTASplitNum() const {
+  return SmallVector<unsigned>(getCTALayout().getCTASplitNum());
 }
 
-// TODO: move getElemsPerThread and getTotalElemsPerThread out of the common
-// Trait.
-SmallVector<unsigned>
-NVMMASharedEncodingAttr::getElemsPerThread(ArrayRef<int64_t> shape,
-                                           Type eltTy) const {
-  llvm_unreachable("getElemsPerThread is not supported for shared layout");
-  return SmallVector<unsigned>();
+int32_t NVMMASharedEncodingAttr::getAlignment() const { return 1024; }
+
+SmallVector<unsigned> NVMMASharedEncodingAttr::getCTAsPerCGA() const {
+  return SmallVector<unsigned>(getCTALayout().getCTAsPerCGA());
 }
-unsigned
-NVMMASharedEncodingAttr::getTotalElemsPerThread(ArrayRef<int64_t> shape,
-                                                   Type eltTy) const {
-  llvm_unreachable("getElemsPerThread is not supported for shared layout");
-  return 0;
+SmallVector<unsigned> NVMMASharedEncodingAttr::getCTAOrder() const {
+  return SmallVector<unsigned>(getCTALayout().getCTAOrder());
 }
-int32_t NVMMASharedEncodingAttr::getAlignment() const {
-  return 1024;
+SmallVector<unsigned> NVMMASharedEncodingAttr::getCTASplitNum() const {
+  return SmallVector<unsigned>(getCTALayout().getCTASplitNum());
 }
 
 SmallVector<unsigned>
@@ -1850,7 +1826,7 @@ void SliceEncodingAttr::print(mlir::AsmPrinter &printer) const {
 }
 
 //===----------------------------------------------------------------------===//
-// Shared encoding
+// SwizzledShared encoding
 //===----------------------------------------------------------------------===//
 
 Attribute SwizzledSharedEncodingAttr::parse(AsmParser &parser, Type type) {
@@ -1919,6 +1895,70 @@ void SwizzledSharedEncodingAttr::print(AsmPrinter &printer) const {
           << ", order = [" << getOrder() << "]";
   maybePrintCTALayout(getContext(), printer, getCTALayout(),
                       /*rank=*/getOrder().size());
+  printer << "}>";
+}
+
+//===----------------------------------------------------------------------===//
+// NVMMAShared encoding
+//===----------------------------------------------------------------------===//
+
+Attribute NVMMASharedEncodingAttr::parse(AsmParser &parser, Type type) {
+  if (parser.parseLess().failed())
+    return {};
+  // Parse the data as a dictionary
+  DictionaryAttr dict;
+  if (parser.parseAttribute(dict).failed())
+    return {};
+  if (parser.parseGreater().failed())
+    return {};
+
+  unsigned swizzlingByteWidth;
+  bool transposed;
+  std::optional<SmallVector<unsigned>> CTAsPerCGA;
+  std::optional<SmallVector<unsigned>> CTASplitNum;
+  std::optional<SmallVector<unsigned>> CTAOrder;
+  for (const NamedAttribute &attr : dict) {
+    if (attr.getName() == "swizzlingByteWidth") {
+      if (parseUInt(parser, attr, swizzlingByteWidth, "swizzlingByteWidth")
+              .failed())
+        return {};
+    } else if (attr.getName() == "transposed") {
+      if (parseBool(parser, attr, transposed, "transposed").failed())
+        return {};
+    } else if (attr.getName() == "CTAsPerCGA") {
+      if (parseIntArrayAttr(parser, attr, CTAsPerCGA.emplace(), "CTAsPerCGA")
+              .failed())
+        return {};
+    } else if (attr.getName() == "CTASplitNum") {
+      if (parseIntArrayAttr(parser, attr, CTASplitNum.emplace(), "CTASplitNum")
+              .failed())
+        return {};
+    } else if (attr.getName() == "CTAOrder") {
+      if (parseIntArrayAttr(parser, attr, CTAOrder.emplace(), "CTAOrder")
+              .failed())
+        return {};
+    } else {
+      parser.emitError(parser.getNameLoc(), "unexpected key: ")
+          << attr.getName().strref();
+      return {};
+    }
+  }
+
+  std::optional<CTALayoutAttr> CTALayout = getCTALayoutOrError(
+      parser, CTAsPerCGA, CTASplitNum, CTAOrder, /*rank=*/2);
+  if (!CTALayout.has_value())
+    return {};
+
+  return parser.getChecked<NVMMASharedEncodingAttr>(
+      parser.getContext(), swizzlingByteWidth, transposed, *CTALayout);
+}
+
+void NVMMASharedEncodingAttr::print(AsmPrinter &printer) const {
+  printer << "<{"
+          << "swizzlingByteWidth = " << getSwizzlingByteWidth() //
+          << ", transposed = " << getTransposed();
+  maybePrintCTALayout(getContext(), printer, getCTALayout(),
+                      /*rank=*/2);
   printer << "}>";
 }
 
@@ -2436,8 +2476,7 @@ public:
     if (auto mmaAttr = mlir::dyn_cast<MmaEncodingTrait>(attr)) {
       os << "mma";
       return AliasResult::FinalAlias;
-    } else if (auto sharedAttr =
-                   mlir::dyn_cast<SwizzledSharedEncodingAttr>(attr)) {
+    } else if (auto sharedAttr = mlir::dyn_cast<SharedEncodingTrait>(attr)) {
       os << "shared";
       return AliasResult::FinalAlias;
     } else if (auto blockedAttr = mlir::dyn_cast<BlockedEncodingAttr>(attr)) {
@@ -2547,6 +2586,19 @@ struct TritonGPUInferLayoutInterface
       return success();
     }
 
+    if (auto enc = mlir::dyn_cast<NVMMASharedEncodingAttr>(operandEncoding)) {
+      if (order != ArrayRef<int32_t>({1, 0})) {
+        return failure();
+      }
+      FailureOr<CTALayoutAttr> ctaLayout = permuteCTALayout(enc.getCTALayout());
+      if (failed(ctaLayout)) {
+        return failure();
+      }
+      resultEncoding = NVMMASharedEncodingAttr::get(
+          ctx, enc.getSwizzlingByteWidth(), !enc.getTransposed(), *ctaLayout);
+      return success();
+    }
+
     if (auto enc = mlir::dyn_cast<BlockedEncodingAttr>(operandEncoding)) {
       auto n = order.size();
       if (enc.getSizePerThread().size() != n ||
@@ -2604,7 +2656,7 @@ struct TritonGPUInferLayoutInterface
     auto mmaRetEncoding = mlir::dyn_cast<NvidiaMmaEncodingAttr>(retEncoding);
     if (mmaRetEncoding && mmaRetEncoding.isHopper()) {
       auto dotOpEnc = mlir::dyn_cast<DotOperandEncodingAttr>(operandEncoding);
-      if (!mlir::isa<SwizzledSharedEncodingAttr>(operandEncoding) &&
+      if (!mlir::isa<NVMMASharedEncodingAttr>(operandEncoding) &&
           !(opIdx == 0 && dotOpEnc && dotOpEnc.getOpIdx() == 0 &&
             mlir::isa<NvidiaMmaEncodingAttr>(dotOpEnc.getParent()))) {
         return emitOptionalError(

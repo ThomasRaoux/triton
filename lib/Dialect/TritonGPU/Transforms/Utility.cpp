@@ -284,7 +284,7 @@ std::string GraphLayoutMarker::getColor(const Type &type) const {
       return "lightslateblue";
     else if (isa<triton::gpu::DotOperandEncodingAttr>(layout))
       return "orange";
-    else if (isa<triton::gpu::SwizzledSharedEncodingAttr>(layout))
+    else if (isa<triton::gpu::SharedEncodingTrait>(layout))
       return "orangered";
     else {
       llvm::report_fatal_error("Unrecognized layout");
@@ -998,7 +998,10 @@ getSharedEncIfAllUsersAreDotEnc(Value val, bool &incompatible) {
             dyn_cast<triton::gpu::MemDescType>(user->getResult(0).getType())) {
       // First time we find a shared encoding in the chain, save it and try to
       // use it if it is compatible with the other users.
-      tempAttr = cast<ttg::SwizzledSharedEncodingAttr>(memDesc.getEncoding());
+      tempAttr =
+          dyn_cast<ttg::SwizzledSharedEncodingAttr>(memDesc.getEncoding());
+      if (!tempAttr)
+        return std::nullopt;
       if (!getSharedEncIfAllUsersAreDotEnc(user->getResult(0), incompatible)
                .has_value())
         return std::nullopt;

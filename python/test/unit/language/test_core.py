@@ -5624,12 +5624,12 @@ def test_convert2d(M, N, src_layout, interm_layout, dst_layout, dtype, device, t
     layouts = f"""
     #src = {src_layout}
     #dst = {dst_layout}
-    #smem = #ttg.swizzled_shared_memory
+    #smem = #ttg.shared_memory
     """ if interm_layout is None else f"""
     #src = {src_layout}
     #interm = {interm_layout}
     #dst = {dst_layout}
-    #smem = #ttg.swizzled_shared_memory
+    #smem = #ttg.shared_memory
     """
 
     conversion = f"""
@@ -5703,7 +5703,7 @@ def test_local_load_store(M, N, K, dist_layout, shared_layout, device, tmp_path:
     layouts = f"""
     #dist = {dist_layout}
     #shared = {shared_layout}
-    #smem = #ttg.swizzled_shared_memory
+    #smem = #ttg.shared_memory
     """
     ir = layouts + f"""
   module attributes {{"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = {THREADS_PER_WARP} : i32}} {{
@@ -5795,7 +5795,7 @@ def test_local_load_store_mma(M, N, mma_layout, shared_layout, device, tmp_path:
     layouts = f"""
     #dist = {mma_layout}
     #shared = {shared_layout}
-    #smem = #ttg.swizzled_shared_memory
+    #smem = #ttg.shared_memory
     """
     ir = layouts + f"""
   module attributes {{"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = {num_warps} : i32, "ttg.threads-per-warp" = {THREADS_PER_WARP} : i32}} {{
@@ -6027,7 +6027,7 @@ def test_convert_warp_local(M, N, src_layout, dst_layout, dtype, device, tmp_pat
     layouts = f"""
     #src = {src_layout}
     #dst = {dst_layout}
-    #smem = #ttg.swizzled_shared_memory
+    #smem = #ttg.shared_memory
     """
 
     conversion = f"""

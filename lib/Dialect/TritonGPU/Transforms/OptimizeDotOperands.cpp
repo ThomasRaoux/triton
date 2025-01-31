@@ -331,8 +331,7 @@ public:
       return failure();
 
     MemDescType allocType = allocOp.getType();
-    auto allocEncoding =
-        cast<SwizzledSharedEncodingAttr>(allocType.getEncoding());
+    auto allocEncoding = cast<NVMMASharedEncodingAttr>(allocType.getEncoding());
     RankedTensorType srcTy = trans.getSrc().getType();
 
     // MMAv3 with transpose only supports f16 and bf16.  Fall back to MMAv3
@@ -386,7 +385,7 @@ struct MMAV3UseRegOperand
       return cast<TensorOrMemDesc>(v.getType()).getEncoding();
     };
 
-    if (!isa<SwizzledSharedEncodingAttr>(getEncoding(dotOp.getOperand(0))))
+    if (!isa<NVMMASharedEncodingAttr>(getEncoding(dotOp.getOperand(0))))
       return failure();
     auto srcEnc = dyn_cast<NvidiaMmaEncodingAttr>(getEncoding(alloc.getSrc()));
     auto dstEnc =
@@ -445,7 +444,7 @@ struct MMAV3HoistLayoutConversion
       return cast<TensorOrMemDesc>(v.getType()).getEncoding();
     };
 
-    if (!isa<SwizzledSharedEncodingAttr>(getEncoding(dotOp.getOperand(0))))
+    if (!isa<NVMMASharedEncodingAttr>(getEncoding(dotOp.getOperand(0))))
       return rewriter.notifyMatchFailure(
           dotOp, "requires Shared encoding for operand A");
 
