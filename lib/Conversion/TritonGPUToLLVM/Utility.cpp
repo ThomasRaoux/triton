@@ -253,8 +253,8 @@ Value getSmemVecAddr(const LinearLayout &regLayout,
                      .second;
   } else { // Case 2 -> rank-reduced swizzling
     assert(rank >= 2 && "Swizzling only applies to tensors with rank >= 2");
-    assert(!sharedEnc.getHasLeadingOffset() &&
-           "Leading offsets are not supported for sliced tensors");
+   // assert(!sharedEnc.getHasLeadingOffset() &&
+   //        "Leading offsets are not supported for sliced tensors");
     // We define both tensor offsets and shared memory offsets:
     //
     //   - Tensor offsets: Relative offsets within a given tensor.

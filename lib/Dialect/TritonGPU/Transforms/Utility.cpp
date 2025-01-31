@@ -1034,13 +1034,15 @@ MMALoadType getMMALoadType(Operation *loadOp) {
 
   if (auto alloc = dyn_cast<ttg::LocalAllocOp>(*loadOp->getUsers().begin())) {
     auto sharedEnc =
-        cast<ttg::SwizzledSharedEncodingAttr>(alloc.getType().getEncoding());
+        dyn_cast<ttg::NVMMASharedEncodingAttr>(alloc.getType().getEncoding());
 
-    if (!sharedEnc.getHasLeadingOffset())
+    if (!sharedEnc)
       return MMALoadType::DoNotPipeline;
 
     // MMA V3 case.
-    auto newOrder = sharedEnc.getOrder();
+    SmallVector<unsigned> newOrder = sharedEnc.getTransposed()
+                                         ? SmallVector<unsigned>({0, 1})
+                                         : SmallVector<unsigned>({1, 0});
     auto ty = cast<RankedTensorType>(loadOp->getResultTypes()[0]);
     auto oldOrder = ttg::getOrder(ty.getEncoding());
 

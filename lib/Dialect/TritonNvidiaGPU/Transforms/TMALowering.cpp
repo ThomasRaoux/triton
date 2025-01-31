@@ -34,7 +34,7 @@ lowerTMALoad(Operation *op, RankedTensorType tensorType, Value desc,
   Attribute encoding = SwizzledSharedEncodingAttr::get(
       tensorType.getContext(), 1, 1, 1, order, ctaLayout);
   if (tensorType.getRank() > 1) {
-    encoding = SwizzledSharedEncodingAttr::get(
+    encoding = NVMMASharedEncodingAttr::get(
         tensorType.getContext(), tensorType.getShape(), order, ctaLayout,
         tensorType.getElementType());
   }
@@ -112,7 +112,7 @@ static void lowerTMAStore(Operation *op, mlir::TypedValue<RankedTensorType> src,
   Attribute encoding = SwizzledSharedEncodingAttr::get(
       tensorType.getContext(), 1, 1, 1, order, ctaLayout);
   if (tensorType.getRank() > 1) {
-    encoding = SwizzledSharedEncodingAttr::get(
+    encoding = NVMMASharedEncodingAttr::get(
         tensorType.getContext(), tensorType.getShape(), order, ctaLayout,
         tensorType.getElementType());
   }

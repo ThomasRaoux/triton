@@ -353,7 +353,7 @@ public:
     // TODO(Qingyi): need to check whether the CTALayout of innerCvtEnc should
     // be used here. For tests where numCTAs = 1, this is not a problem since
     // all CTALayouts are the same.
-    auto newInnerEnc = SwizzledSharedEncodingAttr::get(
+    auto newInnerEnc = NVMMASharedEncodingAttr::get(
         getContext(), srcTy.getShape(), newInnerCvtOrder,
         allocEncoding.getCTALayout(), srcTy.getElementType());
 

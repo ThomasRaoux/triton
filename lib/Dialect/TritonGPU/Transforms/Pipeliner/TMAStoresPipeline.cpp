@@ -41,7 +41,7 @@ static Value createAlloc(scf::ForOp &forOp, const TMAStore &store) {
   Attribute encoding = ttg::SwizzledSharedEncodingAttr::get(
       ty.getContext(), 1, 1, 1, order, ctaLayout);
   if (ty.getRank() > 1) {
-    encoding = ttg::SwizzledSharedEncodingAttr::get(
+    encoding = ttg::NVMMASharedEncodingAttr::get(
         ty.getContext(), ty.getShape(), order, ctaLayout, ty.getElementType());
   }
   Attribute sharedMemorySpace =

@@ -889,9 +889,25 @@ SwizzledSharedEncodingAttr::getTotalElemsPerThread(ArrayRef<int64_t> shape,
   return 0;
 }
 int32_t SwizzledSharedEncodingAttr::getAlignment() const {
-  if (getHasLeadingOffset())
-    return 128 * getMaxPhase();
   return 16;
+}
+
+// TODO: move getElemsPerThread and getTotalElemsPerThread out of the common
+// Trait.
+SmallVector<unsigned>
+NVMMASharedEncodingAttr::getElemsPerThread(ArrayRef<int64_t> shape,
+                                           Type eltTy) const {
+  llvm_unreachable("getElemsPerThread is not supported for shared layout");
+  return SmallVector<unsigned>();
+}
+unsigned
+NVMMASharedEncodingAttr::getTotalElemsPerThread(ArrayRef<int64_t> shape,
+                                                   Type eltTy) const {
+  llvm_unreachable("getElemsPerThread is not supported for shared layout");
+  return 0;
+}
+int32_t NVMMASharedEncodingAttr::getAlignment() const {
+  return 1024;
 }
 
 SmallVector<unsigned>
@@ -1854,8 +1870,6 @@ Attribute SwizzledSharedEncodingAttr::parse(AsmParser &parser, Type type) {
   std::optional<SmallVector<unsigned>> CTAsPerCGA;
   std::optional<SmallVector<unsigned>> CTASplitNum;
   std::optional<SmallVector<unsigned>> CTAOrder;
-  bool hasLeadingOffset = false;
-
   for (const NamedAttribute &attr : dict) {
     if (attr.getName() == "vec") {
       if (parseUInt(parser, attr, vec, "vec").failed())
@@ -1881,10 +1895,6 @@ Attribute SwizzledSharedEncodingAttr::parse(AsmParser &parser, Type type) {
       if (parseIntArrayAttr(parser, attr, CTAOrder.emplace(), "CTAOrder")
               .failed())
         return {};
-    } else if (attr.getName() == "hasLeadingOffset") {
-      if (parseBool(parser, attr, hasLeadingOffset, "hasLeadingOffset")
-              .failed())
-        return {};
     } else {
       parser.emitError(parser.getNameLoc(), "unexpected key: ")
           << attr.getName().strref();
@@ -1898,8 +1908,7 @@ Attribute SwizzledSharedEncodingAttr::parse(AsmParser &parser, Type type) {
     return {};
 
   return parser.getChecked<SwizzledSharedEncodingAttr>(
-      parser.getContext(), vec, perPhase, maxPhase, order, *CTALayout,
-      hasLeadingOffset);
+      parser.getContext(), vec, perPhase, maxPhase, order, *CTALayout);
 }
 
 void SwizzledSharedEncodingAttr::print(AsmPrinter &printer) const {
@@ -1910,7 +1919,7 @@ void SwizzledSharedEncodingAttr::print(AsmPrinter &printer) const {
           << ", order = [" << getOrder() << "]";
   maybePrintCTALayout(getContext(), printer, getCTALayout(),
                       /*rank=*/getOrder().size());
-  printer << ", hasLeadingOffset = " << getHasLeadingOffset() << "}>";
+  printer << "}>";
 }
 
 //===----------------------------------------------------------------------===//
@@ -2534,8 +2543,7 @@ struct TritonGPUInferLayoutInterface
       }
       resultEncoding = SwizzledSharedEncodingAttr::get(
           ctx, enc.getVec(), enc.getPerPhase(), enc.getMaxPhase(),
-          applyPermutation(invOrderUnsigned, enc.getOrder()), *ctaLayout,
-          enc.getHasLeadingOffset());
+          applyPermutation(invOrderUnsigned, enc.getOrder()), *ctaLayout);
       return success();
     }
 

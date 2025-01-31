@@ -164,7 +164,7 @@ static Value getSharedMemoryMMAOperand(Value v, mlir::PatternRewriter &rewriter,
   Attribute SharedMemorySpace =
       SharedMemorySpaceAttr::get(argType.getContext());
   auto CTALayout = getCTALayout(argType.getEncoding());
-  auto newLayout = SwizzledSharedEncodingAttr::get(
+  auto newLayout = NVMMASharedEncodingAttr::get(
       argType.getContext(), argType.getShape(), newOrder, CTALayout,
       argType.getElementType());
   auto newType = MemDescType::get(argType.getShape(), argType.getElementType(),

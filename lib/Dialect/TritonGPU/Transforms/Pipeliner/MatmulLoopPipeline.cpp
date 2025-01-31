@@ -37,7 +37,7 @@ namespace {
 
 struct LoadInfo {
   // Layout of the data in shared memory.
-  ttg::SwizzledSharedEncodingAttr sharedEncoding = nullptr;
+  ttg::SharedEncodingTrait sharedEncoding = nullptr;
   // Blocked encoding is used for loads not used by the dot.
   ttg::BlockedEncodingAttr blockedEncoding = nullptr;
   bool isMMAv3Shared = false;
@@ -351,7 +351,7 @@ getBlockedEncoding(tt::LoadOp loadOp, tt::ModuleAxisInfoAnalysis &axisInfo) {
                                        threadsPerWarp, ctaLayout);
 }
 
-static std::optional<ttg::SwizzledSharedEncodingAttr>
+static std::optional<ttg::SharedEncodingTrait>
 getSharedEncoding(Operation *loadOp, bool isTMALoad) {
   auto ty = cast<RankedTensorType>(loadOp->getResultTypes()[0]);
   auto ctaLayout = ttg::getCTALayout(ty.getEncoding());
@@ -371,7 +371,7 @@ getSharedEncoding(Operation *loadOp, bool isTMALoad) {
   if (isTMALoad) {
     // For TMA, the encoding compatible with it takes precedence over local
     // alloc created for the MMA operand.
-    return ttg::SwizzledSharedEncodingAttr::get(
+    return ttg::NVMMASharedEncodingAttr::get(
         ty.getContext(), ty.getShape(), order, ctaLayout, ty.getElementType());
   }
 
@@ -578,7 +578,7 @@ assignMemoryLayouts(scf::ForOp &forOp,
 
 // Create an allocation that can hold distance number of loadOp shapes.
 static Value createAlloc(scf::ForOp &forOp, Operation *loadOp,
-                         ttg::SwizzledSharedEncodingAttr sharedEnc,
+                         ttg::SharedEncodingTrait sharedEnc,
                          unsigned distance) {
   OpBuilder builder(forOp);
   Attribute sharedMemorySpace =

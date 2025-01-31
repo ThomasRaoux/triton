@@ -34,7 +34,7 @@ using ::mlir::triton::gpu::getShapePerCTA;
 using ::mlir::triton::gpu::getShapePerCTATile;
 using ::mlir::triton::gpu::MemDescType;
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
-using ::mlir::triton::gpu::SwizzledSharedEncodingAttr;
+using ::mlir::triton::gpu::NVMMASharedEncodingAttr;
 
 triton::nvgpu::WGMMAEltType getMmaRetType(Value d) {
   auto dTy = cast<RankedTensorType>(d.getType()).getElementType();
@@ -68,21 +68,9 @@ triton::nvgpu::WGMMAEltType getMmaOperandType(Value a, bool allowTF32) {
   }
 }
 
-int64_t getSwizzlingFromLayout(const SwizzledSharedEncodingAttr &layout,
+int64_t getSwizzlingFromLayout(const NVMMASharedEncodingAttr &layout,
                                uint32_t widthInByte) {
-  int perPhase = layout.getPerPhase();
-  int maxPhase = layout.getMaxPhase();
-  uint32_t swizzlingByteWidth = 0;
-  if (perPhase == 4 && maxPhase == 2) {
-    swizzlingByteWidth = 32;
-  } else if (perPhase == 2 && maxPhase == 4) {
-    swizzlingByteWidth = 64;
-  } else if (perPhase == 1 && maxPhase == 8) {
-    swizzlingByteWidth = 128;
-  } else {
-    llvm::report_fatal_error("Unsupported shared layout.");
-  }
-
+  uint32_t swizzlingByteWidth = layout.getSwizzlingByteWidth();
   // TODO[biaow]: remove it once we support swizzling size larger than matrix
   // width, which requires padding the matrix width to the swizzling size when
   // allocating shared memory.
@@ -127,14 +115,12 @@ mlir::triton::NVIDIA::DotOpMmaV3SmemLoader::DotOpMmaV3SmemLoader(
       instrShape(instrShape), elemBits(elementBitwidth) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   auto ty = cast<MemDescType>(tensor.getType());
-  auto sharedLayout = cast<SwizzledSharedEncodingAttr>(ty.getEncoding());
-  ord = sharedLayout.getOrder();
-  const int perPhase = sharedLayout.getPerPhase();
-  const int maxPhase = sharedLayout.getMaxPhase();
-  elemsPerSwizzlingRow = 128 * 8 / perPhase / elemBits;
+  auto sharedLayout = cast<NVMMASharedEncodingAttr>(ty.getEncoding());
+  const int swizzlingByteWidth = sharedLayout.getSwizzlingByteWidth();
+  elemsPerSwizzlingRow = (swizzlingByteWidth * 8) / elemBits;
   elemsPerSwizzlingRowVal = b.i32_val(elemsPerSwizzlingRow);
 
-  uint32_t widthInByte = shape[ord[0]] * elemBits / 8;
+  uint32_t widthInByte = shape[sharedLayout.getTransposed() ? 0 : 1] * elemBits / 8;
   int64_t swizzling = getSwizzlingFromLayout(sharedLayout, widthInByte);
 
   descriptor = createDescriptor(rewriter, loc, swizzling, shape[ord[1]]);
@@ -179,12 +165,11 @@ DotOpMmaV3SmemLoader loadA(const LLVMTypeConverter *typeConverter,
                            Value tensor, Value smemObjBase, Value thread) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   auto aTy = cast<triton::gpu::TensorOrMemDesc>(tensor.getType());
-  auto aSharedLayout = dyn_cast<SwizzledSharedEncodingAttr>(aTy.getEncoding());
+  auto aSharedLayout = dyn_cast<NVMMASharedEncodingAttr>(aTy.getEncoding());
   assert(aSharedLayout && "only support load dot operand from shared.");
   auto instrShape = mmaEncoding.getInstrShape();
   auto wpt = mmaEncoding.getWarpsPerCTA();
-  auto aOrd = aSharedLayout.getOrder();
-  bool transA = aOrd[0] == 0;
+  bool transA = aSharedLayout.getTransposed();
   auto shapePerCTA = getShapePerCTA(aTy);
 
   // The descriptor should be calculated based on the first warp of the
@@ -215,12 +200,11 @@ DotOpMmaV3SmemLoader loadB(const LLVMTypeConverter *typeConverter,
                            Value base, Value thread) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   auto bTy = cast<MemDescType>(tensor.getType());
-  auto bSharedLayout = cast<SwizzledSharedEncodingAttr>(bTy.getEncoding());
+  auto bSharedLayout = cast<NVMMASharedEncodingAttr>(bTy.getEncoding());
   assert(bSharedLayout && "only support load B from shared.");
   auto instrShape = mmaEncoding.getInstrShape();
   auto wpt = mmaEncoding.getWarpsPerCTA();
-  auto bOrd = bSharedLayout.getOrder();
-  bool transB = bOrd[0] == 1;
+  bool transB = bSharedLayout.getTransposed();
   auto shapePerCTA = triton::gpu::getShapePerCTA(bTy);
 
   Value warp = b.and_(b.udiv(thread, b.i32_val(32)), b.i32_val(0xFFFFFFFC));
@@ -366,11 +350,10 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   auto bTensorTy = cast<triton::gpu::TensorOrMemDesc>(b.getType());
   auto dTensorTy = cast<RankedTensorType>(d.getType());
   auto aSharedLayout =
-      dyn_cast<SwizzledSharedEncodingAttr>(aTensorTy.getEncoding());
+      dyn_cast<NVMMASharedEncodingAttr>(aTensorTy.getEncoding());
   auto bSharedLayout =
-      cast<SwizzledSharedEncodingAttr>(bTensorTy.getEncoding());
+      cast<NVMMASharedEncodingAttr>(bTensorTy.getEncoding());
   auto mmaEncoding = cast<NvidiaMmaEncodingAttr>(dTensorTy.getEncoding());
-  auto bOrd = bSharedLayout.getOrder();
   bool transA = false;
   Value baseA;
   Value baseB;
@@ -385,10 +368,9 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
               typeConverter->convertType(bTensorTy.getElementType()), rewriter)
               .getBase();
   if (aSharedLayout) {
-    auto aOrd = aSharedLayout.getOrder();
-    transA = aOrd[0] == 0;
+    transA = aSharedLayout.getTransposed();
   }
-  bool transB = bOrd[0] == 1;
+  bool transB = bSharedLayout.getTransposed();
   auto dShapePerCTA = getShapePerCTA(dTensorTy);
   auto instrShape = mmaEncoding.getInstrShape();
   auto accSize = 2 * (instrShape[1] / 4);
@@ -517,9 +499,9 @@ LogicalResult convertWGMMA(triton::nvidia_gpu::WarpGroupDotOp op,
                            ConversionPatternRewriter &rewriter, Value thread) {
   auto AEnc = op.getA().getType().getEncoding();
   auto BEnc = op.getB().getType().getEncoding();
-  assert(mlir::isa<SwizzledSharedEncodingAttr>(AEnc) ||
+  assert(mlir::isa<NVMMASharedEncodingAttr>(AEnc) ||
          mlir::isa<DotOperandEncodingAttr>(AEnc));
-  assert(mlir::isa<SwizzledSharedEncodingAttr>(BEnc) &&
+  assert(mlir::isa<NVMMASharedEncodingAttr>(BEnc) &&
          "Operand B should use Shared layout.");
   return convertDot(typeConverter, rewriter, op.getLoc(), op.getOperation(),  //
                     op.getA(), op.getB(), op.getC(), op.getD(), op.getUseC(), //
