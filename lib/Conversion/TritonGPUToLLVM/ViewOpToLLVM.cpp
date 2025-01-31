@@ -279,7 +279,7 @@ struct MemDescTransOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op->getLoc();
     auto resultTy = cast<TensorOrMemDesc>(op.getType());
-    auto enc = cast<SharedEncodingAttr>(resultTy.getEncoding());
+    auto enc = cast<SwizzledSharedEncodingAttr>(resultTy.getEncoding());
     auto llvmElemTy =
         getTypeConverter()->convertType(resultTy.getElementType());
     auto srcSmemObj = getSharedMemoryObjectFromStruct(loc, adaptor.getSrc(),

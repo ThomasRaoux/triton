@@ -118,8 +118,9 @@ LinearLayout combineCtaCgaWithShape(LinearLayout ctaLayout,
   return ret;
 }
 
-LinearLayout sharedToLinearLayoutNoLeadingOffset(ArrayRef<int64_t> shape,
-                                                 SharedEncodingAttr shared) {
+LinearLayout
+sharedToLinearLayoutNoLeadingOffset(ArrayRef<int64_t> shape,
+                                    SwizzledSharedEncodingAttr shared) {
   assert(!shared.getHasLeadingOffset());
 
   MLIRContext *ctx = shared.getContext();
@@ -168,10 +169,10 @@ LinearLayout sharedToLinearLayoutNoLeadingOffset(ArrayRef<int64_t> shape,
 
 } // namespace
 
-LinearLayout sharedToLinearLayoutLeadingOffset(ArrayRef<int64_t> shape,
-                                               SharedEncodingAttr shared,
-                                               int32_t elemBitWidth,
-                                               bool disableSwizzle) {
+LinearLayout
+sharedToLinearLayoutLeadingOffset(ArrayRef<int64_t> shape,
+                                  SwizzledSharedEncodingAttr shared,
+                                  int32_t elemBitWidth, bool disableSwizzle) {
   assert(shared.getHasLeadingOffset());
 
   MLIRContext *ctx = shared.getContext();
@@ -888,7 +889,7 @@ TritonGPUDialect::toLinearLayout(ArrayRef<int64_t> shape, Attribute layout,
   if (auto distributed = dyn_cast<DistributedEncodingTrait>(layout)) {
     result = distributed.toLinearLayout(shape);
   } else {
-    auto shared = dyn_cast<SharedEncodingAttr>(layout);
+    auto shared = dyn_cast<SwizzledSharedEncodingAttr>(layout);
     if (shared.getHasLeadingOffset()) {
       assert(elemBitWidth.has_value());
       result = sharedToLinearLayoutLeadingOffset(shape, shared, *elemBitWidth);

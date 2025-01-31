@@ -150,8 +150,17 @@ addition, if there's only one CTA per CGA, then Triton canonicalizes CTAOrder to
 // Shared Layout Encoding
 //===----------------------------------------------------------------------===//
 
-def SharedEncodingAttr : TritonGPU_Attr<"SharedEncoding", "shared_encoding"> {
-  let mnemonic = "shared";
+def SharedEncodingTrait : AttrInterface<"SharedEncodingTrait"> {
+  let cppNamespace = "::mlir::triton::gpu";
+
+  let description = [{
+    Common trait describing shared memory.
+  }];
+}
+
+def SwizzledSharedEncodingAttr :
+  TritonGPU_Attr<"SwizzledSharedEncoding", "swizzled_shared_encoding", [SharedEncodingTrait]> {
+  let mnemonic = "swizzled_shared";
 
   let description = [{
 An encoding for tensors whose elements may be simultaneously accessed by
@@ -267,7 +276,7 @@ compared to 1*64 when the hasLeadingOffset is false.
     }]>,
 
     // TODO(jlebar): This should not be an overload of
-    // SharedEncodingAttr::get().  It's misleading, because it does a bunch of
+    // SwizzledSharedEncodingAttr::get().  It's misleading, because it does a bunch of
     // nontrivial work based on the given dotOpEnc.
     AttrBuilder<(ins "DotOperandEncodingAttr":$dotOpEnc,
                      "ArrayRef<int64_t>":$shape,

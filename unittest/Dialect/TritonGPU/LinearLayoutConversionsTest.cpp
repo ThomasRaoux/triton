@@ -89,13 +89,15 @@ public:
     return SliceEncodingAttr::get(&ctx, dim, parent);
   }
 
-  SharedEncodingAttr shared(unsigned vec, unsigned perPhase, unsigned maxPhase,
-                            bool hasLeadingOffset, ArrayRef<unsigned> cpg,
-                            ArrayRef<unsigned> cSplit, ArrayRef<unsigned> ord,
-                            ArrayRef<unsigned> cOrd) {
-    return SharedEncodingAttr::get(&ctx, vec, perPhase, maxPhase, ord,
-                                   CTALayoutAttr::get(&ctx, cpg, cSplit, cOrd),
-                                   hasLeadingOffset);
+  SwizzledSharedEncodingAttr shared(unsigned vec, unsigned perPhase,
+                                    unsigned maxPhase, bool hasLeadingOffset,
+                                    ArrayRef<unsigned> cpg,
+                                    ArrayRef<unsigned> cSplit,
+                                    ArrayRef<unsigned> ord,
+                                    ArrayRef<unsigned> cOrd) {
+    return SwizzledSharedEncodingAttr::get(
+        &ctx, vec, perPhase, maxPhase, ord,
+        CTALayoutAttr::get(&ctx, cpg, cSplit, cOrd), hasLeadingOffset);
   }
 
   StringAttr S(StringRef str) { return StringAttr::get(&ctx, str); }

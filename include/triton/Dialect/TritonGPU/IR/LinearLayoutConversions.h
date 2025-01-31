@@ -9,7 +9,7 @@
 #include "triton/Tools/LinearLayout.h"
 
 namespace mlir::triton::gpu {
-class SharedEncodingAttr;
+class SwizzledSharedEncodingAttr;
 
 // - BlockedEncodingAttrs have the following input dimensions.
 //
@@ -18,7 +18,8 @@ class SharedEncodingAttr;
 //   "warp": warps in a block/CTA
 //   "block": blocks in a cluster
 //
-// - An n-dimensional SharedEncodingAttr has the following input dimensions.
+// - An n-dimensional SwizzledSharedEncodingAttr has the following input
+// dimensions.
 //
 //   "offset": the n'th element in the allocation, within a particular thread
 //      block (i.e. within a CTA).  The offset is measured in elements, not
@@ -47,10 +48,9 @@ LinearLayout toLinearLayout(ArrayRef<int64_t> shape, Attribute layout,
 //
 // If `disableSwizzle` is set, then the resulting layout does not include
 // swizzling.
-LinearLayout sharedToLinearLayoutLeadingOffset(ArrayRef<int64_t> shape,
-                                               SharedEncodingAttr shared,
-                                               int32_t elemBitWidth,
-                                               bool disableSwizzle = false);
+LinearLayout sharedToLinearLayoutLeadingOffset(
+    ArrayRef<int64_t> shape, SwizzledSharedEncodingAttr shared,
+    int32_t elemBitWidth, bool disableSwizzle = false);
 
 // Given a linear layout where the input dimensions contain a "block" dimension,
 // this method sets the "block" dimension to 0 and removes the corresponding

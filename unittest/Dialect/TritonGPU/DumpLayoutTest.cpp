@@ -21,13 +21,15 @@ public:
         &ctx, spt, tpw, wpb, ord, CTALayoutAttr::get(&ctx, cpg, cSplit, cOrd));
   }
 
-  SharedEncodingAttr shared(unsigned vec, unsigned perPhase, unsigned maxPhase,
-                            bool hasLeadingOffset, ArrayRef<unsigned> cpg,
-                            ArrayRef<unsigned> cSplit, ArrayRef<unsigned> ord,
-                            ArrayRef<unsigned> cOrd) {
-    return SharedEncodingAttr::get(&ctx, vec, perPhase, maxPhase, ord,
-                                   CTALayoutAttr::get(&ctx, cpg, cSplit, cOrd),
-                                   hasLeadingOffset);
+  SwizzledSharedEncodingAttr shared(unsigned vec, unsigned perPhase,
+                                    unsigned maxPhase, bool hasLeadingOffset,
+                                    ArrayRef<unsigned> cpg,
+                                    ArrayRef<unsigned> cSplit,
+                                    ArrayRef<unsigned> ord,
+                                    ArrayRef<unsigned> cOrd) {
+    return SwizzledSharedEncodingAttr::get(
+        &ctx, vec, perPhase, maxPhase, ord,
+        CTALayoutAttr::get(&ctx, cpg, cSplit, cOrd), hasLeadingOffset);
   }
 
   void assertSameStr(const std::string &refStr, const std::string &output) {
