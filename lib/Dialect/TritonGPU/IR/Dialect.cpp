@@ -422,9 +422,6 @@ unsigned getNumWarpsPerCTA(Attribute layout) {
     warpsPerCTA = wmmaLayout.getWarpsPerCTA();
   else if (auto dotLayout = dyn_cast<DotOperandEncodingAttr>(layout))
     warpsPerCTA = dotLayout.getWarpsPerCTA();
-  else if (auto sharedLayout = dyn_cast<SwizzledSharedEncodingAttr>(layout))
-    llvm::report_fatal_error(
-        "Cannot get numWarps from SwizzledSharedEncodingAttr");
   else
     llvm::report_fatal_error("Unimplemented usage of getNumWarpsPerCTA");
   return product<unsigned>(warpsPerCTA);
@@ -3035,7 +3032,7 @@ struct TritonGPUVerifyTensorLayoutInterface
   LogicalResult verifyTensorLayout(
       Attribute layout, RankedTensorType rankedTy, ModuleOp module,
       function_ref<InFlightDiagnostic()> makeErr) const override {
-    if (isa<triton::gpu::SwizzledSharedEncodingAttr>(layout))
+    if (isa<triton::gpu::SharedEncodingTrait>(layout))
       return makeErr() << "Shared layout is not allowed on tensor type.";
     // TODO(jlebar): Currently this only checks blocked layouts, but other
     // layouts also have invariants!
@@ -3393,7 +3390,7 @@ std::string mlir::triton::gpu::getLayoutStr(RankedTensorType tensorType,
 
   // tensorType is needed later on (e.g., getDimSize(j)), so we still have to
   // pass it as a param
-  if (auto sharedLayout = mlir::dyn_cast<SwizzledSharedEncodingAttr>(layout)) {
+  if (mlir::isa<SharedEncodingTrait>(layout)) {
     return getSharedLayoutStr(tensorType, useHWPointOfView);
   } else if (auto distributedLayout =
                  mlir::dyn_cast<DistributedEncodingTrait>(layout)) {

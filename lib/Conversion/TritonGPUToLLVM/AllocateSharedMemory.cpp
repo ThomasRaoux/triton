@@ -44,7 +44,7 @@ struct AllocateSharedMemory
                     IntegerAttr::get(IntegerType::get(ctx, 32), offset));
       });
     });
-    mod->setAttr("ttg.shared",
+    mod->setAttr("ttg.swizzled_shared",
                  mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
                                         allocation.getSharedMemorySize()));
   }

@@ -282,8 +282,9 @@ public:
     // let the compilation finish so that we can raise an exception in python
     // for auto-tuner.
     if (totalMemorySize > 0) {
-      assert(mod->getAttr("ttg.shared") != nullptr &&
-             cast<IntegerAttr>(mod->getAttr("ttg.shared")).getInt() != 0 &&
+      assert(mod->getAttr("ttg.swizzled_shared") != nullptr &&
+             cast<IntegerAttr>(mod->getAttr("ttg.swizzled_shared")).getInt() !=
+                 0 &&
              "Shared memory is required for allocation of Tensor Core memory.");
     }
 

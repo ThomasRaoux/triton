@@ -359,7 +359,7 @@ class HIPBackend(BaseBackend):
         llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3, options.arch, '', [], options.enable_fp_fusion)
 
         # Get some metadata
-        metadata["shared"] = src.get_int_attr("ttg.shared")
+        metadata["shared"] = src.get_int_attr("ttg.swizzled_shared")
 
         amd.cleanup_bitcode_metadata(llvm_mod)
         # Disable inlining of print related functions,

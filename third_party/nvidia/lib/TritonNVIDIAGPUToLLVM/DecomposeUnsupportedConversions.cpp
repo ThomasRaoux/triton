@@ -35,8 +35,7 @@ public:
     auto dstDotOp = dyn_cast<triton::gpu::DotOperandEncodingAttr>(
         op.getType().getEncoding());
     MemDescType srcType = op.getSrc().getType();
-    auto sharedEncoding =
-        dyn_cast<SwizzledSharedEncodingAttr>(srcType.getEncoding());
+    auto sharedEncoding = dyn_cast<SharedEncodingTrait>(srcType.getEncoding());
     if (!dstDotOp || !sharedEncoding || !sharedEncoding.getHasLeadingOffset())
       return failure();
     RankedTensorType type = op.getType();

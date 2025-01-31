@@ -10,7 +10,6 @@ using namespace mlir::triton;
 
 using ::mlir::triton::gpu::getTotalElemsPerThread;
 using ::mlir::triton::gpu::MemDescType;
-using ::mlir::triton::gpu::SwizzledSharedEncodingAttr;
 
 TritonGPUToLLVMTypeConverter::TritonGPUToLLVMTypeConverter(
     MLIRContext *ctx, LowerToLLVMOptions &options,

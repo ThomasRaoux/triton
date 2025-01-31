@@ -165,8 +165,8 @@ unsigned defaultAllocationAnalysisScratchSizeFn(Operation *op) {
     auto dstTy = cvtLayout.getType();
     auto srcEncoding = srcTy.getEncoding();
     auto dstEncoding = dstTy.getEncoding();
-    if (mlir::isa<gpu::SwizzledSharedEncodingAttr>(srcEncoding) ||
-        mlir::isa<gpu::SwizzledSharedEncodingAttr>(dstEncoding)) {
+    if (mlir::isa<gpu::SharedEncodingTrait>(srcEncoding) ||
+        mlir::isa<gpu::SharedEncodingTrait>(dstEncoding)) {
       // Conversions from/to shared memory do not need scratch memory.
       return 0;
     }
