@@ -116,14 +116,15 @@ mlir::triton::NVIDIA::DotOpMmaV3SmemLoader::DotOpMmaV3SmemLoader(
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   auto ty = cast<MemDescType>(tensor.getType());
   auto sharedLayout = cast<NVMMASharedEncodingAttr>(ty.getEncoding());
+  fastMovingDim = sharedLayout.getTransposed() ? 0 : 1;
   const int swizzlingByteWidth = sharedLayout.getSwizzlingByteWidth();
   elemsPerSwizzlingRow = (swizzlingByteWidth * 8) / elemBits;
   elemsPerSwizzlingRowVal = b.i32_val(elemsPerSwizzlingRow);
 
-  uint32_t widthInByte = shape[trans ? 0 : 1] * elemBits / 8;
+  uint32_t widthInByte = shape[fastMovingDim] * elemBits / 8;
   int64_t swizzling = getSwizzlingFromLayout(sharedLayout, widthInByte);
 
-  descriptor = createDescriptor(rewriter, loc, swizzling, shape[trans ? 0 : 1]);
+  descriptor = createDescriptor(rewriter, loc, swizzling, shape[1 - fastMovingDim]);
 }
 
 Value mlir::triton::NVIDIA::DotOpMmaV3SmemLoader::smemLoad(
@@ -137,7 +138,7 @@ Value mlir::triton::NVIDIA::DotOpMmaV3SmemLoader::smemLoad(
   }
   Value leading_offset =
       tb.mul(tb.udiv(k, elemsPerSwizzlingRowVal),
-             tb.i32_val(shape[trans ? 0 : 1] * elemsPerSwizzlingRow));
+             tb.i32_val(shape[1-fastMovingDim] * elemsPerSwizzlingRow));
   Value stride_offset = tb.mul(m, elemsPerSwizzlingRowVal);
   Value offset = tb.add(tb.add(leading_offset, stride_offset),
                         tb.urem(k, elemsPerSwizzlingRowVal));
@@ -369,7 +370,7 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   if (aSharedLayout) {
     transA = aSharedLayout.getTransposed();
   }
-  bool transB = bSharedLayout.getTransposed();
+  bool transB = !bSharedLayout.getTransposed();
   auto dShapePerCTA = getShapePerCTA(dTensorTy);
   auto instrShape = mmaEncoding.getInstrShape();
   auto accSize = 2 * (instrShape[1] / 4);

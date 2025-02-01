@@ -56,6 +56,7 @@ private:
   Value warpId;
   int dimWpt;
   bool trans;
+  int fastMovingDim;
   Value elemsPerSwizzlingRowVal;
   SmallVector<unsigned int> instrShape;
   int elemsPerSwizzlingRow;
