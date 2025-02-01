@@ -45,7 +45,7 @@ tt.func @tma_gather_simple(%arg0: !tt.ptr<i8>, %arg1: !ttg.memdesc<1xi64, #share
   //
   // [ t[0, 0:128], t[1: 0:128], ..., t[31: 0:128], t[0, 128:256], ..., t[31: 128:256] ].
   //
-  // This is captured by the `hasLeadingOffset=true` smem layout.
+  // This is captured by the `nvmma_shared` smem layout.
   //
   // Each warp will handle 4 consecutive row segments at a time, or 4*128 bytes
   // per transaction, thus reading:

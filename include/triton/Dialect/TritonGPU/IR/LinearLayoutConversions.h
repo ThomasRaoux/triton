@@ -38,13 +38,13 @@ class NVMMASharedEncodingAttr;
 //
 // elemBitWidth is the bit width of one element in the layout.  This is required
 // to compute the linear layout for MMAv3 (i.e. Hopper) shared layouts (i.e.
-// shared layouts with hasLeadingOffset == true) but is otherwise unused.
+// shared layouts with nvmma_shared layout) but is otherwise unused.
 //
 // Returns std::nullopt if the given layout can't be converted to an LL.
 LinearLayout toLinearLayout(ArrayRef<int64_t> shape, Attribute layout,
                             std::optional<int32_t> elemBitWidth = std::nullopt);
 
-// Convert the shared encoding of a tensor with `hasLeadingOffset=true` to a
+// Convert the shared encoding of a tensor with `nvmma_shared` layout to a
 // LinearLayout that maps from a linear shared memory offset to tensor index.
 //
 // If `disableSwizzle` is set, then the resulting layout does not include

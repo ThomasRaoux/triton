@@ -1409,8 +1409,8 @@ static LogicalResult iterateGatherScatterIndices(
   ArrayRef<int64_t> allocShape = smemType.getAllocShape();
   if (allocShape.size() < 2 || smemType.getShape() != allocShape.take_back(2))
     return op->emitError("memdesc shape must match alloc shape");
-  // `hasLeadingOffset` means the core matrix tiles are placed next to each
-  // other in shared memory, which lines up with how `gather4` loads data.
+  // `NVMMASharedEncodingAttr` means the core matrix tiles are placed next to
+  // each other in shared memory, which lines up with how `gather4` loads data.
   if (!isa<NVMMASharedEncodingAttr>(smemType.getEncoding()))
     return op->emitError("requires dst encoding NVMMASharedEncodingAttr");
   Type llvmElemTy = typeConverter.convertType(smemType.getElementType());
