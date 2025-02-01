@@ -349,7 +349,7 @@ void convertDot(const LLVMTypeConverter *typeConverter,
     aInTmem = false;
   }
   auto bSharedLayout = cast<NVMMASharedEncodingAttr>(bTensorTy.getEncoding());
-  bool transB = bSharedLayout.getTransposed();
+  bool transB = !bSharedLayout.getTransposed();
   Value baseA =
       getSharedMemoryObjectFromStruct(
           loc, loadedA, typeConverter->convertType(aTensorTy.getElementType()),
@@ -494,7 +494,7 @@ struct TCGen5MMAScaledOpConversion
       aInTmem = false;
     }
     auto bSharedLayout = cast<NVMMASharedEncodingAttr>(bTensorTy.getEncoding());
-    bool transB = bSharedLayout.getTransposed();
+    bool transB = !bSharedLayout.getTransposed();
     Value baseA =
         getSharedMemoryObjectFromStruct(
             loc, adaptor.getA(),
