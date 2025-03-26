@@ -16,6 +16,8 @@ Extra Credits:
 import pytest
 import torch
 import triton.tools.experimental_descriptor
+import triton.profiler as proton
+from contextlib import contextmanager
 
 import triton
 import triton.language as tl
@@ -655,6 +657,7 @@ class _attention(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, q, k, v, causal, sm_scale, USE_TMA=True):
+        print("forward")
         # shape constraints
         HEAD_DIM_Q, HEAD_DIM_K = q.shape[-1], k.shape[-1]
         # when v is in float8_e5m2 it is transposed.
@@ -827,7 +830,7 @@ except BaseException:
     HAS_FLASH = False
 
 TORCH_HAS_FP8 = hasattr(torch, 'float8_e5m2')
-BATCH, N_HEADS, HEAD_DIM = 4, 32, 64
+BATCH, N_HEADS, HEAD_DIM = 4, 16, 128
 # vary seq length for fixed head and batch=4
 configs = []
 for mode in ["fwd", "bwd"]:
@@ -855,6 +858,21 @@ for mode in ["fwd", "bwd"]:
                 },
             ))
 
+
+@contextmanager
+def proton_context():
+    proton.activate(0)
+    try:
+        yield
+    finally:
+        proton.deactivate(0)
+
+def bench_fn(reps, warmup_reps, fn, *args):
+    for _ in range(warmup_reps):
+        fn(*args)
+    with proton_context():
+        for _ in range(reps):
+            fn(*args)
 
 @triton.testing.perf_report(configs)
 def bench_flash_attention(BATCH, H, N_CTX, HEAD_DIM, causal, mode, provider, device=DEVICE):
@@ -893,7 +911,22 @@ def bench_flash_attention(BATCH, H, N_CTX, HEAD_DIM, causal, mode, provider, dev
         total_flops *= 2.5  # 2.0(bwd) + 0.5(recompute)
     return total_flops * 1e-12 / (ms * 1e-3)
 
+def bench(reps=100, warmup_reps=10, device=DEVICE):
+    dtype = torch.float16
+    N_CTX = 2**14
+    BATCH = 4
+    H = 16
+    HEAD_DIM = 128
+    q = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
+    k = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
+    v = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
+    sm_scale = 1.3
+    bench_fn(reps, warmup_reps, attention, q, k, v, causal, sm_scale)
 
 if __name__ == "__main__":
+    proton.start("attention", hook="triton")
+    bench()
+    proton.finalize()
     # only works on post-Ampere GPUs right now
-    bench_flash_attention.run(save_path=".", print_data=True)
+#    bench_flash_attention.run(save_path=".", print_data=True)
+
