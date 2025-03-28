@@ -17,6 +17,7 @@ class SwizzledSharedEncodingAttr;
 class NVMMASharedEncodingAttr;
 class AMDRotatingSharedEncodingAttr;
 class AMDMfmaEncodingAttr;
+class CTALayoutAttr;
 
 // - BlockedEncodingAttrs have the following input dimensions.
 //
@@ -270,6 +271,10 @@ LinearLayout chooseDsReadB64TrLayout(Attribute enc, ArrayRef<int64_t> shape,
 
 LinearLayout getScaleTMEMStoreLinearLayout(RankedTensorType scaleType,
                                            int numWarps);
+
+LinearLayout getTMEMLoadStoreLayout(int M, int N, ArrayRef<int64_t> shape,
+                                     int numWarps,
+                                     CTALayoutAttr ctaLayout);                                          
 
 // Create LinearLayout for scale in scaled mfma.
 LinearLayout chooseScaledMfmaScaleLayout(
