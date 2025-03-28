@@ -162,8 +162,19 @@ SmallVector<Value> packToI32(const SmallVector<Value> &values, Location loc,
   return packedValues;
 }
 
-bool isSplitMLayout(RankedTensorType tensorType, MemDescType memType) {
-  return true;
+bool isSplitMLayout(RankedTensorType tensorType, MemDescType memType, int numWarps) {
+  auto tmemEnc = dyn_cast<triton::nvidia_gpu::TensorMemoryEncodingAttr>(memType.getEncoding());
+  if (!tmemEnc || tmemEnc.getBlockM() != 128)
+    return false;
+  int M = tmemEnc.getBlockM();
+  int N = tmemEnc.getBlockN();
+  auto llEncoding = dyn_cast<LinearEncodingAttr>(tensorType.getEncoding());
+  if (!llEncoding)
+    return false;
+  auto CTALayout = getCTALayout(tensorType.getEncoding());
+  auto shape = tensorType.getShape();
+  LinearLayout llLayout = getTMEMLoadStoreLayout(M, N, shape, numWarps, CTALayout);
+  return llEncoding.getLinearLayout() == llLayout;
 }
 
 TMemRuntimeInfo getTMemRuntimeInfo(Operation *op, RankedTensorType tensorType,
@@ -206,7 +217,7 @@ TMemRuntimeInfo getTMemRuntimeInfo(Operation *op, RankedTensorType tensorType,
 
   info.useStridedMessage = (info.blockM == 64);
   
-  info.splitWarpgroupsAlongM = isSplitMLayout(tensorType, memType);
+  info.splitWarpgroupsAlongM = isSplitMLayout(tensorType, memType, info.numWarps);
 
   info.numBlocks = ceil<int>(info.numElements, info.blockM * info.blockN);
   info.blocksInterleaved = (info.numBlocks > 1 && info.blockM == 64);
