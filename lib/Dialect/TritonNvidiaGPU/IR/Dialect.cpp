@@ -133,7 +133,15 @@ Attribute getTmemCompatibleLayout(unsigned M, unsigned N,
       threadsPerWarp = {32, 1};
       warpsPerCTA = {4 * numWarpGroups, 1};
     } else {
-      // Split along N dimension
+      if (numWarpGroups == 2) {
+        // Try to split along M dimension but follow the restrictions of TMEM:
+        // warp0 get M = 0, warp 1 gets M = 32, warp 2 gets M = 64, warp 3 gets M = 96
+        // warp 4 gets M = 16, warp 5 gets M = 48, warp 6 gets M = 80, warp 7 gets M = 112
+        return triton::gpu::LinearEncodingAttr::get(
+            ctaLayout.getContext(),
+            getTMEMLoadStoreLayout(M, N, shape, numWarps, ctaLayout));
+      }
+      // Split along N dimension.
       sizePerThread = {1, N / numWarpGroups};
       threadsPerWarp = {32, 1};
       warpsPerCTA = {4, numWarpGroups};
@@ -175,7 +183,7 @@ bool isDistributedLayoutTMemCompatible(Operation *op,
   bool useStridedMessage = blockM == 64;
 
   int numWarpGroupsPerBlock = ceil<int>(numWarpGroups, numBlocks);
-
+  return true;
   auto tensorEncoding =
       cast<triton::gpu::BlockedEncodingAttr>(tensorType.getEncoding());
   auto sizePerThread = tensorEncoding.getSizePerThread();

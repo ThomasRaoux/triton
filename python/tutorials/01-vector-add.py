@@ -31,12 +31,13 @@ def add_kernel(x_ptr,  # *Pointer* to first input vector.
                y_ptr,  # *Pointer* to second input vector.
                output_ptr,  # *Pointer* to output vector.
                n_elements,  # Size of the vector.
+               N: int,
                BLOCK_SIZE: tl.constexpr,  # Number of elements each program should process.
                # NOTE: `constexpr` so it can be used as a shape value.
                ):
     # There are multiple 'programs' processing different data. We identify which program
     # we are here:
-    pid = tl.program_id(axis=0)  # We use a 1D launch grid so axis is 0.
+    pid = tl.program_id(axis=0) + (N%2)  # We use a 1D launch grid so axis is 0.
     # This program will process inputs that are offset from the initial data.
     # For instance, if you had a vector of length 256 and block_size of 64, the programs
     # would each access the elements [0:64, 64:128, 128:192, 192:256].
@@ -72,7 +73,7 @@ def add(x: torch.Tensor, y: torch.Tensor):
     #  - Each torch.tensor object is implicitly converted into a pointer to its first element.
     #  - `triton.jit`'ed functions can be indexed with a launch grid to obtain a callable GPU kernel.
     #  - Don't forget to pass meta-parameters as keywords arguments.
-    add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=1024)
+    add_kernel[grid](x, y, output, n_elements, N=2202009600, BLOCK_SIZE=1024)
     # We return a handle to z but, since `torch.cuda.synchronize()` hasn't been called, the kernel is still
     # running asynchronously at this point.
     return output
@@ -118,8 +119,8 @@ print(f'The maximum difference between torch and triton is '
         args={},  # Values for function arguments not in `x_names` and `y_name`.
     ))
 def benchmark(size, provider):
-    x = torch.rand(size, device=DEVICE, dtype=torch.float32)
-    y = torch.rand(size, device=DEVICE, dtype=torch.float32)
+    x = torch.rand(size+10, device=DEVICE, dtype=torch.float32)
+    y = torch.rand(size+10, device=DEVICE, dtype=torch.float32)
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'torch':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: x + y, quantiles=quantiles)

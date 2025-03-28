@@ -55,17 +55,10 @@ public:
       return failure();
     Value src = localAllocOp.getSrc();
     auto srcType = cast<RankedTensorType>(src.getType());
-    auto srcLayout = cast<ttg::BlockedEncodingAttr>(srcType.getEncoding());
-    bool layoutTmemCompatible = ttng::isDistributedLayoutTMemCompatible(
-        tcGen5MMAOp, srcType, tcGen5MMAOp.getD().getType());
+    auto srcLayout = srcType.getEncoding();
+    bool layoutTmemCompatible = true;//lttng::isDistributedLayoutTMemCompatible(
+        //tcGen5MMAOp, srcType, tcGen5MMAOp.getD().getType());
     Attribute newLayout = srcLayout;
-    if (!layoutTmemCompatible) {
-      if (triton::tools::getBoolEnv("ALLOW_LHS_TMEM_LAYOUT_CONVERSION")) {
-        newLayout = getLHSTMemLayout(tcGen5MMAOp, srcLayout);
-      } else {
-        return failure();
-      }
-    }
     rewriter.setInsertionPointAfter(localAllocOp);
     if (newLayout != srcLayout) {
       auto ty = cast<RankedTensorType>(src.getType());
@@ -75,7 +68,7 @@ public:
     }
     auto accTMemEncoding = dyn_cast<ttng::TensorMemoryEncodingAttr>(
         tcGen5MMAOp.getD().getType().getEncoding());
-    ArrayRef<unsigned> CTASplitNum = srcLayout.getCTALayout().getCTASplitNum();
+    ArrayRef<unsigned> CTASplitNum = mlir::triton::gpu::getCTALayout(srcLayout).getCTASplitNum();
     // TMem encoding for A operand is the same as for D (Acc), but unpacked.
     auto aTMemEncoding = ttng::TensorMemoryEncodingAttr::get(
         context, accTMemEncoding.getBlockM(), lhs.getType().getShape()[1],
@@ -103,8 +96,8 @@ public:
       TritonNvidiaGPUPromoteLHSToTMemPassBase;
 
   void runOnOperation() override {
-    if (!triton::tools::getBoolEnv("ENABLE_LHS_TO_TMEM"))
-      return;
+ //   if (!triton::tools::getBoolEnv("ENABLE_LHS_TO_TMEM"))
+ //     return;
     MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
 

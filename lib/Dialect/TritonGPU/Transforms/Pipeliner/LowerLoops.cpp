@@ -880,11 +880,41 @@ void createBarrierAndWaitOps(scf::ForOp forOp, CoarseSchedule &schedule,
       triton::createSingleBufferView(builder, barrierAlloc, barrierIdx);
   mma.setBarrier(barrierSlice);
 
+  auto comesFromLoadOrOutsideLoop = [&](Value v) {
+    if (forOp.isDefinedOutsideOfLoop(v)) {
+      return true;
+    }
+    // Do not walk through the Block Arguments.
+    if (!v.getDefiningOp()) {
+      return false;
+    }
+    while (isa<ttg::MemDescTransOp>(v.getDefiningOp())) {
+      v = v.getDefiningOp()->getOperand(0);
+    }
+    if (auto localAlloc = dyn_cast<ttg::LocalAllocOp>(v.getDefiningOp())) {
+      if (!localAlloc.getSrc()) {
+        return false;
+      }
+      if (forOp.isDefinedOutsideOfLoop(localAlloc.getSrc())) {
+        return true;
+      }
+      if (isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp>(
+              localAlloc.getSrc().getDefiningOp())) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   // List of buffers that may be used until wait completes
   SmallVector<Value> waitBuffers;
   auto mmaAsDotOp = cast<DotOpInterface>(mma.getOperation());
-  waitBuffers.push_back(mmaAsDotOp.getA());
-  waitBuffers.push_back(mmaAsDotOp.getB());
+  if (comesFromLoadOrOutsideLoop(mmaAsDotOp.getA())) {
+    waitBuffers.push_back(mmaAsDotOp.getA());
+  }
+  if (comesFromLoadOrOutsideLoop(mmaAsDotOp.getB())) {
+    waitBuffers.push_back(mmaAsDotOp.getB());
+  }
   if (auto mmaAsScaledDotOp =
           dyn_cast<ttng::TCGen5MMAScaledOp>(mma.getOperation())) {
     waitBuffers.push_back(mmaAsScaledDotOp.getAScale());
@@ -1073,9 +1103,9 @@ scf::ForOp lowerMMA(ttng::MMAv5OpInterface mma, scf::ForOp forOp,
   auto isLoadPipelineable = [&](Operation *op) {
     return schedule[mma].first > schedule[op].first;
   };
-  if (!mmaHasPipelineableOperands(mma, forOp, isLoadPipelineable)) {
-    return forOp;
-  }
+//  if (!mmaHasPipelineableOperands(mma, forOp, isLoadPipelineable)) {
+//    return forOp;
+//  }
   auto alloc = mma.getAccumulator().getDefiningOp<ttng::TMEMAllocOp>();
   if (!alloc) {
     return forOp;

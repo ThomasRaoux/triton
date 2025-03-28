@@ -219,10 +219,10 @@ def _attn_fwd_inner_tma(acc, l_i, m_i, q,  #
 # re-tuning.
 configs = [
     triton.Config({'BLOCK_M': BM, 'BLOCK_N': BN}, num_stages=s, num_warps=w) \
-    for BM in [64, 128]\
-    for BN in [32, 64, 128]\
-    for s in ([1] if is_hip() else [3, 4, 7])\
-    for w in [4, 8]\
+    for BM in [128]\
+    for BN in [64]\
+    for s in ([1] if is_hip() else [3])\
+    for w in [8]\
 ]
 
 
@@ -331,10 +331,10 @@ def _attn_fwd(Q, K, V, sm_scale, M, Out,  #
 # re-tuning.
 configs_tma = [
     triton.Config({'BLOCK_M': BM, 'BLOCK_N': BN}, num_stages=s, num_warps=w) \
-    for BM in [64, 128]\
-    for BN in [32, 64, 128]\
-    for s in [2, 3, 4, 6]\
-    for w in [4, 8]\
+    for BM in [128]\
+    for BN in [64]\
+    for s in [3]\
+    for w in [8]\
 ]
 
 
@@ -715,6 +715,7 @@ class _attention(torch.autograd.Function):
                 FP8_OUTPUT=q.dtype == torch.float8_e5m2,  #
                 STAGE=stage,  #
                 **extra_kern_args)
+            print(_attn_fwd_tma.best_config)
         else:
             grid = lambda args: (triton.cdiv(q.shape[2], args["BLOCK_M"]), q.shape[0] * q.shape[1], 1)
             ctx.grid = grid
