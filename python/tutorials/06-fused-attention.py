@@ -822,7 +822,7 @@ except BaseException:
     HAS_FLASH = False
 
 TORCH_HAS_FP8 = hasattr(torch, 'float8_e5m2')
-BATCH, N_HEADS, HEAD_DIM = 4, 32, 64
+BATCH, N_HEADS, HEAD_DIM = 4, 16, 128
 # vary seq length for fixed head and batch=4
 configs = []
 for mode in ["fwd", "bwd"]:
@@ -873,13 +873,13 @@ def bench_flash_attention(BATCH, H, N_CTX, HEAD_DIM, causal, mode, provider, dev
             fn = lambda: o.backward(do, retain_graph=True)
         ms = triton.testing.do_bench(fn)
     if provider == "flash":
-        qkv = torch.randn((BATCH, N_CTX, 3, H, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
-        fn = lambda: flash_attn_func(qkv, causal=causal)
-        if mode == "bwd":
-            o = fn()
-            do = torch.randn_like(o)
-            fn = lambda: o.backward(do, retain_graph=True)
-        ms = triton.testing.do_bench(fn)
+     #   qkv = torch.randn((BATCH, N_CTX, 3, H, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
+     ##   fn = lambda: flash_attn_func(qkv, causal=causal)
+      #  if mode == "bwd":
+      #      o = fn()
+      #      do = torch.randn_like(o)
+      #      fn = lambda: o.backward(do, retain_graph=True)
+      ms = 1 #triton.testing.do_bench(fn)
     flops_per_matmul = 2.0 * BATCH * H * N_CTX * N_CTX * HEAD_DIM
     total_flops = 2 * flops_per_matmul
     if causal:

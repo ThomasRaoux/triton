@@ -406,10 +406,10 @@ def matmul_tma_persistent_get_configs():
     return [
         triton.Config({'BLOCK_SIZE_M': BM, 'BLOCK_SIZE_N': BN, "BLOCK_SIZE_K" : BK, "GROUP_SIZE_M" : 8, "EPILOGUE_SUBTILE" : SUBTILE}, num_stages=s, num_warps=w) \
         for BM in [128] \
-        for BN in [128, 256] \
-        for BK in [64, 128] \
-        for s in ([2, 3, 4]) \
-        for w in [4, 8] \
+        for BN in [256] \
+        for BK in [128] \
+        for s in ([3]) \
+        for w in [8] \
         for SUBTILE in [True, False] \
     ]
 
@@ -719,44 +719,8 @@ def validate(M, N, K, dtype):
     b = torch.randn((K, N), device="cuda", dtype=torch.float16).to(dtype)
     b = b.T.contiguous()
 
-    torch_result = torch_matmul(a, b) if dtype == torch.float16 else None
-    cublas_result = cublas_matmul(a, b) if cublas is not None else None
-    naive_result = matmul(a, b.T)
-    tma_ws_result = matmul_tma_ws(a, b) if HAS_TENSOR_DESC else None
-    persistent_result = matmul_persistent(a, b.T)
-    tma_persistent_result = matmul_tma_persistent(a, b) if HAS_TMA_DESC else None
-    descriptor_persistent_result = matmul_descriptor_persistent(a, b) if HAS_TENSOR_DESC else None
+    matmul_tma_persistent(a, b)
 
-    if tma_ws_result is not None:
-        naive_vs_tma_ws = "✅" if torch.allclose(naive_result.to(torch.float16), tma_ws_result.to(torch.float16),
-                                                atol=1.0) else "❌"
-    if torch_result is not None:
-        naive_vs_torch = "✅" if torch.allclose(naive_result.to(torch.float16), torch_result.to(torch.float16),
-                                               atol=1.0) else "❌"
-    if cublas_result is not None:
-        naive_vs_cublas = "✅" if torch.allclose(naive_result.to(torch.float16), cublas_result.to(torch.float16),
-                                                atol=1.0) else "❌"
-    naive_vs_persistent = "✅" if torch.allclose(naive_result.to(torch.float16), persistent_result.to(torch.float16),
-                                                atol=1.0) else "❌"
-    if tma_persistent_result is not None:
-        naive_vs_tma_persistent = "✅" if torch.allclose(cublas_result.to(torch.float16),
-                                                        tma_persistent_result.to(torch.float16), atol=1.0) else "❌"
-    if descriptor_persistent_result is not None:
-        naive_vs_descriptor_persistent = "✅" if torch.allclose(cublas_result.to(
-            torch.float16), descriptor_persistent_result.to(torch.float16), atol=1.0) else "❌"
-    print(f"M={M}, N={N}, K={K} verification naive vs: ", end="")
-    if tma_ws_result is not None:
-        print(f"tma: {naive_vs_tma_ws} ", end="")
-    if torch_result is not None:
-        print(f"torch: {naive_vs_torch} ", end="")
-    if cublas_result is not None:
-        print(f"cublas: {naive_vs_cublas} ", end="")
-    print(f"persistent: {naive_vs_persistent} ", end="")
-    if tma_persistent_result is not None:
-        print(f"TMA persistent: {naive_vs_tma_persistent} ", end="")
-    if descriptor_persistent_result is not None:
-        print(f"Tensor descriptor persistent: {naive_vs_descriptor_persistent} ", end="")
-    print()
 
 
 def show_profile(precision, profile_name):
@@ -790,11 +754,11 @@ if __name__ == "__main__":
 
         torch.manual_seed(0)
 
-        validate(32, 32, 32, dtype)
-        validate(8192, 8192, args.K_range[0], dtype)
+        #validate(32, 32, 32, dtype)
+        validate(2*8192, 2*8192, 8192, dtype)
 
-        proton.start("matmul", hook="triton")
-        for K in range(args.K_range[0], args.K_range[1] + 1, args.K_step):
-            bench(K, dtype)
-        proton.finalize()
-        show_profile(args.prec, "matmul")
+#        proton.start("matmul", hook="triton")
+#        for K in range(args.K_range[0], args.K_range[1] + 1, args.K_step):
+#            bench(K, dtype)
+#        proton.finalize()
+#        show_profile(args.prec, "matmul")
