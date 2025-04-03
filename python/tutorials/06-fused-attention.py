@@ -16,6 +16,8 @@ Extra Credits:
 import pytest
 import torch
 import triton.tools.experimental_descriptor
+import triton.profiler as proton
+from contextlib import contextmanager
 
 import triton
 import triton.language as tl
@@ -213,7 +215,7 @@ def _attn_fwd_inner_tma(acc, l_i, m_i, q,  #
 configs = [
     triton.Config({'BLOCK_M': BM, 'BLOCK_N': BN}, num_stages=s, num_warps=w) \
     for BM in [64, 128]\
-    for BN in [32, 64]\
+    for BN in [32, 64, 128]\
     for s in ([1] if is_hip() else [3, 4, 7])\
     for w in [4, 8]\
 ]
@@ -332,6 +334,7 @@ configs_tma = [
 
 
 def keep_tma(conf):
+    print(conf)
     BLOCK_M = conf.kwargs["BLOCK_M"]
     BLOCK_N = conf.kwargs["BLOCK_N"]
     if (torch.cuda.get_device_capability()[0] == 9 and BLOCK_M * BLOCK_N < 128 * 128 and conf.num_warps == 8):
@@ -825,8 +828,8 @@ TORCH_HAS_FP8 = hasattr(torch, 'float8_e5m2')
 BATCH, N_HEADS, HEAD_DIM = 4, 16, 128
 # vary seq length for fixed head and batch=4
 configs = []
-for mode in ["fwd", "bwd"]:
-    for causal in [True, False]:
+for mode in ["fwd"]:
+    for causal in [False]:
         if mode == "bwd" and not causal:
             continue
         configs.append(
@@ -851,6 +854,21 @@ for mode in ["fwd", "bwd"]:
             ))
 
 
+@contextmanager
+def proton_context():
+    proton.activate(0)
+    try:
+        yield
+    finally:
+        proton.deactivate(0)
+
+def bench_fn(reps, warmup_reps, fn, *args):
+    for _ in range(warmup_reps):
+        fn(*args)
+    with proton_context():
+        for _ in range(reps):
+            fn(*args)
+
 @triton.testing.perf_report(configs)
 def bench_flash_attention(BATCH, H, N_CTX, HEAD_DIM, causal, mode, provider, device=DEVICE):
     assert mode in ["fwd", "bwd"]
@@ -873,13 +891,13 @@ def bench_flash_attention(BATCH, H, N_CTX, HEAD_DIM, causal, mode, provider, dev
             fn = lambda: o.backward(do, retain_graph=True)
         ms = triton.testing.do_bench(fn)
     if provider == "flash":
-     #   qkv = torch.randn((BATCH, N_CTX, 3, H, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
-     ##   fn = lambda: flash_attn_func(qkv, causal=causal)
-      #  if mode == "bwd":
-      #      o = fn()
-      #      do = torch.randn_like(o)
-      #      fn = lambda: o.backward(do, retain_graph=True)
-      ms = 1 #triton.testing.do_bench(fn)
+        qkv = torch.randn((BATCH, N_CTX, 3, H, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
+        fn = lambda: flash_attn_func(qkv, causal=causal)
+        if mode == "bwd":
+            o = fn()
+            do = torch.randn_like(o)
+            fn = lambda: o.backward(do, retain_graph=True)
+        ms = triton.testing.do_bench(fn)
     flops_per_matmul = 2.0 * BATCH * H * N_CTX * N_CTX * HEAD_DIM
     total_flops = 2 * flops_per_matmul
     if causal:
@@ -888,7 +906,26 @@ def bench_flash_attention(BATCH, H, N_CTX, HEAD_DIM, causal, mode, provider, dev
         total_flops *= 2.5  # 2.0(bwd) + 0.5(recompute)
     return total_flops * 1e-12 / (ms * 1e-3)
 
+def bench(reps=100, warmup_reps=10, device=DEVICE):
+    dtype = torch.float16
+    N_CTX = 2**14
+    BATCH = 4
+    H = 16
+    HEAD_DIM = 128
+    causal = False
+    q = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
+    k = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
+    v = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
+    sm_scale = 1.3
+    bench_fn(reps, warmup_reps, attention, q, k, v, causal, sm_scale)
+    flops_per_matmul = 2.0 * BATCH * H * N_CTX * N_CTX * HEAD_DIM
+    total_flops = 2 * flops_per_matmul
+    print("flops", total_flops)    
 
 if __name__ == "__main__":
+    proton.start("attention", hook="triton")
+    bench()
+    proton.finalize()
     # only works on post-Ampere GPUs right now
-    bench_flash_attention.run(save_path=".", print_data=True)
+#    bench_flash_attention.run(save_path=".", print_data=True)
+
