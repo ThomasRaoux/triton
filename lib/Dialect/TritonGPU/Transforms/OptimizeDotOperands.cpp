@@ -153,8 +153,18 @@ static Attribute inferSrcEncodingMemDescReshape(Attribute dstEncoding,
   // unchanged.
   if (innerDimDst != innerDimSrc)
     return Attribute();
+
+  // CTALayout can be all 1's because we bailed on multi-CTA layouts above.
+  auto CTALayout = CTALayoutAttr::get(
+      dstEncoding.getContext(),
+      /*CTAsPerCGA=*/SmallVector<unsigned>(srcShape.size(), 1),
+      /*CTASplitNum=*/SmallVector<unsigned>(srcShape.size(), 1),
+      /*CTAOrder=*/llvm::to_vector(llvm::seq<unsigned>(srcShape.size())));
   // Check that the second dim is big enough to contain a full swizzle.
-  return mmaEncoding;
+  return NVMMASharedEncodingAttr::get(
+      dstEncoding.getContext(), mmaEncoding.getSwizzlingByteWidth(),
+      mmaEncoding.getTransposed(), mmaEncoding.getElementBitWidth(),
+      mmaEncoding.getFp4Padded(), CTALayout);
 }
 
 // Rewrite

@@ -270,7 +270,7 @@ def TTG_MemDescReshapeOp : TTG_Op<"memdesc_reshape", [Pure,
 
   let assemblyFormat = "$src attr-dict `:` qualified(type($src)) `->` qualified(type($result))";
 
-  // TODO: add verfier.
+  let hasVerifier = 1;
 }
 
 def TTG_LocalLoadOp : TTG_Op<"local_load", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
