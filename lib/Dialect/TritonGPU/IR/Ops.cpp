@@ -441,6 +441,8 @@ MemDescTransOp::inferReturnTypes(MLIRContext *context,
   return success();
 }
 
+// MemDescReshapeOp
+
 // LocalAllocOp
 void LocalAllocOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
