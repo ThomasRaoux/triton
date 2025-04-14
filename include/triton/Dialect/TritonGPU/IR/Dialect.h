@@ -278,6 +278,11 @@ bool areLayoutsEquivalent(ArrayRef<int64_t> shape, Attribute lhs,
 
 // Return true if the innermost numElems are contiguous.
 bool isInnermostContiguous(MemDescType type, unsigned numElems);
+
+
+LinearLayout inferReshapeLinearLayout(ArrayRef<int64_t> srcShape,
+                                      Attribute srcEnc,
+                                      ArrayRef<int64_t> dstShape);
 } // namespace mlir::triton::gpu
 
 #endif // TRITON_DIALECT_TRITONGPU_IR_DIALECT_H_
