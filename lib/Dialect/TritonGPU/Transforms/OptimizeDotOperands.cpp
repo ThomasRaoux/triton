@@ -154,9 +154,13 @@ static Attribute inferSrcEncodingMemDescReshape(Attribute dstEncoding,
                                                 : dstShape[dstShape.size() - 1];
   int innerDimSrc = mmaEncoding.getTransposed() ? srcShape[srcShape.size() - 2]
                                                 : srcShape[srcShape.size() - 1];
+  int outterDimSrc = mmaEncoding.getTransposed()
+                         ? srcShape[srcShape.size() - 1]
+                         : srcShape[srcShape.size() - 2];
   // For now only handle simple case where the contiguous dimension is
   // unchanged.
-  if (innerDimDst != innerDimSrc)
+  int tileRows = 8;
+  if (innerDimDst != innerDimSrc || outterDimSrc < tileRows)
     return Attribute();
 
   // CTALayout can be all 1's because we bailed on multi-CTA layouts above.
