@@ -9,6 +9,7 @@
 // TritonGPU depends on Triton
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
+#include "triton/Dialect/TritonGPU/IR/Traits.h"
 #include "triton/Dialect/TritonGPU/IR/Types.h"
 
 #include <unordered_map>
@@ -278,7 +279,6 @@ bool areLayoutsEquivalent(ArrayRef<int64_t> shape, Attribute lhs,
 
 // Return true if the innermost numElems are contiguous.
 bool isInnermostContiguous(MemDescType type, unsigned numElems);
-
 
 LinearLayout inferReshapeLinearLayout(ArrayRef<int64_t> srcShape,
                                       Attribute srcEnc,

@@ -198,7 +198,7 @@ def TTG_LocalDeallocOp : TTG_Op<"local_dealloc"> {
   let assemblyFormat = [{$src attr-dict `:` qualified(type($src))}];
 }
 
-def TTG_MemDescSubviewOp : TTG_Op<"memdesc_subview", [Pure]> {
+def TTG_MemDescSubviewOp : TTG_Op<"memdesc_subview", [Pure, MemDescViewTrait]> {
   let summary = "take a subview of the descriptor.";
 
   let description = [{
@@ -224,6 +224,7 @@ def TTG_MemDescSubviewOp : TTG_Op<"memdesc_subview", [Pure]> {
 }
 
 def TTG_MemDescTransOp : TTG_Op<"memdesc_trans", [Pure,
+                                                  MemDescViewTrait,
                                                   TransposeOpInterface,
                                                   InferTypeOpWithLayoutEquivalence,
                                                   SameOperandsAndResultElementType]> {
@@ -249,7 +250,8 @@ def TTG_MemDescTransOp : TTG_Op<"memdesc_trans", [Pure,
 }
 
 def TTG_MemDescReshapeOp : TTG_Op<"memdesc_reshape", [Pure,
-                                                  SameOperandsAndResultElementType]> {
+                                                      MemDescViewTrait,
+                                                      SameOperandsAndResultElementType]> {
   let summary = "creates a descriptor for the new shape";
 
   let description = [{
