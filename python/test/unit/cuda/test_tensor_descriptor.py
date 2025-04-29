@@ -1531,6 +1531,7 @@ def test_specialization_after_host_tensordesc():
     h = kernel.warmup(desc, 16, grid=(1, ))
     assert ", %arg3: i32 {tt.divisibility = 16 : i32}" in h.asm["ttir"]
 
+
 @triton.jit()
 def matmul_kernel_reshape(a_ptr, b_ptr, c_ptr,  #
                           M, N, K,  #
@@ -1599,13 +1600,27 @@ def test_tensor_descriptor_reshape_matmul(dtype_str):
     BLOCK_SIZE_N = 64
     BLOCK_SIZE_K = 64
 
+    # trunc float32 to avoid large precision differences.
+    def trunc_to_tf32(tensor):
+        int_view = tensor.view(np.uint32)
+        mask = np.uint32(0xFFFFE000)
+        masked_int = int_view & mask
+        tf32_simulated = masked_int.view(np.float32)
+        return tf32_simulated
+
     # test a layout where block_m is split into two separate chunks.
     A = numpy_random((M, K), dtype_str)
+    if dtype_str == "float32":
+        A = trunc_to_tf32(A)
     A_reshaped = (A.reshape(M // BLOCK_SIZE_M, 2, BLOCK_SIZE_M // 2, K).transpose(1, 0, 2, 3).reshape(2, M // 2, K))
 
     A = to_triton(A, device="cuda", dst_type=dtype_str)
     A_reshaped = to_triton(A_reshaped, device="cuda", dst_type=dtype_str)
-    B = to_triton(numpy_random((N, K), dtype_str), device="cuda", dst_type=dtype_str)
+
+    B = numpy_random((N, K), dtype_str)
+    if dtype_str == "float32":
+        B = trunc_to_tf32(B)
+    B = to_triton(B, device="cuda", dst_type=dtype_str)
     C = A.new_empty(M, N)
 
     def alloc_fn(size: int, align: int, stream: Optional[int]):

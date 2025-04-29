@@ -336,11 +336,6 @@ LinearLayout sharedToLinearLayoutLeadingOffset(ArrayRef<int64_t> shape,
                                            outDimNames[dim]);
   }
 
-  for (int logCol = llvm::Log2_32(tileCols);
-       logCol < llvm::Log2_32(shapePerCTA[colDim]); logCol++) {
-    bases2D.push_back({0, 1 << logCol});
-  }
-
   return combineCtaCgaWithShape(tileLayout, shared.getCTALayout(), shape);
 }
 
