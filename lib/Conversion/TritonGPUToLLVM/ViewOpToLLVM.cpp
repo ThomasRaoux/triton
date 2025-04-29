@@ -329,11 +329,18 @@ struct MemDescReshapeOpConversion
     auto srcSmemObj = getSharedMemoryObjectFromStruct(loc, adaptor.getSrc(),
                                                       llvmElemTy, rewriter);
     SmallVector<Value> offsets = srcSmemObj.getOffsets();
+    SmallVector<unsigned> srcShape;
+    for (int64_t d : op.getSrc().getType().getShape())
+      srcShape.push_back(d);
+    SmallVector<unsigned> dstShape;
+    for (int64_t d : op.getType().getShape())
+      dstShape.push_back(d);
+    Value linearOffset = LLVM::linearize(rewriter, loc, offsets, srcShape);
+    SmallVector<Value> delinearizedOffset =
+        LLVM::delinearize(rewriter, loc, linearOffset, dstShape);
     auto b = TritonLLVMOpBuilder(loc, rewriter);
-    // TODO: handle offsets correctly.
-    offsets.resize(resultTy.getRank(), b.i32_val(0));
-    auto dstSmemObj = SharedMemoryObject(srcSmemObj.getBase(),
-                                         srcSmemObj.getBaseElemType(), offsets);
+    auto dstSmemObj = SharedMemoryObject(
+        srcSmemObj.getBase(), srcSmemObj.getBaseElemType(), delinearizedOffset);
     auto retVal = getStructFromSharedMemoryObject(loc, dstSmemObj, rewriter);
     rewriter.replaceOp(op, retVal);
     return success();
