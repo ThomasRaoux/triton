@@ -153,10 +153,10 @@ static Attribute inferSrcEncodingMemDescReshape(Attribute dstEncoding,
   // TODO: supporting reshape of CTA layouts is non-trivial.
   if (getNumCTAs(mmaEncoding) > 1)
     return Attribute();
-  int innerDimDst = mmaEncoding.getTransposed() ? dstShape.back()
-                                                : dstShape.front();
-  int innerDimSrc = mmaEncoding.getTransposed() ? srcShape.back()
-                                                : srcShape.front();
+  int innerDimDst =
+      mmaEncoding.getTransposed() ? dstShape.front() : dstShape.back();
+  int innerDimSrc =
+      mmaEncoding.getTransposed() ? srcShape.front() : srcShape.back();
   // For now disallow reshape of the inner dimension.
   if (innerDimDst != innerDimSrc)
     return Attribute();

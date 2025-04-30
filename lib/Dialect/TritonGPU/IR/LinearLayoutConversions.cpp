@@ -254,6 +254,9 @@ LinearLayout sharedToLinearLayoutLeadingOffset(ArrayRef<int64_t> shape,
                                                  shapePerCTA[batchDims + 1]};
   for (int i = 0; i < batchDims; i++)
     collapsedShapePerCTA[0] *= shapePerCTA[i];
+  if (shared.getTransposed()) {
+    std::swap(collapsedShapePerCTA[0], collapsedShapePerCTA[1]);
+  }
   int elemBitWidth = shared.getElementBitWidth();
   int tileWidthBytes = shared.getSwizzlingByteWidth();
   int vec = 128 / elemBitWidth;
@@ -270,7 +273,6 @@ LinearLayout sharedToLinearLayoutLeadingOffset(ArrayRef<int64_t> shape,
     maxPhase = 8;
   }
 
-
   int tileRows = 8;
   int tileCols = 8 * tileWidthBytes / elemBitWidth;
   bool isFp4Padded = false;
@@ -284,10 +286,11 @@ LinearLayout sharedToLinearLayoutLeadingOffset(ArrayRef<int64_t> shape,
 
   if (collapsedShapePerCTA[1] * packingFactor < tileCols ||
       collapsedShapePerCTA[0] < tileRows) {
-    llvm::errs()
-        << "Illegal shared layout; expected collapsed shapePerCTA to be at least ["
-        << tileRows << ", " << tileCols << "], collapsedShapePerCTA: ["
-        << collapsedShapePerCTA[0] << ", " << collapsedShapePerCTA[1] << "]\n";
+    llvm::errs() << "Illegal shared layout; expected collapsed shapePerCTA to "
+                    "be at least ["
+                 << tileRows << ", " << tileCols << "], collapsedShapePerCTA: ["
+                 << collapsedShapePerCTA[0] << ", " << collapsedShapePerCTA[1]
+                 << "]\n";
     llvm::report_fatal_error("Illegal shared layout");
   }
 
@@ -329,30 +332,29 @@ LinearLayout sharedToLinearLayoutLeadingOffset(ArrayRef<int64_t> shape,
 
   auto outDimNames = standardOutDimNames(ctx, 2);
   std::reverse(outDimNames.begin(), outDimNames.end());
-  LinearLayout tileLayout =
-      LinearLayout({{S("offset"), bases2D}}, outDimNames);
-  llvm::errs() << "tileLayout: " << tileLayout << "\n";
+  LinearLayout tileLayout = LinearLayout({{S("offset"), bases2D}}, outDimNames);
   llvm::SmallDenseMap<StringAttr, int64_t> namedShape;
   namedShape[outDimNames[0]] = collapsedShapePerCTA[0];
   namedShape[outDimNames[1]] = collapsedShapePerCTA[1];
   tileLayout = ensureLayoutNotSmallerThan(tileLayout, namedShape);
 
-
-  llvm::errs() << "tileLayout: " << tileLayout << "\n";
+  SmallVector<int64_t> maybeTransposedShapePerCTA = shapePerCTA;
+  if (shared.getTransposed()) {
+    std::swap(maybeTransposedShapePerCTA[0], maybeTransposedShapePerCTA[1]);
+  }
   auto srcOutDims = to_vector(tileLayout.getOutDimNames());
   std::reverse(srcOutDims.begin(), srcOutDims.end());
-  auto newOutDims = standardOutDimPairs(ctx, shapePerCTA);
+  auto newOutDims = standardOutDimPairs(ctx, maybeTransposedShapePerCTA);
   std::reverse(newOutDims.begin(), newOutDims.end());
   auto reshapedLayout = tileLayout.transposeOuts(srcOutDims)
-                 .reshapeOuts(newOutDims)
-                 .transposeOuts(standardOutDimNames(ctx, rank));
-  llvm::errs() << "reshapedLayout: " << reshapedLayout << "\n";
+                            .reshapeOuts(newOutDims)
+                            .transposeOuts(standardOutDimNames(ctx, rank));
 
   if (shared.getTransposed()) {
     // Transpose the tile layout.
     auto namedBases = reshapedLayout.getBases();
     // move the most outer dimensions to the inner most position.
-    SmallVector<int> order = { rank - 1 };
+    SmallVector<int> order = {rank - 1};
     for (int i = 0; i < rank - 1; i++) {
       order.push_back(i);
     }
@@ -366,13 +368,10 @@ LinearLayout sharedToLinearLayoutLeadingOffset(ArrayRef<int64_t> shape,
       }
     }
     reshapedLayout = LinearLayout(std::move(namedBases),
-                              to_vector(reshapedLayout.getOutDimNames()));
+                                  to_vector(reshapedLayout.getOutDimNames()));
   }
 
-  llvm::errs() << "reshapedLayout: " << reshapedLayout << "\n";
-  auto res = combineCtaCgaWithShape(reshapedLayout, shared.getCTALayout(), shape);
-  llvm::errs() << "res: " << res << "\n";
-  return res;
+  return combineCtaCgaWithShape(reshapedLayout, shared.getCTALayout(), shape);
 }
 
 /// Function to generate lane and warp layout for dot operands.
