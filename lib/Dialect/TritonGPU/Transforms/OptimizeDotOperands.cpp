@@ -150,17 +150,15 @@ static Attribute inferSrcEncodingMemDescReshape(Attribute dstEncoding,
   auto mmaEncoding = dyn_cast<NVMMASharedEncodingAttr>(dstEncoding);
   if (!mmaEncoding)
     return Attribute();
-  int innerDimDst = mmaEncoding.getTransposed() ? dstShape[dstShape.size() - 2]
-                                                : dstShape[dstShape.size() - 1];
-  int innerDimSrc = mmaEncoding.getTransposed() ? srcShape[srcShape.size() - 2]
-                                                : srcShape[srcShape.size() - 1];
-  int outterDimSrc = mmaEncoding.getTransposed()
-                         ? srcShape[srcShape.size() - 1]
-                         : srcShape[srcShape.size() - 2];
-  // For now only handle simple case where the contiguous dimension is
-  // unchanged.
-  int tileRows = 8;
-  if (innerDimDst != innerDimSrc || outterDimSrc < tileRows)
+  // TODO: supporting reshape of CTA layouts is non-trivial.
+  if (getNumCTAs(mmaEncoding) > 1)
+    return Attribute();
+  int innerDimDst = mmaEncoding.getTransposed() ? dstShape.back()
+                                                : dstShape.front();
+  int innerDimSrc = mmaEncoding.getTransposed() ? srcShape.back()
+                                                : srcShape.front();
+  // For now disallow reshape of the inner dimension.
+  if (innerDimDst != innerDimSrc)
     return Attribute();
 
   // CTALayout can be all 1's because we bailed on multi-CTA layouts above.

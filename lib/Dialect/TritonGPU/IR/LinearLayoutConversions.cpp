@@ -236,16 +236,24 @@ LinearLayout sharedToLinearLayoutLeadingOffset(ArrayRef<int64_t> shape,
                                                NVMMASharedEncodingAttr shared,
                                                bool disableSwizzle) {
   MLIRContext *ctx = shared.getContext();
-
-  auto shapePerCTA = getShapePerCTA(shared, shape);
-
   int rank = shape.size();
+  auto shapePerCTA = getShapePerCTA(shared, shape);
   if (rank == 1) {
     // TODO: Not sure if this is correct.
     return combineCtaCgaWithShape(
         LinearLayout::identity1D(shapePerCTA[0], S("offset"), S("dim0")),
         shared.getCTALayout(), shape);
   }
+  // Construct bases for a the layout's 2-dimensional tile.
+  assert(rank >= 2);
+  int batchDims = rank - 2;
+
+  // Collapse all the outer dim into one. We will then create a layout for this
+  // shape and reshape it to the original shape.
+  std::array<int64_t, 2> collapsedShapePerCTA = {shapePerCTA[batchDims],
+                                                 shapePerCTA[batchDims + 1]};
+  for (int i = 0; i < batchDims; i++)
+    collapsedShapePerCTA[0] *= shapePerCTA[i];
   int elemBitWidth = shared.getElementBitWidth();
   int tileWidthBytes = shared.getSwizzlingByteWidth();
   int vec = 128 / elemBitWidth;
@@ -261,13 +269,7 @@ LinearLayout sharedToLinearLayoutLeadingOffset(ArrayRef<int64_t> shape,
     perPhase = 1;
     maxPhase = 8;
   }
-  auto outDimNames = standardOutDimNames(ctx, rank);
 
-  // Construct bases for a the layout's 2-dimensional tile.
-  assert(rank >= 2);
-  int batchDims = rank - 2;
-  int colDim = batchDims + (shared.getTransposed() ? 0 : 1);
-  int rowDim = batchDims + (shared.getTransposed() ? 1 : 0);
 
   int tileRows = 8;
   int tileCols = 8 * tileWidthBytes / elemBitWidth;
@@ -280,17 +282,14 @@ LinearLayout sharedToLinearLayoutLeadingOffset(ArrayRef<int64_t> shape,
   }
   int packingFactor = isFp4Padded ? 2 : 1;
 
-  if (shapePerCTA[colDim] * packingFactor < tileCols ||
-      shapePerCTA[rowDim] < tileRows) {
+  if (collapsedShapePerCTA[1] * packingFactor < tileCols ||
+      collapsedShapePerCTA[0] < tileRows) {
     llvm::errs()
-        << "Illegal shared layout; expected shapePerCTA to be at least ["
-        << tileRows << ", " << tileCols << "], shapePerCTA: ["
-        << shapePerCTA[rowDim] << ", " << shapePerCTA[colDim] << "]\n";
+        << "Illegal shared layout; expected collapsed shapePerCTA to be at least ["
+        << tileRows << ", " << tileCols << "], collapsedShapePerCTA: ["
+        << collapsedShapePerCTA[0] << ", " << collapsedShapePerCTA[1] << "]\n";
     llvm::report_fatal_error("Illegal shared layout");
   }
-
-  StringAttr colDimName = outDimNames[colDim];
-  StringAttr rowDimName = outDimNames[rowDim];
 
   std::vector<std::vector<int>> bases2D;
   for (int logCol = 0; logCol < llvm::Log2_32(tileCols); logCol++) {
@@ -322,21 +321,58 @@ LinearLayout sharedToLinearLayoutLeadingOffset(ArrayRef<int64_t> shape,
     }
   }
 
-  // Replicate the tiles to fill out the inner dims of shapePerCTA.
+  // Then distribute the remaining rows.
   for (int logRow = llvm::Log2_32(tileRows);
-       logRow < llvm::Log2_32(shapePerCTA[rowDim]); logRow++) {
+       logRow < llvm::Log2_32(collapsedShapePerCTA[0]); logRow++) {
     bases2D.push_back({1 << logRow, 0});
   }
 
+  auto outDimNames = standardOutDimNames(ctx, 2);
+  std::reverse(outDimNames.begin(), outDimNames.end());
   LinearLayout tileLayout =
-      LinearLayout({{S("offset"), bases2D}}, {rowDimName, colDimName});
-  // Add the remaining dimensions.
-  for (int dim = batchDims - 1; dim >= 0; --dim) {
-    tileLayout *= LinearLayout::identity1D(shapePerCTA[dim], S("offset"),
-                                           outDimNames[dim]);
+      LinearLayout({{S("offset"), bases2D}}, outDimNames);
+  llvm::errs() << "tileLayout: " << tileLayout << "\n";
+  llvm::SmallDenseMap<StringAttr, int64_t> namedShape;
+  namedShape[outDimNames[0]] = collapsedShapePerCTA[0];
+  namedShape[outDimNames[1]] = collapsedShapePerCTA[1];
+  tileLayout = ensureLayoutNotSmallerThan(tileLayout, namedShape);
+
+
+  llvm::errs() << "tileLayout: " << tileLayout << "\n";
+  auto srcOutDims = to_vector(tileLayout.getOutDimNames());
+  std::reverse(srcOutDims.begin(), srcOutDims.end());
+  auto newOutDims = standardOutDimPairs(ctx, shapePerCTA);
+  std::reverse(newOutDims.begin(), newOutDims.end());
+  auto reshapedLayout = tileLayout.transposeOuts(srcOutDims)
+                 .reshapeOuts(newOutDims)
+                 .transposeOuts(standardOutDimNames(ctx, rank));
+  llvm::errs() << "reshapedLayout: " << reshapedLayout << "\n";
+
+  if (shared.getTransposed()) {
+    // Transpose the tile layout.
+    auto namedBases = reshapedLayout.getBases();
+    // move the most outer dimensions to the inner most position.
+    SmallVector<int> order = { rank - 1 };
+    for (int i = 0; i < rank - 1; i++) {
+      order.push_back(i);
+    }
+    for (auto &bases : llvm::make_second_range(namedBases)) {
+      for (auto &b : bases) {
+        std::vector<int32_t> newB;
+        for (auto i : order) {
+          newB.push_back(b[i]);
+        }
+        b = std::move(newB);
+      }
+    }
+    reshapedLayout = LinearLayout(std::move(namedBases),
+                              to_vector(reshapedLayout.getOutDimNames()));
   }
 
-  return combineCtaCgaWithShape(tileLayout, shared.getCTALayout(), shape);
+  llvm::errs() << "reshapedLayout: " << reshapedLayout << "\n";
+  auto res = combineCtaCgaWithShape(reshapedLayout, shared.getCTALayout(), shape);
+  llvm::errs() << "res: " << res << "\n";
+  return res;
 }
 
 /// Function to generate lane and warp layout for dot operands.
