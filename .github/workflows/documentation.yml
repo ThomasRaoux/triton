@@ -8,8 +8,8 @@ permissions: read-all
 
 jobs:
   Build-Documentation:
-    runs-on: [a100-runner-set]
-    timeout-minutes: 30
+    needs: runner-preparation
+    runs-on: ${{ fromJson(needs.runner-preparation.outputs.matrix-NVIDIA)[0] }}
 
     steps:
       - name: Checkout branch
