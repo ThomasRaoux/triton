@@ -33,6 +33,7 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.cpp.inc"
 
@@ -98,6 +99,9 @@ TMemAllocation getTmemAllocSizes(MemDescType memDescType) {
 
 Attribute getTmemCompatibleLayout(unsigned M, unsigned N,
                                   RankedTensorType oldType, unsigned numWarps) {
+
+  LinearLayout ll = getTmemLoadStoreLayout16x256(M, N, oldType, numWarps);
+  return LinearEncodingAttr::get(oldType.getContext(), ll);
   assert(numWarps == 4 || numWarps == 8);
   auto shape = getShapePerCTA(oldType);
   assert(shape.size() == 2);
@@ -159,6 +163,8 @@ bool isDistributedLayoutSplitMTmemLoadStore(RankedTensorType tensorType,
     return false;
   auto CTALayout = getCTALayout(tensorType.getEncoding());
   auto shapePerCTA = mlir::triton::gpu::getShapePerCTA(tensorType);
+  if (numWarps != 8)
+    return false;
   LinearLayout llLayout =
       getTmemLoadLayoutSplitLongM(M, N, tensorType, numWarps);
   return llEncoding.getLinearLayout() == llLayout;
@@ -170,7 +176,6 @@ bool isDistributedLayoutTMemCompatible(Operation *op,
                                        MemDescType memType) {
   int numWarps = lookupNumWarps(op);
   assert(numWarps % 4 == 0);
-  int numWarpGroups = numWarps / 4;
   if (isa<triton::nvidia_gpu::TensorMemoryScalesEncodingAttr>(
           memType.getEncoding())) {
     return tensorType.getEncoding() ==

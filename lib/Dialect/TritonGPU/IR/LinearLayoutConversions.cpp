@@ -1619,6 +1619,67 @@ LinearLayout getScaleTMEMStoreLinearLayout(RankedTensorType scaleType,
   return combineCtaCgaWithShape(regLanes, CTALayout, scaleType.getShape());
 }
 
+LinearLayout getTmemLoadStoreLayout16x256(int M, int N, RankedTensorType oldType,
+                                          int numWarps) {
+  assert(numWarps == 4 || numWarps == 8);
+  auto ctaLayout = getCTALayout(oldType.getEncoding());
+  SmallVector<int64_t> shape = getShapePerCTA(oldType);
+  MLIRContext *ctx = ctaLayout.getContext();
+
+  using basisT = std::vector<std::vector<int32_t>>;
+  StringAttr kRegister = StringAttr::get(ctx, "register");
+  StringAttr kLane = StringAttr::get(ctx, "lane");
+  StringAttr kWarp = StringAttr::get(ctx, "warp");
+
+
+
+  // Follow the layout given by a tmem load using this layout:
+  // https://docs.nvidia.com/cuda/parallel-thread-execution/#tcgen05-matrix-fragments-shape-16256b  
+  basisT laneBase;
+  basisT regBase;
+  regBase.push_back({0, 1});
+  
+  laneBase.push_back({0, 2});
+  laneBase.push_back({0, 4});
+  laneBase.push_back({1, 0});
+  laneBase.push_back({2, 0});
+  laneBase.push_back({4, 0});
+
+  regBase.push_back({8, 0});
+
+  // Distribute M along 4 warps to satisfy TMEM requirements.
+  basisT warpBase = {{32, 0}, {64, 0}};
+  int lastNregBase = N;
+  // Then the last warp distribute along M or N.
+  if (numWarps == 8) {
+    if (M > 128) {
+      warpBase.push_back({128, 0});
+    } else {
+      warpBase.push_back({0, N / 2});
+      lastNregBase = N / 2;
+    }
+  }
+  // Then distribute the rest along M then N.
+  int mBase = 256;
+  for (int i = mBase; i < M; i = i << 1) {
+    regBase.push_back({i, 0});
+  }
+  int nBase = 8;
+  for (int i = nBase; i < lastNregBase; i = i << 1) {
+    regBase.push_back({0, i});
+  }
+  if (M > 64) {
+    regBase.push_back({16, 0});
+  }
+
+  SmallVector<StringAttr> outDimNames = standardOutDimNames(ctx, 2);
+  auto regLanes =
+      LinearLayout({{kRegister, regBase}, {kLane, laneBase}, {kWarp, warpBase}},
+                   {outDimNames[0], outDimNames[1]});
+
+  return combineCtaCgaWithShape(regLanes, ctaLayout, oldType.getShape());
+}
+
 LinearLayout getTmemLoadLayoutSplitLongM(int M, int N, RankedTensorType oldType,
                                          int numWarps) {
   assert(numWarps == 8);

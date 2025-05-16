@@ -26,6 +26,7 @@ struct TMemAccessAtom {
   int opBitWidth;
   int colsPerThread;
   int rowsPerThread;
+  int rowStored;
   const char *opShape;
   bool usesSecondHalfOffset;
 };
@@ -33,18 +34,21 @@ struct TMemAccessAtom {
 constexpr TMemAccessAtom TMemAccess32x32b{.opBitWidth = 32,
                                           .colsPerThread = 1,
                                           .rowsPerThread = 1,
+                                          .rowStored = 32,
                                           .opShape = "32x32b",
                                           .usesSecondHalfOffset = false};
 
 constexpr TMemAccessAtom TMemAccess16x32bx2{.opBitWidth = 32,
                                             .colsPerThread = 1,
                                             .rowsPerThread = 1,
+                                            .rowStored = 32,
                                             .opShape = "16x32bx2",
                                             .usesSecondHalfOffset = true};
 
 constexpr TMemAccessAtom TMemAccess16x256b{.opBitWidth = 256,
                                            .colsPerThread = 2,
                                            .rowsPerThread = 2,
+                                           .rowStored = 16,
                                            .opShape = "16x256b",
                                            .usesSecondHalfOffset = false};
 
@@ -126,7 +130,8 @@ TMemMessageTraits getTMemMessageFromAtom(const TMemAccessAtom &atom,
   m.usesSecondHalfOffset = atom.usesSecondHalfOffset;
   m.numThreadsPerWarp = 32;
   m.maxNumRepeats =
-      largestTmemLoadStore / (atom.colsPerThread * atom.rowsPerThread);
+      (largestTmemLoadStore / (atom.colsPerThread * atom.rowsPerThread)) /
+      (32 / atom.rowStored);
   m.maxCols = (atom.opBitWidth / 32) * m.maxNumRepeats;
   m.numRows = m.numThreadsPerWarp / atom.rowsPerThread;
   m.numCols = m.maxCols / narrowingFactor;
@@ -385,7 +390,7 @@ void createWaitOpSt(Location loc, ConversionPatternRewriter &rewriter) {
 }
 
 TMemMessageTraits selectTMemMessage(const TMemRuntimeInfo &info, int maxnreg) {
-  auto atom = info.useStridedMessage ? TMemAccess16x32bx2 : TMemAccess32x32b;
+  auto atom = info.useStridedMessage ? TMemAccess16x32bx2 : TMemAccess16x256b;
 
   int totalRegsNeeded =
       getEffectiveRegs(info.unpackedb16, info.useStridedMessage,

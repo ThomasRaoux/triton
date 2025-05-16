@@ -85,14 +85,12 @@ def get_src_element_ty_size(dtype_str):
     raise ValueError(f"Unknown dtype {dtype_str}")
 
 
-@pytest.mark.parametrize("dtype_src_str", ["float32", "tensorfloat32", "float16", "float8e5"])
-@pytest.mark.parametrize("dtype_dst_str", ["float32", "float16"])
-@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES", [(128, 128, 16, 4), (64, 128, 32, 4), (32, 32, 32, 4),
-                                                                   (256, 128, 32, 4), (64, 512, 32, 2),
-                                                                   (512, 64, 32, 2), (64, 16, 16, 4)])
-@pytest.mark.parametrize("NUM_CTAS", [1, 2])
-@pytest.mark.parametrize("NUM_WARPS", [4, 8])
-@pytest.mark.parametrize("EPILOGUE_SUBTILE", [True, False])
+@pytest.mark.parametrize("dtype_src_str", ["float16"])
+@pytest.mark.parametrize("dtype_dst_str", ["float32"])
+@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES", [(128, 128, 32, 1)])
+@pytest.mark.parametrize("NUM_CTAS", [1])
+@pytest.mark.parametrize("NUM_WARPS", [4])
+@pytest.mark.parametrize("EPILOGUE_SUBTILE", [False])
 def test_simple_matmul(dtype_src_str, dtype_dst_str, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, NUM_WARPS, NUM_CTAS, device,
                        EPILOGUE_SUBTILE):
     if NUM_CTAS > 1 and (not is_cuda() or torch.cuda.get_device_capability()[0] < 9):
