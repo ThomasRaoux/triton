@@ -102,6 +102,7 @@ struct TMemRuntimeInfo {
   int numColsPerBlock;
   int colsPerWarpGroup;
   bool splitWarpgroupsAlongM;
+  TMemAccessAtom layoutAtom;
 
   LLVM_DUMP_METHOD void dump() const {
     llvm::dbgs() << "TMemRuntimeInfo:\n";
@@ -120,6 +121,7 @@ struct TMemRuntimeInfo {
     llvm::dbgs() << "  colsPerWarpGroup: " << colsPerWarpGroup << "\n";
     llvm::dbgs() << "  splitWarpgroupsAlongM: " << splitWarpgroupsAlongM
                  << "\n";
+    llvm::dbgs() << "  message shape: " << layoutAtom.opShape << "\n";
   }
 };
 
@@ -130,8 +132,7 @@ TMemMessageTraits getTMemMessageFromAtom(const TMemAccessAtom &atom,
   m.usesSecondHalfOffset = atom.usesSecondHalfOffset;
   m.numThreadsPerWarp = 32;
   m.maxNumRepeats =
-      (largestTmemLoadStore / (atom.colsPerThread * atom.rowsPerThread)) /
-      (32 / atom.rowStored);
+      largestTmemLoadStore / (atom.colsPerThread * atom.rowsPerThread);
   m.maxCols = (atom.opBitWidth / 32) * m.maxNumRepeats;
   m.numRows = m.numThreadsPerWarp / atom.rowsPerThread;
   m.numCols = m.maxCols / narrowingFactor;
@@ -271,6 +272,11 @@ TMemRuntimeInfo getTMemRuntimeInfo(Operation *op, RankedTensorType tensorType,
     // then fewer columns must be processed per message per warp group
     info.numColsPerBlock /= numWarpGroupsPerBlock;
   }
+  if (info.useStridedMessage ) {
+    info.layoutAtom = TMemAccess16x32bx2;
+  } else {
+    info.layoutAtom = info.blockM == 64 ? TMemAccess32x32b : TMemAccess16x256b;
+  }
   return info;
 }
 
@@ -324,11 +330,13 @@ void calculateAddressAndEmitTmemMessage(
     // thus half as many messages are required
     int numColumns = info.useStridedMessage ? info.numColsPerBlock / 2
                                             : info.numColsPerBlock;
-    for (int colStart = 0; colStart < numColumns; colStart += message.numCols) {
       // For messages that span only 16 rows (e.g. 16x256b), multiple messages
       // are required to cover the entire set of rows per warp.
-      for (int rowStart = 0; rowStart < TMemRuntimeInfo::numRowsPerWarp;
-           rowStart += message.numRows) {
+    for (int rowStart = 0; rowStart < TMemRuntimeInfo::numRowsPerWarp;
+         rowStart += message.numRows) {
+      for (int colStart = 0; colStart < numColumns;
+           colStart += message.numCols) {
+
         Value rowOffset = b.add(blockRowId, b.i32_val(rowStart));
         Value warpGroupAddress =
             b.add(address, b.shl(rowOffset, b.i32_val(16)));
@@ -390,7 +398,7 @@ void createWaitOpSt(Location loc, ConversionPatternRewriter &rewriter) {
 }
 
 TMemMessageTraits selectTMemMessage(const TMemRuntimeInfo &info, int maxnreg) {
-  auto atom = info.useStridedMessage ? TMemAccess16x32bx2 : TMemAccess16x256b;
+  auto atom = info.layoutAtom;
 
   int totalRegsNeeded =
       getEffectiveRegs(info.unpackedb16, info.useStridedMessage,
@@ -402,8 +410,9 @@ TMemMessageTraits selectTMemMessage(const TMemRuntimeInfo &info, int maxnreg) {
                                                  narrowedMessage.numRegs);
 
   auto maxWidthMessage = getTMemMessageFromAtom(atom, /*narrowingFactor=*/1);
+  int numRegs = info.layoutAtom.rowStored == 16 ? info.colsPerWarpGroup / 2 : info.colsPerWarpGroup;
   maxWidthMessage = constrainMessageFromWorkload(maxWidthMessage, info,
-                                                 info.colsPerWarpGroup);
+                                                 numRegs);
   return std::min(narrowedMessage, maxWidthMessage);
 }
 

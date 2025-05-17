@@ -100,8 +100,10 @@ TMemAllocation getTmemAllocSizes(MemDescType memDescType) {
 Attribute getTmemCompatibleLayout(unsigned M, unsigned N,
                                   RankedTensorType oldType, unsigned numWarps) {
 
-  LinearLayout ll = getTmemLoadStoreLayout16x256(M, N, oldType, numWarps);
-  return LinearEncodingAttr::get(oldType.getContext(), ll);
+  if (M == 128) {
+    LinearLayout ll = getTmemLoadStoreLayout16x256(M, N, oldType, numWarps);
+    return LinearEncodingAttr::get(oldType.getContext(), ll);
+  }
   assert(numWarps == 4 || numWarps == 8);
   auto shape = getShapePerCTA(oldType);
   assert(shape.size() == 2);

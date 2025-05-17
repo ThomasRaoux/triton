@@ -87,7 +87,7 @@ def get_src_element_ty_size(dtype_str):
 
 @pytest.mark.parametrize("dtype_src_str", ["float16"])
 @pytest.mark.parametrize("dtype_dst_str", ["float32"])
-@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES", [(128, 128, 32, 1)])
+@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES", [(128, 128, 32, 1), (128, 256, 32, 1)])
 @pytest.mark.parametrize("NUM_CTAS", [1])
 @pytest.mark.parametrize("NUM_WARPS", [4])
 @pytest.mark.parametrize("EPILOGUE_SUBTILE", [False])

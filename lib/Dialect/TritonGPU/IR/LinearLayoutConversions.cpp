@@ -1647,8 +1647,9 @@ LinearLayout getTmemLoadStoreLayout16x256(int M, int N, RankedTensorType oldType
 
   regBase.push_back({8, 0});
 
+  int mBase = M == 64 ? 16 : 32;
   // Distribute M along 4 warps to satisfy TMEM requirements.
-  basisT warpBase = {{32, 0}, {64, 0}};
+  basisT warpBase = {{mBase, 0}, {mBase << 1, 0}};
   int lastNregBase = N;
   // Then the last warp distribute along M or N.
   if (numWarps == 8) {
@@ -1659,19 +1660,21 @@ LinearLayout getTmemLoadStoreLayout16x256(int M, int N, RankedTensorType oldType
       lastNregBase = N / 2;
     }
   }
-  // Then distribute the rest along M then N.
-  int mBase = 256;
-  for (int i = mBase; i < M; i = i << 1) {
-    regBase.push_back({i, 0});
-  }
   int nBase = 8;
   for (int i = nBase; i < lastNregBase; i = i << 1) {
     regBase.push_back({0, i});
   }
-  if (M > 64) {
+  if (M != 64) {
     regBase.push_back({16, 0});
   }
 
+  // Fill out the rest of the shape with M first then N.
+  for (int i = M; i < shape[0]; i = i << 1) {
+    regBase.push_back({i, 0});
+  }
+  for (int i = N; i < shape[1]; i = i << 1) {
+    regBase.push_back({0, i});
+  }
   SmallVector<StringAttr> outDimNames = standardOutDimNames(ctx, 2);
   auto regLanes =
       LinearLayout({{kRegister, regBase}, {kLane, laneBase}, {kWarp, warpBase}},
