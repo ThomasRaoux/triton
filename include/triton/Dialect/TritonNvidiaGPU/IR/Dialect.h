@@ -58,7 +58,8 @@ struct TMemAllocation {
 TMemAllocation getTmemAllocSizes(gpu::MemDescType memDescType);
 
 Attribute getTmemCompatibleLayout(unsigned M, unsigned N,
-                                  RankedTensorType oltType, unsigned numWarps);
+                                  RankedTensorType oltType, unsigned numWarps,
+                                  bool prefer16x256 = true);
 
 bool isDistributedLayoutTMemCompatible(Operation *op,
                                        RankedTensorType tensorType,

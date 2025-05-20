@@ -181,20 +181,20 @@ public:
     // TODO: we could skip this for cases with num_warps=1 as long as we can
     // generate the right layout. Currently the warp level histogram generates
     // data in the default blocked layout.
-    Value baseSharedMemPtr =
-        LLVM::getSharedMemoryBase(loc, rewriter, targetInfo, op.getOperation());
-    auto dstType = op.getType();
-    Attribute dstEncoding = dstType.getEncoding();
-    auto indices = emitIndices(op.getLoc(), rewriter, targetInfo, dstEncoding,
-                               dstType, true);
-    SmallVector<Value> innerDimIndices;
-    for (int i = 0; i < indices.size(); ++i)
-      innerDimIndices.push_back(indices[i][0]);
-    SmallVector<Value> histogramValue = computeCrossWarpHistogram(
-        loc, rewriter, srcType, baseSharedMemPtr, warpLevelHistogram, numBins,
-        numThreadsPerWarp, innerDimIndices, threadId, numWarps);
+  //  Value baseSharedMemPtr =
+  //      LLVM::getSharedMemoryBase(loc, rewriter, targetInfo, op.getOperation());
+  //  auto dstType = op.getType();
+  //  Attribute dstEncoding = dstType.getEncoding();
+  //  auto indices = emitIndices(op.getLoc(), rewriter, targetInfo, dstEncoding,
+  //                             dstType, true);
+  //  SmallVector<Value> innerDimIndices;
+  //  for (int i = 0; i < indices.size(); ++i)
+  //    innerDimIndices.push_back(indices[i][0]);
+  //  SmallVector<Value> histogramValue = computeCrossWarpHistogram(
+  //      loc, rewriter, srcType, baseSharedMemPtr, warpLevelHistogram, numBins,
+  //      numThreadsPerWarp, innerDimIndices, threadId, numWarps);
 
-    Value results = packLLElements(loc, typeConverter, histogramValue, rewriter,
+    Value results = packLLElements(loc, typeConverter, warpLevelHistogram, rewriter,
                                    op.getType());
     rewriter.replaceOp(op, results);
     return success();

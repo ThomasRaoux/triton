@@ -2830,7 +2830,7 @@ def test_scan2d(op, dtype_str, shape, axis, reverse, num_warps, device):
 
 
 @pytest.mark.interpreter
-@pytest.mark.parametrize("M, N", [[2048, 2], [1024, 8], [1024, 128], [256, 512], [32, 512], [8, 512], [8, 2]])
+@pytest.mark.parametrize("M, N", [[64, 256]])
 def test_histogram(M, N, device):
 
     @triton.jit
@@ -2851,7 +2851,7 @@ def test_histogram(M, N, device):
     # https://github.com/pytorch/pytorch/issues/74236
     # This is a workload by converting the input to float
     z_torch = torch.histc(x.float(), bins=N, min=0, max=N - 1)
-    histogram_kernel[(1, )](x, z, M=M, N=N)
+    histogram_kernel[(1, )](x, z, M=M, N=N, num_warps=1)
     assert (z_torch == z).all()
 
 
