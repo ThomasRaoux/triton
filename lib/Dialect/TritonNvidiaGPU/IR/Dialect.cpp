@@ -23,6 +23,7 @@
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
+#include "triton/Tools/Sys/GetEnv.hpp"
 
 #include <numeric>
 
@@ -97,15 +98,9 @@ TMemAllocation getTmemAllocSizes(MemDescType memDescType) {
   return TMemAllocation(numColumn, numRows);
 }
 
-Attribute getTmemCompatibleLayout(unsigned M, unsigned N,
-                                  RankedTensorType oldType, unsigned numWarps, bool prefer16x256) {
-
-  if (prefer16x256) {
-    std::optional<LinearLayout> ll = getTmemLoadStoreLayout16x256(M, N, oldType, numWarps);
-    if (ll) {
-      return LinearEncodingAttr::get(oldType.getContext(), *ll);
-    }
-  }
+Attribute getTmemLoadStoreLayout32x32b(unsigned M, unsigned N,
+                                       RankedTensorType oldType,
+                                       unsigned numWarps) {
   assert(numWarps == 4 || numWarps == 8);
   auto shape = getShapePerCTA(oldType);
   assert(shape.size() == 2);
@@ -152,6 +147,18 @@ Attribute getTmemCompatibleLayout(unsigned M, unsigned N,
   return triton::gpu::BlockedEncodingAttr::get(ctaLayout.getContext(),
                                                sizePerThread, threadsPerWarp,
                                                warpsPerCTA, order, ctaLayout);
+}
+
+Attribute getTmemCompatibleLayout(unsigned M, unsigned N,
+                                  RankedTensorType oldType, unsigned numWarps) {
+  bool prefer16x256 = triton::tools::getBoolEnv("TRITON_PREFER_TMEM_16x256_LAYOUT");
+  if (prefer16x256) {
+    std::optional<LinearLayout> ll = getTmemLoadStoreLayout16x256(M, N, oldType, numWarps);
+    if (ll) {
+      return LinearEncodingAttr::get(oldType.getContext(), *ll);
+    }
+  }
+  return getTmemLoadStoreLayout32x32b(M, N, oldType, numWarps);
 }
 
 bool isDistributedLayoutSplitMTmemLoadStore(RankedTensorType tensorType,
@@ -201,8 +208,8 @@ bool isDistributedLayoutTMemCompatible(Operation *op,
           LinearEncodingAttr::get(tensorType.getContext(), ll16x256.value()),
           tensorType.getEncoding()))
     return true;
-  Attribute layout =
-      nvidia_gpu::getTmemCompatibleLayout(blockM, blockN, tensorType, numWarps);
+  Attribute layout = nvidia_gpu::getTmemLoadStoreLayout32x32b(
+      blockM, blockN, tensorType, numWarps);
   // TODO: Add support for more layout compatible with tmem load/store. There
   // will only be a discret set of layout possible due to the limiations of
   // tmem_load/store.
