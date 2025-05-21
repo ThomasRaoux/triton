@@ -1619,8 +1619,13 @@ LinearLayout getScaleTMEMStoreLinearLayout(RankedTensorType scaleType,
   return combineCtaCgaWithShape(regLanes, CTALayout, scaleType.getShape());
 }
 
-LinearLayout getTmemLoadStoreLayout16x256(int M, int N, RankedTensorType oldType,
+std::optional<LinearLayout> getTmemLoadStoreLayout16x256(int M, int N, RankedTensorType oldType,
                                           int numWarps) {
+  int pack = oldType.getElementTypeBitWidth() == 16;
+  // Too small block size for 16x256 layout.
+  if (numWarps == 8 && M == 64 && N <= 16 && pack) {
+    return {};
+  }
   assert(numWarps == 4 || numWarps == 8);
   auto ctaLayout = getCTALayout(oldType.getEncoding());
   SmallVector<int64_t> shape = getShapePerCTA(oldType);
@@ -1636,7 +1641,6 @@ LinearLayout getTmemLoadStoreLayout16x256(int M, int N, RankedTensorType oldType
   basisT laneBase;
   basisT regBase;
   int nBase = 1;
-  int pack = oldType.getElementTypeBitWidth() == 16;
   regBase.push_back({0, nBase});
   nBase <<= 1;
   if (pack) {

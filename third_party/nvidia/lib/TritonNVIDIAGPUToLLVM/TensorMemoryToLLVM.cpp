@@ -185,6 +185,7 @@ TMemMessageTraits constrainMessageFromWorkload(TMemMessageTraits m,
   // Half as many registers are needed for 16-bit packed elements,
   // so twice as many columns are accessed per message.
   m.numCols *= info.numElementsPer32B;
+  m.numRepeats = m.numCols / (m.atom.opBitWidth / 32);
   return m;
 }
 
@@ -217,9 +218,9 @@ static bool is16x256Layout(RankedTensorType tensorType, Attribute memEncoding, i
     return false;
   int blockM = tmemLayout.getBlockM();
   int blockN = tmemLayout.getBlockN();
-  LinearLayout ll0 = getTmemLoadStoreLayout16x256(blockM, blockN, tensorType, numWarps);
+  std::optional<LinearLayout> ll0 = getTmemLoadStoreLayout16x256(blockM, blockN, tensorType, numWarps);
   auto ll1 = toLinearLayout(tensorType.getShape(), tensorType.getEncoding());
-  return ll0 == ll1;
+  return ll0.has_value() && ll0.value() == ll1;
 }
 
 TMemRuntimeInfo getTMemRuntimeInfo(Operation *op, RankedTensorType tensorType,
@@ -260,12 +261,10 @@ TMemRuntimeInfo getTMemRuntimeInfo(Operation *op, RankedTensorType tensorType,
     info.blockN = 32;
   }
 
-  info.useStridedMessage = (info.blockM == 64);
 
   info.splitWarpgroupsAlongM =
       nvidia_gpu::isDistributedLayoutSplitMTmemLoadStore(tensorType, memType,
                                                          info.numWarps);
-
   info.numBlocks = ceil<int>(info.numElements, info.blockM * info.blockN);
   info.blocksInterleaved = (info.numBlocks > 1 && info.blockM == 64);
   info.numColsPerBlock = info.numCols / info.numBlocks;
@@ -283,12 +282,15 @@ TMemRuntimeInfo getTMemRuntimeInfo(Operation *op, RankedTensorType tensorType,
     // then fewer columns must be processed per message per warp group
     info.numColsPerBlock /= numWarpGroupsPerBlock;
   }
-  if (info.useStridedMessage ) {
-    info.layoutAtom = TMemAccess16x32bx2;
+  if (is16x256Layout(tensorType, memType.getEncoding(), info.numWarps)) {
+    info.useStridedMessage = false;
+    info.layoutAtom = TMemAccess16x256b;
   } else {
-    info.layoutAtom = TMemAccess32x32b;
-    if (is16x256Layout(tensorType, memType.getEncoding(), info.numWarps)) {
-      info.layoutAtom = TMemAccess16x256b;
+    info.useStridedMessage = (info.blockM == 64);
+    if (info.useStridedMessage) {
+      info.layoutAtom = TMemAccess16x32bx2;
+    } else {
+      info.layoutAtom = TMemAccess32x32b;
     }
   }
   return info;
@@ -346,7 +348,9 @@ void calculateAddressAndEmitTmemMessage(
                                             : info.numColsPerBlock;
       // For messages that span only 16 rows (e.g. 16x256b), multiple messages
       // are required to cover the entire set of rows per warp.
-    for (int rowStart = 0; rowStart < TMemRuntimeInfo::numRowsPerWarp;
+    int numRowPerWarp =
+        (info.layoutAtom.rowStored == 16 && info.blockM == 64) ? 16 : 32;
+    for (int rowStart = 0; rowStart < numRowPerWarp;
          rowStart += message.numRows) {
       for (int colStart = 0; colStart < numColumns;
            colStart += message.numCols) {
@@ -424,9 +428,10 @@ TMemMessageTraits selectTMemMessage(const TMemRuntimeInfo &info, int maxnreg) {
                                                  narrowedMessage.numRegs);
 
   auto maxWidthMessage = getTMemMessageFromAtom(atom, /*narrowingFactor=*/1);
-  int numRegs = info.layoutAtom.rowStored == 16 ? info.colsPerWarpGroup / 2 : info.colsPerWarpGroup;
-  maxWidthMessage = constrainMessageFromWorkload(maxWidthMessage, info,
-                                                 numRegs);
+  int numRegs = (info.layoutAtom.rowStored == 16) ? info.colsPerWarpGroup / 2
+                                                  : info.colsPerWarpGroup;
+  maxWidthMessage =
+      constrainMessageFromWorkload(maxWidthMessage, info, numRegs);
   return std::min(narrowedMessage, maxWidthMessage);
 }
 

@@ -100,9 +100,11 @@ TMemAllocation getTmemAllocSizes(MemDescType memDescType) {
 Attribute getTmemCompatibleLayout(unsigned M, unsigned N,
                                   RankedTensorType oldType, unsigned numWarps, bool prefer16x256) {
 
-  if (M == 128 && prefer16x256) {
-    LinearLayout ll = getTmemLoadStoreLayout16x256(M, N, oldType, numWarps);
-    return LinearEncodingAttr::get(oldType.getContext(), ll);
+  if (prefer16x256) {
+    std::optional<LinearLayout> ll = getTmemLoadStoreLayout16x256(M, N, oldType, numWarps);
+    if (ll) {
+      return LinearEncodingAttr::get(oldType.getContext(), *ll);
+    }
   }
   assert(numWarps == 4 || numWarps == 8);
   auto shape = getShapePerCTA(oldType);
@@ -193,8 +195,11 @@ bool isDistributedLayoutTMemCompatible(Operation *op,
     return true;
 
   auto ll16x256 = getTmemLoadStoreLayout16x256(blockM, blockN, tensorType, numWarps);
-  if (areLayoutsEquivalent(tensorType.getShape(), LinearEncodingAttr::get(tensorType.getContext(), ll16x256),
-                           tensorType.getEncoding()))
+  if (ll16x256.has_value() &&
+      areLayoutsEquivalent(
+          tensorType.getShape(),
+          LinearEncodingAttr::get(tensorType.getContext(), ll16x256.value()),
+          tensorType.getEncoding()))
     return true;
   Attribute layout =
       nvidia_gpu::getTmemCompatibleLayout(blockM, blockN, tensorType, numWarps);

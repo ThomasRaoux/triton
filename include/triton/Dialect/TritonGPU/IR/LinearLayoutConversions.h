@@ -271,7 +271,7 @@ LinearLayout chooseDsReadB64TrLayout(Attribute enc, ArrayRef<int64_t> shape,
 LinearLayout getScaleTMEMStoreLinearLayout(RankedTensorType scaleType,
                                            int numWarps);
 
-LinearLayout getTmemLoadStoreLayout16x256(int M, int N, RankedTensorType oldType,
+std::optional<LinearLayout> getTmemLoadStoreLayout16x256(int M, int N, RankedTensorType oldType,
                                           int numWarps);
 
 // Return a layout valid for TMemLoad op for a tmem layout of block MxN that
