@@ -1622,7 +1622,7 @@ LinearLayout getScaleTMEMStoreLinearLayout(RankedTensorType scaleType,
 std::optional<LinearLayout> getTmemLoadStoreLayout16x256(int M, int N, RankedTensorType oldType,
                                           int numWarps) {
   int pack = oldType.getElementTypeBitWidth() == 16;
-  // Too small block size for 16x256 layout.
+  // Too small to distribute on two warp groups while using 16x256 message..
   if (numWarps == 8 && M == 64 && N <= 16 && pack) {
     return {};
   }
