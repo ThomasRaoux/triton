@@ -1636,7 +1636,7 @@ std::optional<LinearLayout> getTmemLoadStoreLayout16x256(int M, int N, RankedTen
   StringAttr kLane = StringAttr::get(ctx, "lane");
   StringAttr kWarp = StringAttr::get(ctx, "warp");
 
-  // Follow the layout given by a tmem load using this layout:
+  // 1. Follow the layout given by a tmem load using this layout for the inner shape:
   // https://docs.nvidia.com/cuda/parallel-thread-execution/#tcgen05-matrix-fragments-shape-16256b  
   basisT laneBase;
   basisT regBase;
@@ -1658,11 +1658,14 @@ std::optional<LinearLayout> getTmemLoadStoreLayout16x256(int M, int N, RankedTen
   regBase.push_back({8, 0});
 
   int mBase = M == 64 ? 16 : 32;
-  // Distribute M along 4 warps to satisfy TMEM requirements.
+  // 2. Distribute M along 4 warps to satisfy TMEM requirements.
   basisT warpBase = {{mBase, 0}, {mBase << 1, 0}};
   bool distributeMAlongWarps = false;
   bool distributeNAlongWarps = false;
-  // Then the last warp distribute along M or N.
+  // 3. Then the last warp distribute along M or N following the same order as
+  // in getTmemLoadStoreLayout32x32b. This allows us to use the same lowering to
+  // tmem for load and store. This part could be generalized by making the
+  // lowering of tmem load and store rely more on linear layout..
   if (numWarps == 8) {
     if (shape[0] > 128) {
       warpBase.push_back({128, 0});
