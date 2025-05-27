@@ -308,6 +308,11 @@ def compile(src, target=None, options=None):
             )
         return res
 
+    compile_time_stats_path = os.environ.get("TRITON_COMPILE_TIME_LOG_PATH", "")
+    report_time_stats = compile_time_stats_path is not ""
+    if report_time_stats:
+        import time
+        start_time = time.perf_counter()
     # initialize metadata
     metadata = {
         "hash": hash,
@@ -385,6 +390,12 @@ def compile(src, target=None, options=None):
     if not knobs.compilation.enable_asan:
         context.disable_multithreading()
 
+    if report_time_stats:
+        import time
+        end_time = time.perf_counter()
+        total_time = end_time - start_time
+        with open(compile_time_stats_path, "a") as file:
+            file.write(f"{src.name}: {total_time:.6f}\n")
     # notify any listener
     if compilation_listener:
         compilation_listener(src=src, metadata=metadata, metadata_group=metadata_group, times=timer.end(),
