@@ -53,7 +53,7 @@ struct BlockInfo {
   }
 
   /// Returns true if intervals in two BlockInfo objects are intersected.
-  bool isIntersected(const BlockInfo &other, MembarFilterFn filter) const {
+  bool isIntersected(const BlockInfo &other, MembarFilterFn filter = nullptr) const {
     return /*RAW*/ isIntersected(syncWriteIntervals, other.syncReadIntervals,
                                  filter) ||
            /*WAR*/
