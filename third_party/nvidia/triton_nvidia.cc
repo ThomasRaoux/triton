@@ -33,6 +33,8 @@ void init_triton_nvidia_passes_ttnvgpuir(py::module &&m) {
                      mlir::triton::nvidia_gpu::ClusterInfo *);
   ADD_PASS_WRAPPER_0("add_fence_insertion",
                      ttng::createTritonGPUFenceInsertion);
+  ADD_PASS_WRAPPER_0("add_proxy_fence_insertion",
+                     ttng::createTritonGPUProxyFenceInsertion);
   ADD_PASS_WRAPPER_0("add_tma_lowering",
                      ttng::createTritonNvidiaGPUTMALoweringPass);
   ADD_PASS_WRAPPER_0("add_promote_lhs_to_tmem",
