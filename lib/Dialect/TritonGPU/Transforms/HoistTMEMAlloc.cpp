@@ -1,3 +1,4 @@
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -6,6 +7,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "llvm/Support/Casting.h"
 
 using namespace mlir;
 namespace tt = mlir::triton;
@@ -224,13 +226,37 @@ public:
     // Pattern match loads whose results are only passed into the next iteration
     // of a loop.
     scf::ForOp forOp = dyn_cast<scf::ForOp>(load->getParentOp());
-    if (!forOp || !forOp.isDefinedOutsideOfLoop(load.getSrc()) ||
-        !load.getResult().hasOneUse()) {
+    if (!forOp || !forOp.isDefinedOutsideOfLoop(load.getSrc())) {
       return failure();
     }
-    OpOperand &use = *load.getResult().use_begin();
-    auto yield = dyn_cast<scf::YieldOp>(use.getOwner());
-    if (!yield)
+    int escapeOpNo = -1;
+    OpOperand* escapeUse = nullptr;
+    SmallVector<scf::IfOp> ifStack;
+    scf::YieldOp yield = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+    for (auto &use : load.getResult().getUses()) {
+      Operation* user = use.getOwner();
+      int argNo = use.getOperandNumber();
+      auto ifYield = dyn_cast<scf::YieldOp>(user);
+      if (!ifYield) 
+        continue;
+      while (ifYield && isa<scf::IfOp>(ifYield->getParentOp())) {
+        Value res = ifYield->getParentOp()->getResult(argNo);
+        if (!res.hasOneUse()) {
+          break;
+        }
+        user = res.use_begin()->getOwner();
+        argNo = res.use_begin()->getOperandNumber();
+        ifStack.push_back(cast<scf::IfOp>(ifYield->getParentOp()));
+        ifYield = dyn_cast<scf::YieldOp>(user);
+      }
+      if (user == yield) {
+        escapeOpNo = argNo;
+        escapeUse = &use;
+        break;
+      }
+      ifStack.clear();
+    }
+    if (escapeOpNo == -1)
       return failure();
 
     // By rotating the load into the future, we are essentially merging the
@@ -250,8 +276,7 @@ public:
     // TODO: 3. The live-in value of the TMEM variable is never read.
 
     // Create a store before the loop to write the initial value.
-    int argNo = use.getOperandNumber();
-    Value initVal = forOp.getInitArgs()[argNo];
+    Value initVal = forOp.getInitArgs()[escapeOpNo];
     rewriter.setInsertionPoint(forOp);
     auto vTrue = rewriter.create<arith::ConstantIntOp>(load.getLoc(), 1, 1);
     auto tokType = rewriter.getType<AsyncTokenType>();
@@ -261,12 +286,14 @@ public:
     forOp.getInitArgsMutable()[tokArgNo].assign(initStore.getToken());
 
     // Move the load to the beginning of the loop to load the tensor value.
-    yield.setOperand(tokArgNo, load.getDep());
-    rewriter.moveOpBefore(load, &forOp.getBody()->front());
+    TMEMTokenLoadOp newLoad = cast<TMEMTokenLoadOp>(rewriter.clone(*load));
+    yield.setOperand(tokArgNo, newLoad.getDep());
+    rewriter.moveOpBefore(newLoad, &forOp.getBody()->front());
     Value tokArg = forOp.getRegionIterArg(tokArgNo);
-    load.getDepMutable().assign(tokArg);
-    tokArg.replaceAllUsesExcept(load.getToken(), load);
-    forOp.getRegionIterArg(argNo).replaceAllUsesWith(load.getResult());
+    newLoad.getDepMutable().assign(tokArg);
+    SmallPtrSet<Operation*, 2> exceptedOps{newLoad.getOperation(), load.getOperation()};
+    tokArg.replaceAllUsesExcept(newLoad.getToken(), exceptedOps);
+    forOp.getRegionIterArg(escapeOpNo).replaceAllUsesWith(newLoad.getResult());
 
     // Load from the tmem after the loop, and use it instead of the loop carried
     // value.
@@ -274,9 +301,9 @@ public:
     auto loadAfterLoop = rewriter.create<ttng::TMEMLoadOp>(
         load.getLoc(), load.getResult().getType(), tokType, load.getSrc(),
         forOp.getResult(tokArgNo));
-    forOp->getResult(argNo).replaceAllUsesWith(loadAfterLoop.getResult());
+    forOp->getResult(escapeOpNo).replaceAllUsesWith(loadAfterLoop.getResult());
     // Loop carried value is no longer used, short-circuit it.
-    yield.setOperand(argNo, forOp.getRegionIterArg(argNo));
+    yield.setOperand(escapeOpNo, forOp.getRegionIterArg(escapeOpNo));
     return success();
   }
 };
@@ -408,12 +435,12 @@ struct HoistTMEMAlloc
       }
       hoistTMEMAlloc(alloc, forOp);
     }
-
     mlir::RewritePatternSet patterns(&getContext());
     patterns.add<RotateTMEMStoreInLoop, RotateTMEMLoadInLoop,
                  CombineTMEMLoadAndStore, CombineTMEMStoreAndSelect,
                  SinkTMEMLoad, RemoveUnusedTMEMLoad>(&getContext());
     scf::ForOp::getCanonicalizationPatterns(patterns, &getContext());
+    scf::IfOp::getCanonicalizationPatterns(patterns, &getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
       llvm_unreachable("Failed to hoist tmem_store");
     }
