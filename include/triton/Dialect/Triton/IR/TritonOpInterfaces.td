@@ -100,6 +100,11 @@ def TT_DescriptorStoreLikeOpInterface : OpInterface<"DescriptorStoreLikeOpInterf
       /*retType=*/"::mlir::TypedValue<mlir::RankedTensorType>",
       /*methodName=*/"getSrc",
       /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Get Source tensor mutable",
+      /*retType=*/"::mlir::MutableOperandRange",
+      /*methodName=*/"getSrcMutable",
+      /*args=*/(ins)>,      
   ];
 }
 

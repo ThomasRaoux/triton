@@ -819,6 +819,18 @@ OpFoldResult FpToFpOp::fold(FoldAdaptor adaptor) {
     return Builder(getContext()).getFloatAttr(resElemType, negZero);
   }
 
+  if (auto fpToFpOp = srcVal.getDefiningOp<FpToFpOp>()) {
+    if (getElementTypeOrSelf(srcVal.getType()).getIntOrFloatBitWidth() <
+        getElementTypeOrSelf(dstTy).getIntOrFloatBitWidth()) {
+      if (getElementTypeOrSelf(fpToFpOp.getSrc().getType()).getIntOrFloatBitWidth() >
+        getElementTypeOrSelf(dstTy).getIntOrFloatBitWidth()) {
+        getSrcMutable().assign(fpToFpOp.getSrc());
+        setRounding(fpToFpOp.getRounding());
+        return getResult();
+      }
+    }
+  }
+
   return {};
 }
 

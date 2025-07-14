@@ -2,6 +2,7 @@
 #include "Dialect/NVGPU/IR/Dialect.h"
 #include "TritonNVIDIAGPUToLLVM/PTXAsmFormat.h"
 #include "Utility.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
@@ -93,6 +94,12 @@ static std::optional<NVVM::ReduxKind> matchReduxKind(triton::ReduceOp op,
   Operation *reduceOp = op.getSingleCombiner();
   if (!reduceOp)
     return std::nullopt;
+  if (reduceOp->getResultTypes()[0].isF32()) {
+    if (isa<arith::MaxNumFOp, arith::MaximumFOp>(reduceOp))
+      return NVVM::ReduxKind::FMAX;
+    if (isa<arith::MinNumFOp>(reduceOp))
+      return NVVM::ReduxKind::FMIN;
+  }
   auto intType = dyn_cast<IntegerType>(reduceOp->getResultTypes()[0]);
   if (!intType || intType.getWidth() > 32)
     return std::nullopt;
@@ -112,6 +119,10 @@ static std::optional<NVVM::ReduxKind> matchReduxKind(triton::ReduceOp op,
     return NVVM::ReduxKind::MAX;
   if (isa<arith::MaxUIOp>(reduceOp))
     return NVVM::ReduxKind::UMAX;
+  if (isa<arith::MaxNumFOp, arith::MaximumFOp>(reduceOp))
+    return NVVM::ReduxKind::FMAX;
+  if (isa<arith::MinNumFOp>(reduceOp))
+    return NVVM::ReduxKind::FMIN;
   return std::nullopt;
 }
 
@@ -452,6 +463,10 @@ bool TargetInfo::warpReduce(RewriterBase &rewriter, Location loc,
                      b.and_(laneId, b.i32_val(~(numLaneToReduce - 1))));
       }
       for (unsigned i = 0; i < acc.size(); ++i) {
+        if (acc[i].getType().isF32()) {
+          acc[i] = rewriter.create<NVVM::ReduxOp>(loc, acc[i].getType(), acc[0],
+          *kind, mask);
+        } else {
         unsigned bitwidth = cast<IntegerType>(acc[i].getType()).getWidth();
         if (bitwidth < 32) {
           if (*kind == NVVM::ReduxKind::MIN || *kind == NVVM::ReduxKind::MAX)
@@ -464,6 +479,7 @@ bool TargetInfo::warpReduce(RewriterBase &rewriter, Location loc,
         if (bitwidth < 32)
           acc[i] = b.trunc(int_ty(bitwidth), acc[i]);
       }
+    }
       return true;
     }
   }

@@ -66,6 +66,28 @@ ValueTableV2 getValuesFromDotOperandLayoutStruct(
     int repK, RankedTensorType type) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   auto elems = unpackLLElements(loc, value, rewriter);
+  
+  auto layout = triton::gpu::toLinearLayout(type.getShape(), type.getEncoding());
+  // remove duplicates
+  assert(layout.getNumInDims() != 0);
+  auto kReg = *layout.getInDimNames().begin();
+  assert(kReg.str() == "register");
+
+  // Drop the bases that are zero
+  const auto &bases = layout.getBases().lookup(kReg);
+  SmallVector<size_t> duplicate;
+  for (size_t i = 0; i < bases.size(); ++i) {
+    if (llvm::all_of(bases[i], [](size_t x) { return x == 0; })) {
+      duplicate.push_back(i);
+    }
+  }
+  for (auto i : duplicate) {
+    for (int j = 0; j < elems.size(); ++j) {
+      if (j & (1 << i)) {
+        elems[j] = b.undef(elems[j].getType());
+      }
+    }
+  }
   auto eltTy = typeConverter->convertType(type.getElementType());
   int offset{};
   ValueTableV2 vals;
@@ -514,6 +536,31 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
       typeConverter, loc, rewriter, loadedB, repBatch, repN, repK, bTensorTy);
 
   auto fc = unpackLLElements(loc, loadedC, rewriter);
+
+  auto layout = triton::gpu::toLinearLayout(
+      cast<RankedTensorType>(op.getType()).getShape(),
+      cast<RankedTensorType>(op.getType()).getEncoding());
+  // remove duplicates
+  assert(layout.getNumInDims() != 0);
+  auto kReg = *layout.getInDimNames().begin();
+  assert(kReg.str() == "register");
+
+  // Drop the bases that are zero
+  const auto &bases = layout.getBases().lookup(kReg);
+  SmallVector<size_t> duplicate;
+  for (size_t i = 0; i < bases.size(); ++i) {
+    if (llvm::all_of(bases[i], [](size_t x) { return x == 0; })) {
+      duplicate.push_back(i);
+    }
+  }
+  for (auto i : duplicate) {
+    for (int j = 0; j < fc.size(); ++j) {
+      if (j & (1 << i)) {
+        fc[j] = tb.i32_val(0);
+      }
+    }
+  }
+
   auto numMmaRets = dTensorTy.getElementType().getIntOrFloatBitWidth() / 8;
   int numCPackedElem = 4 / numMmaRets;
 
@@ -578,6 +625,11 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
           numCPackedElem > 1
               ? tb.bitcast(tb.extract_element(fc[i], tb.i32_val(j)), resElemTy)
               : tb.bitcast(fc[i], resElemTy);
+    }
+  }
+  for (auto i : duplicate) {
+    for (int j = 0; j < results.size(); ++j) {
+        results[j] = results[j & ~(1 << i)];
     }
   }
   Value res = packLLElements(loc, typeConverter, results, rewriter, structTy);
