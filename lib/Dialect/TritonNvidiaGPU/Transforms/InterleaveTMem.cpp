@@ -218,13 +218,26 @@ bool sinkOps(Value buffer, ArrayRef<Operation *> useChain) {
   return false;
 }
 
+bool isUser(ArrayRef<Operation *> useChain, Operation* user) {
+  for (Operation *op : useChain) {
+    if (llvm::is_contained(op->getUsers(), user))
+      return true;
+  }
+  return false;
+}
+
 // Try to sink a load and a collection of its users.
 bool trySinkOp(Operation *op, Value buffer) {
   SmallVector<Operation *> useChain{op};
-  while (useChain.back()->hasOneUse() &&
-         isPure(*useChain.back()->user_begin()) &&
-         useChain.back()->getNextNode() == *useChain.back()->user_begin()) {
-    useChain.push_back(*useChain.back()->user_begin());
+  //op->dump();
+  Operation *nextNode = op->getNextNode();
+  
+  while (nextNode && isPure(nextNode) && isUser(useChain, nextNode)) {
+    //nextNode->dump();
+    useChain.push_back(nextNode);
+    nextNode = nextNode->getNextNode();
+    //if (nextNode)
+    //  nextNode->dump();
   }
   return sinkOps(buffer, useChain);
 }
