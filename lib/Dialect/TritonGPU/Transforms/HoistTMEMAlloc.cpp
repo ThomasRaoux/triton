@@ -1,3 +1,4 @@
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -148,8 +149,87 @@ public:
   }
 };
 
-// Remove loop-carried tensor dependencies if they are fed immediately into a
-// TMEM store by pulling the store into the previous iteration.
+// Combine back TMEM alloc and store. This is equivalent but gives us a more canonical form to do further optimizations.
+class CombineTMEMStoreAndAlloc : public OpRewritePattern<TMEMTokenStoreOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TMEMTokenStoreOp store,
+                                PatternRewriter &rewriter) const override {
+    auto alloc = store.getDep().getDefiningOp<TMEMTokenAllocOp>();
+    if (!alloc)
+      return failure();
+    if (alloc->getBlock() != store->getBlock())
+      return failure();
+    alloc.getSrcMutable().assign(store.getSrc());
+    rewriter.replaceOp(store, alloc.getToken());
+    return success();
+  }
+};
+
+class HoistTMEMAllocOutOfIf : public OpRewritePattern<TMEMTokenAllocOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TMEMTokenAllocOp alloc,
+                                PatternRewriter &rewriter) const override {
+    Value init = alloc.getSrc();
+    if (!init)
+      return failure();
+    auto ifOp = dyn_cast<scf::IfOp>(alloc->getParentOp());
+    if (!ifOp)
+      return failure();
+    auto thenOp = ifOp.thenBlock()->getTerminator();
+    auto elseOp = ifOp.elseBlock()->getTerminator();
+    SmallVector<int> yieldArgs;
+    for (auto [thenOperand, elseOperand] : llvm::zip(thenOp->getOpOperands(), elseOp->getOpOperands())) {
+      auto load = thenOperand.get().getDefiningOp<TMEMTokenLoadOp>();
+      if (!load || load.getSrc() != alloc.getResult())
+        continue;
+      if (elseOperand.get() != init)
+        continue;
+      yieldArgs.push_back(thenOperand.getOperandNumber());
+    }
+    if (yieldArgs.empty())
+      return failure();
+    // Since init is used in the else terminator we know that it dominates the if op.
+    alloc->moveBefore(ifOp);
+    rewriter.setInsertionPointAfter(ifOp);
+    for (int argNo : yieldArgs) {
+      auto load =
+          cast<TMEMTokenLoadOp>(thenOp->getOperand(argNo).getDefiningOp());
+      auto newLoad = cast<TMEMTokenLoadOp>(rewriter.clone(*load));
+      rewriter.modifyOpInPlace(ifOp, [&] {
+        ifOp->getResult(argNo).replaceAllUsesWith(newLoad.getResult());
+        newLoad.getDepMutable().assign(ifOp->getResult(argNo));
+        thenOp->setOperand(argNo, load.getToken());
+        elseOp->setOperand(argNo, alloc.getToken());
+        ifOp->getResult(argNo).setType(newLoad.getToken().getType());
+      });
+    }
+    return success();
+  }
+};
+
+class TMEMLoadForwarding : public OpRewritePattern<TMEMTokenAllocOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TMEMTokenAllocOp alloc,
+                                PatternRewriter &rewriter) const override {
+    Value init = alloc.getSrc();
+    if (!init)
+      return failure();
+    auto load = init.getDefiningOp<TMEMTokenLoadOp>();
+    if (!load || !load.getDep().hasOneUse())
+      return failure();
+    if (alloc.getType() != load.getSrc().getType())
+      return failure();
+    rewriter.replaceOp(alloc, {load.getSrc(), load.getDep()});
+    return success();
+  }
+};
+
 class RotateTMEMStoreInLoop : public OpRewritePattern<TMEMTokenStoreOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
@@ -412,7 +492,7 @@ struct HoistTMEMAlloc
     mlir::RewritePatternSet patterns(&getContext());
     patterns.add<RotateTMEMStoreInLoop, RotateTMEMLoadInLoop,
                  CombineTMEMLoadAndStore, CombineTMEMStoreAndSelect,
-                 SinkTMEMLoad, RemoveUnusedTMEMLoad>(&getContext());
+                 SinkTMEMLoad, RemoveUnusedTMEMLoad, CombineTMEMStoreAndAlloc, HoistTMEMAllocOutOfIf, TMEMLoadForwarding>(&getContext());
     scf::ForOp::getCanonicalizationPatterns(patterns, &getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
       llvm_unreachable("Failed to hoist tmem_store");
