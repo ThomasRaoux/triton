@@ -820,6 +820,11 @@ OpFoldResult ReshapeOp::fold(FoldAdaptor adaptor) {
     return getSrc();
   }
 
+  if (auto expandOp = getSrc().getDefiningOp<ExpandDimsOp>()) {
+    this->getSrcMutable().assign(expandOp.getSrc());
+    return getResult();
+  }
+
   return foldViewLikeOp(*this, adaptor.getSrc());
 }
 
