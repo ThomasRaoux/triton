@@ -24,8 +24,8 @@ public:
                     std::optional<Value> ctaId, Type elemTy, Value pred,
                     Operation *localLoadOp = nullptr) const override;
 
-  bool supportLdMatrix() const override { return computeCapability >= 75; }
-  bool supportStMatrix() const override { return computeCapability >= 90; }
+  bool supportLdMatrix() const override { return false; }
+  bool supportStMatrix() const override { return false; }
 
   Value shuffleXor(RewriterBase &rewriter, Location loc, Value val,
                    int i) const override;

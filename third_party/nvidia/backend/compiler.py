@@ -236,8 +236,8 @@ class CUDABackend(BaseBackend):
     @staticmethod
     def make_ttgir(mod, metadata, opt, capability):
         # Set maxnreg on all kernels, if it was provided.
-        if opt.maxnreg is not None:
-            mod.set_attr("ttg.maxnreg", ir.builder(mod.context).get_int32_attr(opt.maxnreg))
+        #if opt.maxnreg is not None:
+        mod.set_attr("ttg.maxnreg", ir.builder(mod.context).get_int32_attr(256))
 
         cluster_info = nvidia.ClusterInfo()
         if opt.cluster_dims is not None:

@@ -15,7 +15,7 @@ using namespace mlir::triton::gpu;
 
 // The maximum number of tensor memory registers that can be accessed
 // by a single message regardless of shape or repetitions
-static constexpr int largestTmemLoadStore = 128;
+static constexpr int largestTmemLoadStore = 64;
 // The maximum number of thread registers that can be populated by
 // multiple messages
 static constexpr int maxRegisters = 256;

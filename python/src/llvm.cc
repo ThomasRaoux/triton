@@ -39,6 +39,8 @@ struct BreakStructPhiNodesPass : PassInfoMixin<BreakStructPhiNodesPass> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
   static StringRef name() { return "BreakStructPhiNodesPass"; }
 };
+ModulePass *createNVVMReflectPass(unsigned int SmVersion);
+
 } // namespace llvm
 
 using namespace llvm;
@@ -313,6 +315,11 @@ void init_triton_llvm(py::module &&m) {
             }
           }
         }
+
+        llvm::legacy::PassManager pm;
+        pm.add(createNVVMReflectPass(100));
+        pm.run(*mod);
+
         using namespace llvm;
         LoopAnalysisManager lam;
         FunctionAnalysisManager fam;

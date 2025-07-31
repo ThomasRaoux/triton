@@ -48,6 +48,16 @@ public:
   }
 };
 
+static void disableLICM(LLVM::BrOp latchBr) {
+  Builder b(latchBr.getContext());
+  MLIRContext *ctx = b.getContext();
+  auto licmMD = LLVM::LoopLICMAttr::get(ctx, b.getBoolAttr(true), {});
+  auto loopMD =
+      LLVM::LoopAnnotationAttr::get(b.getContext(), {}, {}, {}, {}, {}, licmMD,
+                                    {}, {}, {}, {}, {}, {}, {}, {}, {});
+  latchBr.setLoopAnnotationAttr(loopMD);
+}
+
 class TritonLLVMConversionTarget : public ConversionTarget {
 public:
   explicit TritonLLVMConversionTarget(MLIRContext &ctx)
@@ -201,6 +211,10 @@ struct ConvertTritonGPUToLLVM
         id.replaceAllUsesWith(zero);
       });
     }
+
+    mod->walk([](LLVM::BrOp op) {
+      disableLICM(op);
+    });
 
     // Ensure warp group code is isolated from above.
     makeAllWarpGroupsIsolatedFromAbove(mod);
