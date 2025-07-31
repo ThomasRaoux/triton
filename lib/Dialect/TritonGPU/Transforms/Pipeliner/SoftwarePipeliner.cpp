@@ -92,7 +92,11 @@ static void expandLoops(ModuleOp moduleOp) {
 
   SmallVector<scf::ForOp> loops;
   moduleOp->walk([&](scf::ForOp forOp) { loops.push_back(forOp); });
+  int count = 0;
   for (scf::ForOp forOp : loops) {
+    count++;
+    if (count != 1)
+      continue;
     CoarseSchedule schedule;
     if (failed(schedule.deSerialize(forOp))) {
       continue;
