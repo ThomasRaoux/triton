@@ -360,6 +360,8 @@ struct TritonNvidiaGPUInterleaveTMemPass
     m.walk([&](Operation *op) {
       if (auto load = dyn_cast<TMEMLoadOp>(op))
         opsToSink.emplace_back(load, load.getSrc());
+      else if (auto load = dyn_cast<triton::gpu::LocalLoadOp>(op))
+        opsToSink.emplace_back(load, load.getSrc());
       else if (auto alloc = dyn_cast<TMEMAllocOp>(op))
         allocOps.emplace_back(alloc, alloc.getResult());
       else if (auto store = dyn_cast<TMEMStoreOp>(op))
