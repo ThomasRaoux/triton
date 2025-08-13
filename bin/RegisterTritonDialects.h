@@ -52,6 +52,11 @@ namespace proton {
 void registerTestScopeIdAllocationPass();
 } // namespace proton
 } // namespace test
+
+namespace tools {
+void registerPressureAnnotationPass();
+} // namespace tools
+
 } // namespace mlir
 
 inline void registerTritonDialects(mlir::DialectRegistry &registry) {
@@ -66,9 +71,11 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::test::registerAMDTestAlignmentPass();
   mlir::test::registerTestAllocationPass();
   mlir::test::registerTestMembarPass();
+  mlir::tools::registerPressureAnnotationPass();
   mlir::test::registerTestLoopPeelingPass();
   mlir::test::registerTestAMDGPUMembarPass();
   mlir::test::registerTestTritonAMDGPURangeAnalysis();
+  mlir::tools::registerPressureAnnotationPass();
   mlir::triton::registerConvertTritonToTritonGPUPass();
   mlir::triton::registerRelayoutTritonGPUPass();
   mlir::triton::gpu::registerAllocateSharedMemoryPass();
