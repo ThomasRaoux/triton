@@ -46,7 +46,7 @@ def tmem_example_kernel(in_ptr, out_ptr, M: gl.constexpr, N: gl.constexpr, num_w
     )
 
     #smem_layout: gl.constexpr = gl.SwizzledSharedLayout(vec=1, per_phase=1, max_phase=1, order=[1, 0])
-    smem_layout: gl.constexpr = gl.NVMMASharedLayout(swizzle_byte_width=32, element_bitwidth=32, rank=2)
+    smem_layout: gl.constexpr = gl.NVMMASharedLayout(swizzle_byte_width=128, element_bitwidth=32, rank=2)
     smem = gl.allocate_shared_memory(in_ptr.dtype.element_ty, [M, N], layout=smem_layout)    
 
     smem.store(input)
@@ -76,7 +76,7 @@ def tmem_example_kernel(in_ptr, out_ptr, M: gl.constexpr, N: gl.constexpr, num_w
 
 def exp_tmem():
     M = 128
-    N = 128
+    N = 256
     num_warps = 4
    # input = torch.randn(M, N, dtype=torch.float32, device="cuda")
     input = torch.arange(M * N, device="cuda").reshape(M, N).to(torch.int32)

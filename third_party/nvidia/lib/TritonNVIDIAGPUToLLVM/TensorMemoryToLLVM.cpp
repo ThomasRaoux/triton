@@ -10,6 +10,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Tools/LayoutUtils.h"
+#include "llvm/ADT/SmallVector.h"
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -934,27 +935,33 @@ struct TensorMemoryCopyOpConversion
     auto invLayout = ll.flattenOuts().invert();
     auto kDim = *ll.getOutDimNames().begin();
 
-    Value smemDesc = createBlockedScalesSMEMDescriptor(rewriter, loc, baseSrc);
     Value pred = LLVM::NVIDIA::createElectPredicateWarp0(loc, rewriter);
 
     auto createCopy = [&](int repMorN, int repK) {
-    //  for (int i = 0; i < repMorN; ++i) {
-    //    for (int j = 0; j < repK; ++j) {
-          // Multiple copies of 32x128b blocks are laid out along M/N first then
-          // K
-          for (int i = 0; i < srcTy.getDimSize(1)/8; i++) {
-            int j = 0;
-            auto colOffset = b.int_val(32, i * 8);
-            auto tmemAddr = b.add(b.ptrtoint(i32_ty, baseDst), colOffset);
-            auto blockSize = (32 * 128) / llvmElementTy.getIntOrFloatBitWidth();
-            auto linearIdx = (i * repK + j) * blockSize;
-            auto smemOffset = b.int_val(32, i * 1024);
-            auto smemAddr = b.gep(elemPtrTy, llvmElementTy, baseSrc, smemOffset);
-            smemDesc = createBlockedScalesSMEMDescriptor(rewriter, loc, smemAddr);
-            createTcgen05Cp(rewriter, loc, tmemAddr, smemDesc, pred);
-          }
+      //  for (int i = 0; i < repMorN; ++i) {
+      //    for (int j = 0; j < repK; ++j) {
+      // Multiple copies of 32x128b blocks are laid out along M/N first then
+      // K
+      Value zero = b.i32_val(0);
+      SmallVector<int64_t> shape(op.getSrc().getType().getShape());
+      DotOpMmaV3SmemLoader smemLoader = DotOpMmaV3SmemLoader(
+          op.getSrc(), baseSrc, shape, op.getSrc().getType().getAllocShape(),
+          zero, 1, /*trans=*/false, {128, 8},
+          op.getSrc().getType().getElementType().getIntOrFloatBitWidth(),
+          rewriter, loc);
+      for (int i = 0; i < srcTy.getDimSize(1) / 8; i++) {
+        int j = 0;
+        auto colOffset = b.int_val(32, i * 8);
+        auto tmemAddr = b.add(b.ptrtoint(i32_ty, baseDst), colOffset);
+        auto blockSize = (32 * 128) / llvmElementTy.getIntOrFloatBitWidth();
+        auto linearIdx = (i * repK + j) * blockSize;
+        auto smemOffset = b.int_val(32, i * 1024);
+        auto smemAddr = b.gep(elemPtrTy, llvmElementTy, baseSrc, smemOffset);
+        Value smemDesc = smemLoader.smemLoad(0, i, rewriter, loc);
+        createTcgen05Cp(rewriter, loc, tmemAddr, smemDesc, pred);
+      }
       //  }
-     // }
+      // }
     };
 
     // Break up src axes into rep_m x rep_k x 32x128b, where rep_m = BLOCK_M /
