@@ -868,8 +868,8 @@ createBlockedScalesSMEMDescriptor(ConversionPatternRewriter &rewriter,
   NVIDIA::SMEMDescriptor desc;
   desc.descriptor = 0;
   desc.swizzlingMode = 0;                    // No swizzling for now
-  desc.leadDimensionBaseOffset = 16 >> 4;    // 16 bytes
-  desc.strideDimensionBaseOffset = 128 >> 4; // 8 x 16 bytes
+  desc.leadDimensionBaseOffset = (2*16) >> 4;    // 16 bytes
+  desc.strideDimensionBaseOffset = (2*8 * 16) >> 4; // 8 x 16 bytes
   // See matrix-descriptor-encode(x) function in the ptx doc.
   // matrix-descriptor-encode(addr) = (addr & 0x3FFFF) >> 4
   auto smemAddr = b.ptrtoint(i64_ty, baseSrc);
@@ -892,7 +892,7 @@ static void createTcgen05Cp(ConversionPatternRewriter &rewriter, Location loc,
   PTXBuilder ptxBuilder;
   auto dst = ptxBuilder.newAddrOperand(tmem_address, "r");
   auto src = ptxBuilder.newOperand(src_desc, "l");
-  std::string opcode = "tcgen05.cp.cta_group::1.warpx4.32x128b";
+  std::string opcode = "tcgen05.cp.cta_group::1.128x256b";
   auto &op = *ptxBuilder.create<PTXInstr>(opcode);
   op({dst, src}).predicate(pred);
   ptxBuilder.launch(rewriter, loc, void_ty(rewriter.getContext()));
@@ -938,10 +938,12 @@ struct TensorMemoryCopyOpConversion
     Value pred = LLVM::NVIDIA::createElectPredicateWarp0(loc, rewriter);
 
     auto createCopy = [&](int repMorN, int repK) {
-      for (int i = 0; i < repMorN; ++i) {
-        for (int j = 0; j < repK; ++j) {
+    //  for (int i = 0; i < repMorN; ++i) {
+    //    for (int j = 0; j < repK; ++j) {
           // Multiple copies of 32x128b blocks are laid out along M/N first then
           // K
+          int i = 0;
+          int j = 0;
           auto colOffset = b.int_val(32, (j * repMorN + i) * 4);
           auto tmemAddr = b.add(b.ptrtoint(i32_ty, baseDst), colOffset);
           auto blockSize = (32 * 128) / llvmElementTy.getIntOrFloatBitWidth();
@@ -952,8 +954,8 @@ struct TensorMemoryCopyOpConversion
           auto smemAddr = b.gep(elemPtrTy, llvmElementTy, baseSrc, smemOffset);
           smemDesc = createBlockedScalesSMEMDescriptor(rewriter, loc, smemAddr);
           createTcgen05Cp(rewriter, loc, tmemAddr, smemDesc, pred);
-        }
-      }
+      //  }
+     // }
     };
 
     // Break up src axes into rep_m x rep_k x 32x128b, where rep_m = BLOCK_M /
