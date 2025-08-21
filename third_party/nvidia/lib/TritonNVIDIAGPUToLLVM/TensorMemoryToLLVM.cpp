@@ -867,7 +867,7 @@ createBlockedScalesSMEMDescriptor(ConversionPatternRewriter &rewriter,
                 "Descriptor size should be 64 bits.");
   NVIDIA::SMEMDescriptor desc;
   desc.descriptor = 0;
-  desc.swizzlingMode = 0;                    // No swizzling for now
+  desc.swizzlingMode = 3;                    // No swizzling for now
   desc.leadDimensionBaseOffset = (2*16) >> 4;    // 16 bytes
   desc.strideDimensionBaseOffset = (2*8 * 16) >> 4; // 8 x 16 bytes
   // See matrix-descriptor-encode(x) function in the ptx doc.
@@ -942,18 +942,17 @@ struct TensorMemoryCopyOpConversion
     //    for (int j = 0; j < repK; ++j) {
           // Multiple copies of 32x128b blocks are laid out along M/N first then
           // K
-          int i = 0;
-          int j = 0;
-          auto colOffset = b.int_val(32, (j * repMorN + i) * 4);
-          auto tmemAddr = b.add(b.ptrtoint(i32_ty, baseDst), colOffset);
-          auto blockSize = (32 * 128) / llvmElementTy.getIntOrFloatBitWidth();
-          auto linearIdx = (i * repK + j) * blockSize;
-          auto smemOffset = applyLinearLayout(loc, rewriter, invLayout,
-                                              {{kDim, b.i32_val(linearIdx)}})[0]
-                                .second;
-          auto smemAddr = b.gep(elemPtrTy, llvmElementTy, baseSrc, smemOffset);
-          smemDesc = createBlockedScalesSMEMDescriptor(rewriter, loc, smemAddr);
-          createTcgen05Cp(rewriter, loc, tmemAddr, smemDesc, pred);
+          for (int i = 0; i < 128/8; i++) {
+            int j = 0;
+            auto colOffset = b.int_val(32, i * 8);
+            auto tmemAddr = b.add(b.ptrtoint(i32_ty, baseDst), colOffset);
+            auto blockSize = (32 * 128) / llvmElementTy.getIntOrFloatBitWidth();
+            auto linearIdx = (i * repK + j) * blockSize;
+            auto smemOffset = b.int_val(32, i * 8 * 4);
+            auto smemAddr = b.gep(elemPtrTy, llvmElementTy, baseSrc, smemOffset);
+            smemDesc = createBlockedScalesSMEMDescriptor(rewriter, loc, smemAddr);
+            createTcgen05Cp(rewriter, loc, tmemAddr, smemDesc, pred);
+          }
       //  }
      // }
     };

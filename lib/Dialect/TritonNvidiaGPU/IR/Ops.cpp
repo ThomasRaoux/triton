@@ -601,17 +601,17 @@ LogicalResult TMEMCopyOp::verify() {
   }
 
   auto srcTy = cast<triton::gpu::MemDescType>(getSrc().getType());
-  if (auto sharedEnc =
-          dyn_cast<triton::gpu::NVMMASharedEncodingAttr>(srcTy.getEncoding())) {
-
-    if (!sharedEnc || sharedEnc.getTransposed() || sharedEnc.getFp4Padded() ||
-        sharedEnc.getSwizzlingByteWidth() != 0)
-      return emitOpError(
-          "The source should not have swizzling applied for now");
-  }
-  if (!triton::gpu::isInnermostContiguous(srcTy, 512)) {
-    return emitOpError("The source must be in a row-major order.");
-  }
+ // if (auto sharedEnc =
+ //         dyn_cast<triton::gpu::NVMMASharedEncodingAttr>(srcTy.getEncoding())) {
+//
+ //   if (!sharedEnc || sharedEnc.getTransposed() || sharedEnc.getFp4Padded() ||
+ //       sharedEnc.getSwizzlingByteWidth() != 0)
+ //     return emitOpError(
+ //         "The source should not have swizzling applied for now");
+ // }
+//  if (!triton::gpu::isInnermostContiguous(srcTy, 512)) {
+//    return emitOpError("The source must be in a row-major order.");
+ // }
 
   // Given that we want to support flexible input SMEM shapes, kinds of shape
   // checking we can do here are limited. For simplicity, shape checking is
