@@ -942,13 +942,13 @@ struct TensorMemoryCopyOpConversion
     //    for (int j = 0; j < repK; ++j) {
           // Multiple copies of 32x128b blocks are laid out along M/N first then
           // K
-          for (int i = 0; i < 128/8; i++) {
+          for (int i = 0; i < srcTy.getDimSize(1)/8; i++) {
             int j = 0;
             auto colOffset = b.int_val(32, i * 8);
             auto tmemAddr = b.add(b.ptrtoint(i32_ty, baseDst), colOffset);
             auto blockSize = (32 * 128) / llvmElementTy.getIntOrFloatBitWidth();
             auto linearIdx = (i * repK + j) * blockSize;
-            auto smemOffset = b.int_val(32, i * 8 * 4);
+            auto smemOffset = b.int_val(32, i * 1024);
             auto smemAddr = b.gep(elemPtrTy, llvmElementTy, baseSrc, smemOffset);
             smemDesc = createBlockedScalesSMEMDescriptor(rewriter, loc, smemAddr);
             createTcgen05Cp(rewriter, loc, tmemAddr, smemDesc, pred);

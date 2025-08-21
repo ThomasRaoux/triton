@@ -26,8 +26,8 @@ def tmem_example_kernel(in_ptr, out_ptr, M: gl.constexpr, N: gl.constexpr, num_w
 
     # Get the register layout needed to access the tensor memory using a helper.
     tmem_reg_layout: gl.constexpr = get_tmem_32x32b_reg_layout(
-        M=128,
-        N=128,
+        M=M,
+        N=N,
         shape=[M, N],
         num_warps=num_warps,
     )
@@ -41,7 +41,7 @@ def tmem_example_kernel(in_ptr, out_ptr, M: gl.constexpr, N: gl.constexpr, num_w
 
     # Allocate some tensor memory.
     tmem_layout: gl.constexpr = TensorMemoryLayout(
-        block=(128, 128),
+        block=(M, N),
         unpacked=True,
     )
 
