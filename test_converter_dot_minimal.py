@@ -15,11 +15,10 @@ def matmul_tile_kernel(a_ptr, b_ptr, c_ptr, M, N, K,
     offs_n = tl.arange(0, BLOCK_N)[None, :]
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
     k = 0
-    while k < K:
+    for k in range(0, K, BLOCK_K):
         a = tl.load(a_ptr + offs_m * K + (k + tl.arange(0, BLOCK_K))[None, :])
         b = tl.load(b_ptr + (k + tl.arange(0, BLOCK_K))[:, None] * N + offs_n)
         acc += tl.dot(a, b)
-        k += BLOCK_K
     tl.store(c_ptr + offs_m * N + offs_n, acc)
 
 

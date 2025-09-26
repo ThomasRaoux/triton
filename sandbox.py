@@ -72,6 +72,8 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         self._globals: dict = globals_map or {}
         # Temp counter for generating unique variable names
         self._temp_counter: int = 0
+        # Track if we need the dot helper import
+        self._need_dot_helper: bool = False
 
     def visit_Import(self, node: ast.Import) -> Optional[ast.AST]:
         # Preserve imports; mark if gluon import is already present
@@ -99,6 +101,20 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             gl_import_mod = ast.parse(GLUON_IMPORT_LINES).body
             for stmt in reversed(gl_import_mod):
                 node.body.insert(0, stmt)
+        # Import dot helper if it is needed and not yet imported
+        if self._need_dot_helper:
+            already = False
+            for stmt in node.body:
+                if isinstance(stmt, ast.ImportFrom) and stmt.module == "helpers":
+                    for alias in stmt.names:
+                        if alias.name == "dot_accumulate":
+                            already = True
+                            break
+                if already:
+                    break
+            if not already:
+                helper_import = ast.ImportFrom(module="helpers", names=[ast.alias(name="dot_accumulate", asname=None)], level=0)
+                node.body.insert(0, helper_import)
         return node
 
     def _parts(self, node: ast.AST) -> Optional[list]:
@@ -232,24 +248,9 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             return self._handle_tl_zeros(node)
         return node
 
-    def _default_blocked_layout_kw(self) -> ast.keyword:
-        # layout=ttgl.BlockedLayout(size_per_thread=[1], threads_per_warp=[32], warps_per_cta=[ttgl.num_warps()], order=[0])
-        layout_call = ast.Call(
-            func=self._ttgl_attr("BlockedLayout"),
-            args=[],
-            keywords=[
-                ast.keyword(arg="size_per_thread", value=ast.List(elts=[ast.Constant(value=1)], ctx=ast.Load())),
-                ast.keyword(arg="threads_per_warp", value=ast.List(elts=[ast.Constant(value=32)], ctx=ast.Load())),
-                ast.keyword(
-                    arg="warps_per_cta",
-                    value=ast.List(
-                        elts=[ast.Call(func=self._ttgl_attr("num_warps"), args=[], keywords=[])],
-                        ctx=ast.Load(),
-                    ),
-                ),
-                ast.keyword(arg="order", value=ast.List(elts=[ast.Constant(value=0)], ctx=ast.Load())),
-            ],
-        )
+    def _default_auto_layout_kw(self) -> ast.keyword:
+        # layout=ttgl.AutoLayout()
+        layout_call = ast.Call(func=self._ttgl_attr("AutoLayout"), args=[], keywords=[])
         return ast.keyword(arg="layout", value=layout_call)
 
     def _handle_tl_arange(self, node: ast.Call) -> ast.Call:
@@ -257,7 +258,7 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         has_layout_kw = any(isinstance(kw, ast.keyword) and kw.arg == "layout" for kw in new_call.keywords)
         has_layout_pos = len(new_call.args) >= 3
         if not has_layout_kw and not has_layout_pos:
-            new_call.keywords.append(self._default_blocked_layout_kw())
+            new_call.keywords.append(self._default_auto_layout_kw())
         return new_call
 
     def _handle_tl_program_id(self, node: ast.Call) -> ast.Call:
@@ -323,31 +324,17 @@ class TritonToGluonTransformer(ast.NodeTransformer):
     def visit_AugAssign(self, node: ast.AugAssign) -> ast.AST:
         node = self.generic_visit(node)
         if isinstance(node.op, ast.Add) and isinstance(node.value, ast.Call) and self._is_tl_call(node.value.func, "dot"):
-            # acc += tl.dot(a, b) ->
-            # dot_a_layout: ttgl.constexpr = ttgl.DotOperandLayout(0, ...)
-            # dot_b_layout: ttgl.constexpr = ttgl.DotOperandLayout(1, ...)
-            # acc = ttgl.dot_fma(ttgl.convert_layout(a, dot_a_layout), ttgl.convert_layout(b, dot_b_layout), acc)
+            # acc += tl.dot(a, b) -> acc = dot_accumulate(a, b, acc)
             if isinstance(node.target, ast.Name) and len(node.value.args) >= 2:
-                # layout temps
-                a_layout_name = self._new_temp_name("dot_a_layout")
-                b_layout_name = self._new_temp_name("dot_b_layout")
-                a_layout_assign = self._make_dot_layout_annassign(a_layout_name, 0)
-                b_layout_assign = self._make_dot_layout_annassign(b_layout_name, 1)
-                # converted operands
-                a_expr = ast.Call(
-                    func=self._ttgl_attr("convert_layout"),
-                    args=[node.value.args[0], ast.Name(id=a_layout_name, ctx=ast.Load())],
-                    keywords=[],
-                )
-                b_expr = ast.Call(
-                    func=self._ttgl_attr("convert_layout"),
-                    args=[node.value.args[1], ast.Name(id=b_layout_name, ctx=ast.Load())],
-                    keywords=[],
-                )
+                self._need_dot_helper = True
                 acc_name = ast.Name(id=node.target.id, ctx=ast.Load())
-                dot_call = ast.Call(func=self._ttgl_attr("dot_fma"), args=[a_expr, b_expr, acc_name], keywords=[])
-                final_assign = ast.Assign(targets=[node.target], value=dot_call)
-                return [a_layout_assign, b_layout_assign, final_assign]
+                helper_call = ast.Call(
+                    func=ast.Name(id="dot_accumulate", ctx=ast.Load()),
+                    args=[node.value.args[0], node.value.args[1], acc_name],
+                    keywords=[],
+                )
+                final_assign = ast.Assign(targets=[node.target], value=helper_call)
+                return final_assign
         return node
 
     def visit_Assign(self, node: ast.Assign) -> ast.AST:
@@ -356,29 +343,20 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             target = node.targets[0].id
             left = node.value.left
             right = node.value.right
-            # acc = acc + tl.dot(a,b) or acc = tl.dot(a,b) + acc
+            # acc = acc + tl.dot(a,b)
             if isinstance(left, ast.Name) and left.id == target and isinstance(right, ast.Call) and self._is_tl_call(right.func, "dot"):
                 if len(right.args) >= 2:
-                    a_layout_name = self._new_temp_name("dot_a_layout")
-                    b_layout_name = self._new_temp_name("dot_b_layout")
-                    a_layout_assign = self._make_dot_layout_annassign(a_layout_name, 0)
-                    b_layout_assign = self._make_dot_layout_annassign(b_layout_name, 1)
-                    a_expr = ast.Call(func=self._ttgl_attr("convert_layout"), args=[right.args[0], ast.Name(id=a_layout_name, ctx=ast.Load())], keywords=[])
-                    b_expr = ast.Call(func=self._ttgl_attr("convert_layout"), args=[right.args[1], ast.Name(id=b_layout_name, ctx=ast.Load())], keywords=[])
+                    self._need_dot_helper = True
                     acc_name = ast.Name(id=target, ctx=ast.Load())
-                    dot_call = ast.Call(func=self._ttgl_attr("dot_fma"), args=[a_expr, b_expr, acc_name], keywords=[])
-                    return [a_layout_assign, b_layout_assign, ast.Assign(targets=node.targets, value=dot_call)]
+                    helper_call = ast.Call(func=ast.Name(id="dot_accumulate", ctx=ast.Load()), args=[right.args[0], right.args[1], acc_name], keywords=[])
+                    return ast.Assign(targets=node.targets, value=helper_call)
+            # acc = tl.dot(a,b) + acc
             if isinstance(right, ast.Name) and right.id == target and isinstance(left, ast.Call) and self._is_tl_call(left.func, "dot"):
                 if len(left.args) >= 2:
-                    a_layout_name = self._new_temp_name("dot_a_layout")
-                    b_layout_name = self._new_temp_name("dot_b_layout")
-                    a_layout_assign = self._make_dot_layout_annassign(a_layout_name, 0)
-                    b_layout_assign = self._make_dot_layout_annassign(b_layout_name, 1)
-                    a_expr = ast.Call(func=self._ttgl_attr("convert_layout"), args=[left.args[0], ast.Name(id=a_layout_name, ctx=ast.Load())], keywords=[])
-                    b_expr = ast.Call(func=self._ttgl_attr("convert_layout"), args=[left.args[1], ast.Name(id=b_layout_name, ctx=ast.Load())], keywords=[])
+                    self._need_dot_helper = True
                     acc_name = ast.Name(id=target, ctx=ast.Load())
-                    dot_call = ast.Call(func=self._ttgl_attr("dot_fma"), args=[a_expr, b_expr, acc_name], keywords=[])
-                    return [a_layout_assign, b_layout_assign, ast.Assign(targets=node.targets, value=dot_call)]
+                    helper_call = ast.Call(func=ast.Name(id="dot_accumulate", ctx=ast.Load()), args=[left.args[0], left.args[1], acc_name], keywords=[])
+                    return ast.Assign(targets=node.targets, value=helper_call)
         return node
 
 
