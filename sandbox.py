@@ -74,6 +74,8 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         self._temp_counter: int = 0
         # Track if we need the dot helper import
         self._need_dot_helper: bool = False
+        # Track if we need default layout helper
+        self._need_default_layout_helper: bool = False
 
     def visit_Import(self, node: ast.Import) -> Optional[ast.AST]:
         # Preserve imports; mark if gluon import is already present
@@ -101,20 +103,12 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             gl_import_mod = ast.parse(GLUON_IMPORT_LINES).body
             for stmt in reversed(gl_import_mod):
                 node.body.insert(0, stmt)
-        # Import dot helper if it is needed and not yet imported
+        # Import dot helper if it is needed
         if self._need_dot_helper:
-            already = False
-            for stmt in node.body:
-                if isinstance(stmt, ast.ImportFrom) and stmt.module == "helpers":
-                    for alias in stmt.names:
-                        if alias.name == "dot_accumulate":
-                            already = True
-                            break
-                if already:
-                    break
-            if not already:
-                helper_import = ast.ImportFrom(module="helpers", names=[ast.alias(name="dot_accumulate", asname=None)], level=0)
-                node.body.insert(0, helper_import)
+            node.body.insert(0, ast.ImportFrom(module="helpers", names=[ast.alias(name="dot_accumulate", asname=None)], level=0))
+        # Import default layout helper if needed
+        if self._need_default_layout_helper:
+            node.body.insert(0, ast.ImportFrom(module="helpers", names=[ast.alias(name="default_blocked_layout", asname=None)], level=0))
         return node
 
     def _parts(self, node: ast.AST) -> Optional[list]:
@@ -253,12 +247,29 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         layout_call = ast.Call(func=self._ttgl_attr("AutoLayout"), args=[], keywords=[])
         return ast.keyword(arg="layout", value=layout_call)
 
+    def _default_helper_layout_kw(self, shape_expr: ast.expr) -> ast.keyword:
+        # layout=default_blocked_layout(shape, ttgl.num_warps())
+        self._need_default_layout_helper = True
+        layout_call = ast.Call(
+            func=ast.Name(id="default_blocked_layout", ctx=ast.Load()),
+            args=[shape_expr, ast.Call(func=self._ttgl_attr("num_warps"), args=[], keywords=[])],
+            keywords=[],
+        )
+        return ast.keyword(arg="layout", value=layout_call)
+
     def _handle_tl_arange(self, node: ast.Call) -> ast.Call:
         new_call = ast.Call(func=self._ttgl_attr("arange"), args=list(node.args), keywords=list(node.keywords))
         has_layout_kw = any(isinstance(kw, ast.keyword) and kw.arg == "layout" for kw in new_call.keywords)
         has_layout_pos = len(new_call.args) >= 3
         if not has_layout_kw and not has_layout_pos:
-            new_call.keywords.append(self._default_auto_layout_kw())
+            # derive 1D shape from stop-start if available, else [new_call.args[1]]
+            if len(new_call.args) >= 2:
+                shape_dim = ast.BinOp(left=new_call.args[1], op=ast.Sub(), right=new_call.args[0])
+            else:
+                # fallback: assume single-arg arange(N)
+                shape_dim = new_call.args[0]
+            shape_expr = ast.List(elts=[shape_dim], ctx=ast.Load())
+            new_call.keywords.append(self._default_helper_layout_kw(shape_expr))
         return new_call
 
     def _handle_tl_program_id(self, node: ast.Call) -> ast.Call:
@@ -271,7 +282,7 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         return ast.Call(func=self._ttgl_attr("store"), args=list(node.args), keywords=list(node.keywords))
 
     def _handle_tl_zeros(self, node: ast.Call) -> ast.Call:
-        # tl.zeros((M,N), dtype=tl.float32) -> ttgl.zeros([M,N], ttgl.float32, layout=AutoLayout())
+        # tl.zeros((M,N), dtype=tl.float32) -> ttgl.zeros([M,N], ttgl.float32, layout=default_blocked_layout([M,N]))
         args = list(node.args)
         kwds = {kw.arg: kw.value for kw in node.keywords if kw.arg is not None}
         # shape can be first positional or keyword 'shape' in Triton
@@ -287,7 +298,7 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         elif not isinstance(shape_expr, ast.List):
             # Wrap single dim into list
             shape_expr = ast.List(elts=[shape_expr], ctx=ast.Load())
-        layout_kw = ast.keyword(arg="layout", value=ast.Call(func=self._ttgl_attr("AutoLayout"), args=[], keywords=[]))
+        layout_kw = self._default_helper_layout_kw(shape_expr)
         new_args = [shape_expr]
         if dtype_expr is not None:
             new_args.append(dtype_expr)
