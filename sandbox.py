@@ -70,6 +70,8 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         self._symbol_to_module: dict[str, str] = {}
         # Globals from the original function (if provided) to resolve real bindings
         self._globals: dict = globals_map or {}
+        # Temp counter for generating unique variable names
+        self._temp_counter: int = 0
 
     def visit_Import(self, node: ast.Import) -> Optional[ast.AST]:
         # Preserve imports; mark if gluon import is already present
@@ -153,6 +155,10 @@ class TritonToGluonTransformer(ast.NodeTransformer):
     def _ttgl_attr(self, name: str) -> ast.AST:
         return ast.Attribute(value=ast.Name(id="ttgl", ctx=ast.Load()), attr=name, ctx=ast.Load())
 
+    def _new_temp_name(self, base: str) -> str:
+        self._temp_counter += 1
+        return f"__{base}_{self._temp_counter}"
+
     def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
         node = self.generic_visit(node)
         parts = self._parts(node)
@@ -167,6 +173,14 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             )
         ):
             return _reconstruct_attr(["ttgl", "constexpr"])
+        # Map common dtypes: tl.float32 -> ttgl.float32, etc.
+        DTYPE_ATTRS = {
+            "float16", "bfloat16", "float32", "float64",
+            "int1", "int8", "int16", "int32", "int64",
+            "uint8", "uint16", "uint32", "uint64",
+        }
+        if parts and len(parts) == 2 and self._is_name_from_module_prefix(parts[0], "triton.language") and parts[1] in DTYPE_ATTRS:
+            return _reconstruct_attr(["ttgl", parts[1]])
         return node
 
     def visit_Name(self, node: ast.Name) -> ast.AST:
@@ -214,6 +228,8 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             return self._handle_tl_load(node)
         if self._is_tl_call(node.func, "store"):
             return self._handle_tl_store(node)
+        if self._is_tl_call(node.func, "zeros"):
+            return self._handle_tl_zeros(node)
         return node
 
     def _default_blocked_layout_kw(self) -> ast.keyword:
@@ -252,6 +268,118 @@ class TritonToGluonTransformer(ast.NodeTransformer):
 
     def _handle_tl_store(self, node: ast.Call) -> ast.Call:
         return ast.Call(func=self._ttgl_attr("store"), args=list(node.args), keywords=list(node.keywords))
+
+    def _handle_tl_zeros(self, node: ast.Call) -> ast.Call:
+        # tl.zeros((M,N), dtype=tl.float32) -> ttgl.zeros([M,N], ttgl.float32, layout=AutoLayout())
+        args = list(node.args)
+        kwds = {kw.arg: kw.value for kw in node.keywords if kw.arg is not None}
+        # shape can be first positional or keyword 'shape' in Triton
+        shape_expr = None
+        if args:
+            shape_expr = args[0]
+        if kwds.get("shape") is not None:
+            shape_expr = kwds["shape"]
+        dtype_expr = kwds.get("dtype", None)
+        # Convert shape tuple to list for Gluon
+        if isinstance(shape_expr, ast.Tuple):
+            shape_expr = ast.List(elts=list(shape_expr.elts), ctx=ast.Load())
+        elif not isinstance(shape_expr, ast.List):
+            # Wrap single dim into list
+            shape_expr = ast.List(elts=[shape_expr], ctx=ast.Load())
+        layout_kw = ast.keyword(arg="layout", value=ast.Call(func=self._ttgl_attr("AutoLayout"), args=[], keywords=[]))
+        new_args = [shape_expr]
+        if dtype_expr is not None:
+            new_args.append(dtype_expr)
+        return ast.Call(func=self._ttgl_attr("zeros"), args=new_args, keywords=[layout_kw])
+
+    def _wrap_dot_operand(self, expr: ast.expr, operand_index: int) -> ast.Call:
+        # ttgl.convert_layout(expr, ttgl.DotOperandLayout(operand_index, ttgl.AutoLayout(), 0))
+        dot_layout = ast.Call(
+            func=self._ttgl_attr("DotOperandLayout"),
+            args=[ast.Constant(value=operand_index), ast.Call(func=self._ttgl_attr("AutoLayout"), args=[], keywords=[]), ast.Constant(value=0)],
+            keywords=[],
+        )
+        return ast.Call(func=self._ttgl_attr("convert_layout"), args=[expr, dot_layout], keywords=[])
+
+    def _make_dot_layout_call(self, operand_index: int) -> ast.Call:
+        return ast.Call(
+            func=self._ttgl_attr("DotOperandLayout"),
+            args=[
+                ast.Constant(value=operand_index),
+                ast.Call(func=self._ttgl_attr("AutoLayout"), args=[], keywords=[]),
+                ast.Constant(value=0),
+            ],
+            keywords=[],
+        )
+
+    def _make_dot_layout_annassign(self, name: str, operand_index: int) -> ast.AST:
+        return ast.AnnAssign(
+            target=ast.Name(id=name, ctx=ast.Store()),
+            annotation=self._ttgl_attr("constexpr"),
+            value=self._make_dot_layout_call(operand_index),
+            simple=1,
+        )
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> ast.AST:
+        node = self.generic_visit(node)
+        if isinstance(node.op, ast.Add) and isinstance(node.value, ast.Call) and self._is_tl_call(node.value.func, "dot"):
+            # acc += tl.dot(a, b) ->
+            # dot_a_layout: ttgl.constexpr = ttgl.DotOperandLayout(0, ...)
+            # dot_b_layout: ttgl.constexpr = ttgl.DotOperandLayout(1, ...)
+            # acc = ttgl.dot_fma(ttgl.convert_layout(a, dot_a_layout), ttgl.convert_layout(b, dot_b_layout), acc)
+            if isinstance(node.target, ast.Name) and len(node.value.args) >= 2:
+                # layout temps
+                a_layout_name = self._new_temp_name("dot_a_layout")
+                b_layout_name = self._new_temp_name("dot_b_layout")
+                a_layout_assign = self._make_dot_layout_annassign(a_layout_name, 0)
+                b_layout_assign = self._make_dot_layout_annassign(b_layout_name, 1)
+                # converted operands
+                a_expr = ast.Call(
+                    func=self._ttgl_attr("convert_layout"),
+                    args=[node.value.args[0], ast.Name(id=a_layout_name, ctx=ast.Load())],
+                    keywords=[],
+                )
+                b_expr = ast.Call(
+                    func=self._ttgl_attr("convert_layout"),
+                    args=[node.value.args[1], ast.Name(id=b_layout_name, ctx=ast.Load())],
+                    keywords=[],
+                )
+                acc_name = ast.Name(id=node.target.id, ctx=ast.Load())
+                dot_call = ast.Call(func=self._ttgl_attr("dot_fma"), args=[a_expr, b_expr, acc_name], keywords=[])
+                final_assign = ast.Assign(targets=[node.target], value=dot_call)
+                return [a_layout_assign, b_layout_assign, final_assign]
+        return node
+
+    def visit_Assign(self, node: ast.Assign) -> ast.AST:
+        node = self.generic_visit(node)
+        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.BinOp) and isinstance(node.value.op, ast.Add):
+            target = node.targets[0].id
+            left = node.value.left
+            right = node.value.right
+            # acc = acc + tl.dot(a,b) or acc = tl.dot(a,b) + acc
+            if isinstance(left, ast.Name) and left.id == target and isinstance(right, ast.Call) and self._is_tl_call(right.func, "dot"):
+                if len(right.args) >= 2:
+                    a_layout_name = self._new_temp_name("dot_a_layout")
+                    b_layout_name = self._new_temp_name("dot_b_layout")
+                    a_layout_assign = self._make_dot_layout_annassign(a_layout_name, 0)
+                    b_layout_assign = self._make_dot_layout_annassign(b_layout_name, 1)
+                    a_expr = ast.Call(func=self._ttgl_attr("convert_layout"), args=[right.args[0], ast.Name(id=a_layout_name, ctx=ast.Load())], keywords=[])
+                    b_expr = ast.Call(func=self._ttgl_attr("convert_layout"), args=[right.args[1], ast.Name(id=b_layout_name, ctx=ast.Load())], keywords=[])
+                    acc_name = ast.Name(id=target, ctx=ast.Load())
+                    dot_call = ast.Call(func=self._ttgl_attr("dot_fma"), args=[a_expr, b_expr, acc_name], keywords=[])
+                    return [a_layout_assign, b_layout_assign, ast.Assign(targets=node.targets, value=dot_call)]
+            if isinstance(right, ast.Name) and right.id == target and isinstance(left, ast.Call) and self._is_tl_call(left.func, "dot"):
+                if len(left.args) >= 2:
+                    a_layout_name = self._new_temp_name("dot_a_layout")
+                    b_layout_name = self._new_temp_name("dot_b_layout")
+                    a_layout_assign = self._make_dot_layout_annassign(a_layout_name, 0)
+                    b_layout_assign = self._make_dot_layout_annassign(b_layout_name, 1)
+                    a_expr = ast.Call(func=self._ttgl_attr("convert_layout"), args=[left.args[0], ast.Name(id=a_layout_name, ctx=ast.Load())], keywords=[])
+                    b_expr = ast.Call(func=self._ttgl_attr("convert_layout"), args=[left.args[1], ast.Name(id=b_layout_name, ctx=ast.Load())], keywords=[])
+                    acc_name = ast.Name(id=target, ctx=ast.Load())
+                    dot_call = ast.Call(func=self._ttgl_attr("dot_fma"), args=[a_expr, b_expr, acc_name], keywords=[])
+                    return [a_layout_assign, b_layout_assign, ast.Assign(targets=node.targets, value=dot_call)]
+        return node
 
 
 def convert_triton_to_gluon(func_or_src: Union[str, object]) -> str:
