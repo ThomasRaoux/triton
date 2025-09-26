@@ -12,7 +12,8 @@ from triton.experimental.gluon.language.nvidia.blackwell import (
 
 
 @gluon.jit
-def dot_accumulate(a, b, acc):
+def dot_accumulate(a, b, acc=None, input_precision=None, allow_tf32=None, max_num_imprecise_acc=None, out_dtype=ttgl.float32,
+        _semantic=None):
     # TODO: check if MMAv5 cannot be used and fallback to mmav2
     # Shapes (constexpr)
     M: ttgl.constexpr = acc.type.shape[0]

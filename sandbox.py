@@ -143,8 +143,12 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             if len(parts) == 2 and self._is_name_from_module_prefix(parts[0], "triton.language") and parts[1] == symbol:
                 return True
             # triton.language.symbol
-            if (len(parts) == 3 and self._is_name_from_module_prefix(parts[0], "triton") and parts[1] == "language"
-                    and parts[2] == symbol):
+            if (
+                len(parts) == 3
+                and self._is_name_from_module_prefix(parts[0], "triton")
+                and parts[1] == "language"
+                and parts[2] == symbol
+            ):
                 return True
             return False
         if isinstance(func, ast.Name):
@@ -243,6 +247,10 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             return self._handle_tl_store(node)
         if self._is_tl_call(node.func, "zeros"):
             return self._handle_tl_zeros(node)
+        if self._is_tl_call(node.func, "cdiv"):
+            return self._handle_cdiv(node)
+        if self._is_tl_call(node.func, "dot"):
+            return self._handle_tl_dot(node)
         return node
 
     def _default_auto_layout_kw(self) -> ast.keyword:
@@ -343,7 +351,7 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         return ast.Call(func=self._ttgl_attr("store"), args=list(node.args), keywords=list(node.keywords))
 
     def _handle_tl_zeros(self, node: ast.Call) -> ast.Call:
-        # tl.zeros((M,N), dtype=tl.float32) -> ttgl.zeros([M,N], ttgl.float32, layout=default_blocked_layout([M,N]))
+        # tl.zeros((M,N), dtype=tl.float32) -> ttgl.zeros([M,N], ttgl.float32, layout=default_blocked_layout([M,N], ttgl.num_warps()))
         args = list(node.args)
         kwds = {kw.arg: kw.value for kw in node.keywords if kw.arg is not None}
         # shape can be first positional or keyword 'shape' in Triton
@@ -365,81 +373,38 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             new_args.append(dtype_expr)
         return ast.Call(func=self._ttgl_attr("zeros"), args=new_args, keywords=[layout_kw])
 
-    def _wrap_dot_operand(self, expr: ast.expr, operand_index: int) -> ast.Call:
-        # ttgl.convert_layout(expr, ttgl.DotOperandLayout(operand_index, ttgl.AutoLayout(), 0))
-        dot_layout = ast.Call(
-            func=self._ttgl_attr("DotOperandLayout"),
-            args=[
-                ast.Constant(value=operand_index),
-                ast.Call(func=self._ttgl_attr("AutoLayout"), args=[], keywords=[]),
-                ast.Constant(value=0)
-            ],
-            keywords=[],
-        )
-        return ast.Call(func=self._ttgl_attr("convert_layout"), args=[expr, dot_layout], keywords=[])
+    def _handle_cdiv(self, node: ast.Call) -> ast.Call:
+        # tl.cdiv(x, y) or triton.cdiv(x, y) -> ttgl.cdiv(x, y)
+        return ast.Call(func=self._ttgl_attr("cdiv"), args=list(node.args), keywords=list(node.keywords))
 
-    def _make_dot_layout_call(self, operand_index: int) -> ast.Call:
+    def _handle_tl_dot(self, node: ast.Call) -> ast.AST:
+        # Rewrite tl.dot(a, b, acc=..., out_dtype=..., input_precision=...) -> dot_accumulate(a, b, acc, out_dtype=..., input_precision=...)
+        # Only transform when an explicit acc kwarg is provided; otherwise leave unchanged
+        a_expr = node.args[0] if len(node.args) > 0 else None
+        b_expr = node.args[1] if len(node.args) > 1 else None
+        acc_kw = None
+        extra_kwargs = []
+        for kw in node.keywords:
+            if kw.arg == "acc":
+                acc_kw = kw.value
+            elif kw.arg in ("out_dtype", "input_precision") and kw.value is not None:
+                extra_kwargs.append(ast.keyword(arg=kw.arg, value=kw.value))
+        if a_expr is None or b_expr is None or acc_kw is None:
+            return node
+        self._need_dot_helper = True
         return ast.Call(
-            func=self._ttgl_attr("DotOperandLayout"),
-            args=[
-                ast.Constant(value=operand_index),
-                ast.Call(func=self._ttgl_attr("AutoLayout"), args=[], keywords=[]),
-                ast.Constant(value=0),
-            ],
-            keywords=[],
-        )
-
-    def _make_dot_layout_annassign(self, name: str, operand_index: int) -> ast.AST:
-        return ast.AnnAssign(
-            target=ast.Name(id=name, ctx=ast.Store()),
-            annotation=self._ttgl_attr("constexpr"),
-            value=self._make_dot_layout_call(operand_index),
-            simple=1,
+            func=ast.Name(id="dot_accumulate", ctx=ast.Load()),
+            args=[a_expr, b_expr, acc_kw],
+            keywords=extra_kwargs,
         )
 
     def visit_AugAssign(self, node: ast.AugAssign) -> ast.AST:
-        node = self.generic_visit(node)
-        if isinstance(node.op, ast.Add) and isinstance(node.value, ast.Call) and self._is_tl_call(
-                node.value.func, "dot"):
-            # acc += tl.dot(a, b) -> acc = dot_accumulate(a, b, acc)
-            if isinstance(node.target, ast.Name) and len(node.value.args) >= 2:
-                self._need_dot_helper = True
-                acc_name = ast.Name(id=node.target.id, ctx=ast.Load())
-                helper_call = ast.Call(
-                    func=ast.Name(id="dot_accumulate", ctx=ast.Load()),
-                    args=[node.value.args[0], node.value.args[1], acc_name],
-                    keywords=[],
-                )
-                final_assign = ast.Assign(targets=[node.target], value=helper_call)
-                return final_assign
-        return node
+        # Do not pattern-match += around tl.dot; only transform the tl.dot call itself
+        return self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign) -> ast.AST:
-        node = self.generic_visit(node)
-        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and isinstance(
-                node.value, ast.BinOp) and isinstance(node.value.op, ast.Add):
-            target = node.targets[0].id
-            left = node.value.left
-            right = node.value.right
-            # acc = acc + tl.dot(a,b)
-            if isinstance(left, ast.Name) and left.id == target and isinstance(right, ast.Call) and self._is_tl_call(
-                    right.func, "dot"):
-                if len(right.args) >= 2:
-                    self._need_dot_helper = True
-                    acc_name = ast.Name(id=target, ctx=ast.Load())
-                    helper_call = ast.Call(func=ast.Name(id="dot_accumulate", ctx=ast.Load()),
-                                           args=[right.args[0], right.args[1], acc_name], keywords=[])
-                    return ast.Assign(targets=node.targets, value=helper_call)
-            # acc = tl.dot(a,b) + acc
-            if isinstance(right, ast.Name) and right.id == target and isinstance(left, ast.Call) and self._is_tl_call(
-                    left.func, "dot"):
-                if len(left.args) >= 2:
-                    self._need_dot_helper = True
-                    acc_name = ast.Name(id=target, ctx=ast.Load())
-                    helper_call = ast.Call(func=ast.Name(id="dot_accumulate", ctx=ast.Load()),
-                                           args=[left.args[0], left.args[1], acc_name], keywords=[])
-                    return ast.Assign(targets=node.targets, value=helper_call)
-        return node
+        # Do not pattern-match x = x + tl.dot(...); only transform the tl.dot call itself
+        return self.generic_visit(node)
 
 
 def convert_triton_to_gluon(func_or_src: Union[str, object]) -> str:
