@@ -151,7 +151,19 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                     keywords=[
                         ast.keyword(arg="size_per_thread", value=ast.List(elts=[ast.Constant(value=1)], ctx=ast.Load())),
                         ast.keyword(arg="threads_per_warp", value=ast.List(elts=[ast.Constant(value=32)], ctx=ast.Load())),
-                        ast.keyword(arg="warps_per_cta", value=ast.List(elts=[ast.Constant(value=4)], ctx=ast.Load())),
+                        ast.keyword(
+                            arg="warps_per_cta",
+                            value=ast.List(
+                                elts=[
+                                    ast.Call(
+                                        func=ast.Attribute(value=ast.Name(id="ttgl", ctx=ast.Load()), attr="num_warps", ctx=ast.Load()),
+                                        args=[],
+                                        keywords=[],
+                                    )
+                                ],
+                                ctx=ast.Load(),
+                            ),
+                        ),
                         ast.keyword(arg="order", value=ast.List(elts=[ast.Constant(value=0)], ctx=ast.Load())),
                     ],
                 )

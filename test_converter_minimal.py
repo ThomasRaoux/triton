@@ -7,11 +7,6 @@ import triton.language as tl
 from sandbox import convert_triton_to_gluon
 
 
-def test_triton_to_gluon_add_minimal(tmp_path):
-    src = """
-import triton
-import triton.language as tl
-
 @triton.jit
 def add_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
@@ -20,12 +15,13 @@ def add_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr):
     x = tl.load(x_ptr + offsets, mask=mask)
     y = tl.load(y_ptr + offsets, mask=mask)
     tl.store(out_ptr + offsets, x + y, mask=mask)
-"""
 
-    converted = convert_triton_to_gluon(src)
-    
+
+def test_triton_to_gluon_add_minimal(tmp_path):
+    # Convert directly from the Triton kernel object (using its original function)
+    converted = convert_triton_to_gluon(add_kernel.fn)
+
     print(converted)
-    
     # Write converted kernel to a file so @gluon.jit can retrieve source
     mod_path = tmp_path / "converted_kernel.py"
     mod_path.write_text(converted)
