@@ -8,8 +8,8 @@ from sandbox import convert_triton_to_gluon
 
 
 @triton.jit
-def matmul_tile_kernel(a_ptr, b_ptr, c_ptr, M, N, K,
-                       BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr):
+def matmul_tile_kernel(a_ptr, b_ptr, c_ptr, M, N, K, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+                       BLOCK_K: tl.constexpr):
     pid = tl.program_id(0)
     offs_m = tl.arange(0, BLOCK_M)[:, None]
     offs_n = tl.arange(0, BLOCK_N)[None, :]
@@ -39,9 +39,9 @@ def test_triton_to_gluon_dot_minimal(tmp_path):
     kernel = getattr(module, "matmul_tile_kernel")
 
     # Prepare inputs
-    BLOCK_M = 16
-    BLOCK_N = 16
-    BLOCK_K = 16
+    BLOCK_M = 128
+    BLOCK_N = 128
+    BLOCK_K = 128
     M = BLOCK_M
     N = BLOCK_N
     K = BLOCK_K
@@ -51,11 +51,9 @@ def test_triton_to_gluon_dot_minimal(tmp_path):
     c = torch.empty((M, N), device="cuda", dtype=torch.float32)
 
     # Launch converted kernel
-    grid = (1,)
+    grid = (1, )
     kernel[grid](a, b, c, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps=4)
 
     # Reference
     ref = (a.float() @ b.float())
     torch.testing.assert_close(c, ref, rtol=1e-2, atol=1e-2)
-
-

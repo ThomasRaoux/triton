@@ -3,10 +3,8 @@ import ast
 import inspect
 from typing import Union, Optional
 
-GLUON_IMPORT_LINES = (
-    "from triton.experimental import gluon\n"
-    "from triton.experimental.gluon import language as ttgl"
-)
+GLUON_IMPORT_LINES = ("from triton.experimental import gluon\n"
+                      "from triton.experimental.gluon import language as ttgl")
 
 
 def get_source(func_or_src: Union[str, object]) -> str:
@@ -47,10 +45,7 @@ def _is_tl_constexpr_annotation(node: ast.expr) -> bool:
     if not parts:
         return False
     # Matches tl.constexpr or triton.language.constexpr
-    return (
-        parts == ["tl", "constexpr"]
-        or parts == ["triton", "language", "constexpr"]
-    )
+    return (parts == ["tl", "constexpr"] or parts == ["triton", "language", "constexpr"])
 
 
 def _is_triton_jit_decorator(node: ast.expr) -> bool:
@@ -62,6 +57,7 @@ def _is_triton_jit_decorator(node: ast.expr) -> bool:
 
 
 class TritonToGluonTransformer(ast.NodeTransformer):
+
     def __init__(self, globals_map: Optional[dict] = None) -> None:
         super().__init__()
         self.insert_gluon_import = True  # Add "import gluon as gl" unless already present
@@ -105,10 +101,14 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                 node.body.insert(0, stmt)
         # Import dot helper if it is needed
         if self._need_dot_helper:
-            node.body.insert(0, ast.ImportFrom(module="helpers", names=[ast.alias(name="dot_accumulate", asname=None)], level=0))
+            node.body.insert(
+                0, ast.ImportFrom(module="helpers", names=[ast.alias(name="dot_accumulate", asname=None)], level=0))
         # Import default layout helper if needed
         if self._need_default_layout_helper:
-            node.body.insert(0, ast.ImportFrom(module="helpers", names=[ast.alias(name="default_blocked_layout", asname=None)], level=0))
+            node.body.insert(
+                0,
+                ast.ImportFrom(module="helpers", names=[ast.alias(name="default_blocked_layout", asname=None)],
+                               level=0))
         return node
 
     def _parts(self, node: ast.AST) -> Optional[list]:
@@ -143,12 +143,8 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             if len(parts) == 2 and self._is_name_from_module_prefix(parts[0], "triton.language") and parts[1] == symbol:
                 return True
             # triton.language.symbol
-            if (
-                len(parts) == 3
-                and self._is_name_from_module_prefix(parts[0], "triton")
-                and parts[1] == "language"
-                and parts[2] == symbol
-            ):
+            if (len(parts) == 3 and self._is_name_from_module_prefix(parts[0], "triton") and parts[1] == "language"
+                    and parts[2] == symbol):
                 return True
             return False
         if isinstance(func, ast.Name):
@@ -173,23 +169,29 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         node = self.generic_visit(node)
         parts = self._parts(node)
         # Map tl.constexpr / triton.language.constexpr -> ttgl.constexpr
-        if parts and (
-            (len(parts) == 2 and self._is_name_from_module_prefix(parts[0], "triton.language") and parts[1] == "constexpr")
-            or (
-                len(parts) == 3
-                and self._is_name_from_module_prefix(parts[0], "triton")
-                and parts[1] == "language"
-                and parts[2] == "constexpr"
-            )
-        ):
+        if parts and ((len(parts) == 2 and self._is_name_from_module_prefix(parts[0], "triton.language")
+                       and parts[1] == "constexpr") or
+                      (len(parts) == 3 and self._is_name_from_module_prefix(parts[0], "triton")
+                       and parts[1] == "language" and parts[2] == "constexpr")):
             return _reconstruct_attr(["ttgl", "constexpr"])
         # Map common dtypes: tl.float32 -> ttgl.float32, etc.
         DTYPE_ATTRS = {
-            "float16", "bfloat16", "float32", "float64",
-            "int1", "int8", "int16", "int32", "int64",
-            "uint8", "uint16", "uint32", "uint64",
+            "float16",
+            "bfloat16",
+            "float32",
+            "float64",
+            "int1",
+            "int8",
+            "int16",
+            "int32",
+            "int64",
+            "uint8",
+            "uint16",
+            "uint32",
+            "uint64",
         }
-        if parts and len(parts) == 2 and self._is_name_from_module_prefix(parts[0], "triton.language") and parts[1] in DTYPE_ATTRS:
+        if parts and len(parts) == 2 and self._is_name_from_module_prefix(
+                parts[0], "triton.language") and parts[1] in DTYPE_ATTRS:
             return _reconstruct_attr(["ttgl", parts[1]])
         return node
 
@@ -205,13 +207,15 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             is_jit = False
             if isinstance(dec, ast.Attribute):
                 parts = self._parts(dec)
-                if parts and len(parts) == 2 and self._is_name_from_module_prefix(parts[0], "triton") and parts[1] == "jit":
+                if parts and len(parts) == 2 and self._is_name_from_module_prefix(parts[0],
+                                                                                  "triton") and parts[1] == "jit":
                     is_jit = True
                 # Fallback string-y check
                 if not is_jit and parts == ["triton", "jit"]:
                     is_jit = True
             elif isinstance(dec, ast.Name):
-                if self._is_name_from_module_prefix(dec.id, "triton") and (dec.id == "jit" or dec.id in self._symbol_to_module):
+                if self._is_name_from_module_prefix(dec.id, "triton") and (dec.id == "jit"
+                                                                           or dec.id in self._symbol_to_module):
                     target = self._symbol_to_module.get(dec.id, "")
                     is_jit = dec.id == "jit" or target.endswith(".jit")
                 # Fallback: plain 'jit'
@@ -219,8 +223,7 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                     is_jit = True
             if is_jit:
                 new_decorators.append(
-                    ast.Attribute(value=ast.Name(id="gluon", ctx=ast.Load()), attr="jit", ctx=ast.Load())
-                )
+                    ast.Attribute(value=ast.Name(id="gluon", ctx=ast.Load()), attr="jit", ctx=ast.Load()))
             else:
                 new_decorators.append(self.visit(dec))
         node.decorator_list = new_decorators
@@ -257,6 +260,20 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         )
         return ast.keyword(arg="layout", value=layout_call)
 
+    def _make_slice_layout_value(self, dim_value: int, shape_expr: ast.expr) -> ast.Call:
+        # ttgl.SliceLayout(dim, default_blocked_layout(shape, ttgl.num_warps()))
+        self._need_default_layout_helper = True
+        return ast.Call(
+            func=self._ttgl_attr("SliceLayout"),
+            args=[
+                ast.Constant(value=dim_value),
+                ast.Call(func=ast.Name(id="default_blocked_layout", ctx=ast.Load()),
+                         args=[shape_expr,
+                               ast.Call(func=self._ttgl_attr("num_warps"), args=[], keywords=[])], keywords=[]),
+            ],
+            keywords=[],
+        )
+
     def _handle_tl_arange(self, node: ast.Call) -> ast.Call:
         new_call = ast.Call(func=self._ttgl_attr("arange"), args=list(node.args), keywords=list(node.keywords))
         has_layout_kw = any(isinstance(kw, ast.keyword) and kw.arg == "layout" for kw in new_call.keywords)
@@ -271,6 +288,50 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             shape_expr = ast.List(elts=[shape_dim], ctx=ast.Load())
             new_call.keywords.append(self._default_helper_layout_kw(shape_expr))
         return new_call
+
+    def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+        node = self.generic_visit(node)
+        # For patterns like x[None, :] or x[:, None], ensure x has a SliceLayout along the expanded dim
+        dim = None
+        if isinstance(node.slice, ast.Tuple) and len(node.slice.elts) == 2:
+            first, second = node.slice.elts
+            if isinstance(first, ast.Constant) and first.value is None:
+                dim = 0
+            elif isinstance(second, ast.Constant) and second.value is None:
+                dim = 1
+        if dim is not None:
+            value_expr = node.value
+            # Construct a 2D parent shape with a dummy dimension of size 1 at the expanded dim
+            # Use value.type.shape[0] as the vector length
+            type_attr = ast.Attribute(value=value_expr, attr="type", ctx=ast.Load())
+            shape_attr = ast.Attribute(value=type_attr, attr="shape", ctx=ast.Load())
+            len_expr = ast.Subscript(value=shape_attr, slice=ast.Constant(value=0), ctx=ast.Load())
+            if dim == 0:
+                parent_shape = ast.List(elts=[len_expr, ast.Constant(value=1)], ctx=ast.Load())
+            else:
+                parent_shape = ast.List(elts=[ast.Constant(value=1), len_expr], ctx=ast.Load())
+            # Build SliceLayout(dim, default_blocked_layout(parent_shape, ttgl.num_warps()))
+            self._need_default_layout_helper = True
+            slice_layout = ast.Call(
+                func=self._ttgl_attr("SliceLayout"),
+                args=[
+                    ast.Constant(value=dim),
+                    ast.Call(
+                        func=ast.Name(id="default_blocked_layout", ctx=ast.Load()),
+                        args=[parent_shape,
+                              ast.Call(func=self._ttgl_attr("num_warps"), args=[], keywords=[])],
+                        keywords=[],
+                    ),
+                ],
+                keywords=[],
+            )
+            converted_value = ast.Call(
+                func=self._ttgl_attr("convert_layout"),
+                args=[value_expr, slice_layout],
+                keywords=[],
+            )
+            return ast.Subscript(value=converted_value, slice=node.slice, ctx=node.ctx)
+        return node
 
     def _handle_tl_program_id(self, node: ast.Call) -> ast.Call:
         return ast.Call(func=self._ttgl_attr("program_id"), args=list(node.args), keywords=list(node.keywords))
@@ -308,7 +369,11 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         # ttgl.convert_layout(expr, ttgl.DotOperandLayout(operand_index, ttgl.AutoLayout(), 0))
         dot_layout = ast.Call(
             func=self._ttgl_attr("DotOperandLayout"),
-            args=[ast.Constant(value=operand_index), ast.Call(func=self._ttgl_attr("AutoLayout"), args=[], keywords=[]), ast.Constant(value=0)],
+            args=[
+                ast.Constant(value=operand_index),
+                ast.Call(func=self._ttgl_attr("AutoLayout"), args=[], keywords=[]),
+                ast.Constant(value=0)
+            ],
             keywords=[],
         )
         return ast.Call(func=self._ttgl_attr("convert_layout"), args=[expr, dot_layout], keywords=[])
@@ -334,7 +399,8 @@ class TritonToGluonTransformer(ast.NodeTransformer):
 
     def visit_AugAssign(self, node: ast.AugAssign) -> ast.AST:
         node = self.generic_visit(node)
-        if isinstance(node.op, ast.Add) and isinstance(node.value, ast.Call) and self._is_tl_call(node.value.func, "dot"):
+        if isinstance(node.op, ast.Add) and isinstance(node.value, ast.Call) and self._is_tl_call(
+                node.value.func, "dot"):
             # acc += tl.dot(a, b) -> acc = dot_accumulate(a, b, acc)
             if isinstance(node.target, ast.Name) and len(node.value.args) >= 2:
                 self._need_dot_helper = True
@@ -350,23 +416,28 @@ class TritonToGluonTransformer(ast.NodeTransformer):
 
     def visit_Assign(self, node: ast.Assign) -> ast.AST:
         node = self.generic_visit(node)
-        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.BinOp) and isinstance(node.value.op, ast.Add):
+        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and isinstance(
+                node.value, ast.BinOp) and isinstance(node.value.op, ast.Add):
             target = node.targets[0].id
             left = node.value.left
             right = node.value.right
             # acc = acc + tl.dot(a,b)
-            if isinstance(left, ast.Name) and left.id == target and isinstance(right, ast.Call) and self._is_tl_call(right.func, "dot"):
+            if isinstance(left, ast.Name) and left.id == target and isinstance(right, ast.Call) and self._is_tl_call(
+                    right.func, "dot"):
                 if len(right.args) >= 2:
                     self._need_dot_helper = True
                     acc_name = ast.Name(id=target, ctx=ast.Load())
-                    helper_call = ast.Call(func=ast.Name(id="dot_accumulate", ctx=ast.Load()), args=[right.args[0], right.args[1], acc_name], keywords=[])
+                    helper_call = ast.Call(func=ast.Name(id="dot_accumulate", ctx=ast.Load()),
+                                           args=[right.args[0], right.args[1], acc_name], keywords=[])
                     return ast.Assign(targets=node.targets, value=helper_call)
             # acc = tl.dot(a,b) + acc
-            if isinstance(right, ast.Name) and right.id == target and isinstance(left, ast.Call) and self._is_tl_call(left.func, "dot"):
+            if isinstance(right, ast.Name) and right.id == target and isinstance(left, ast.Call) and self._is_tl_call(
+                    left.func, "dot"):
                 if len(left.args) >= 2:
                     self._need_dot_helper = True
                     acc_name = ast.Name(id=target, ctx=ast.Load())
-                    helper_call = ast.Call(func=ast.Name(id="dot_accumulate", ctx=ast.Load()), args=[left.args[0], left.args[1], acc_name], keywords=[])
+                    helper_call = ast.Call(func=ast.Name(id="dot_accumulate", ctx=ast.Load()),
+                                           args=[left.args[0], left.args[1], acc_name], keywords=[])
                     return ast.Assign(targets=node.targets, value=helper_call)
         return node
 
@@ -392,22 +463,3 @@ def convert_triton_to_gluon(func_or_src: Union[str, object]) -> str:
         out = GLUON_IMPORT_LINES + "\n\n" + out
 
     return out
-
-
-# Example/demo usage
-if __name__ == "__main__":
-    example = """
-import triton
-import triton.language as tl
-
-@triton.jit
-def add_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr):
-    pid = tl.program_id(0)
-    offsets = pid * BLOCK + tl.arange(0, BLOCK)
-    mask = offsets < n_elements
-    x = tl.load(x_ptr + offsets, mask=mask)
-    y = tl.load(y_ptr + offsets, mask=mask)
-    tl.store(out_ptr + offsets, x + y, mask=mask)
-"""
-
-    print(convert_triton_to_gluon(example))
