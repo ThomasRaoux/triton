@@ -138,9 +138,24 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         target = self._rewrite_attr_chain_to_gl(node.func)
         node.func = target
 
-        # Example: If you need to reorder tl.load/store args for Gluon, do it here
-        # e.g., gl.load(ptr, mask) from tl.load(ptr, mask=mask)
-        # This prototype leaves keywords intact for a naive 1:1 mapping.
+        # Add a default layout to ttgl.arange if none provided
+        parts = _flatten_attr(node.func)
+        if parts == ["ttgl", "arange"]:
+            has_layout_kw = any(isinstance(kw, ast.keyword) and kw.arg == "layout" for kw in node.keywords)
+            has_layout_pos = len(node.args) >= 3  # positional third arg often used for layout
+            if not has_layout_kw and not has_layout_pos:
+                # ttgl.BlockedLayout(size_per_thread=[1], threads_per_warp=[32], warps_per_cta=[4], order=[0])
+                layout_call = ast.Call(
+                    func=ast.Attribute(value=ast.Name(id="ttgl", ctx=ast.Load()), attr="BlockedLayout", ctx=ast.Load()),
+                    args=[],
+                    keywords=[
+                        ast.keyword(arg="size_per_thread", value=ast.List(elts=[ast.Constant(value=1)], ctx=ast.Load())),
+                        ast.keyword(arg="threads_per_warp", value=ast.List(elts=[ast.Constant(value=32)], ctx=ast.Load())),
+                        ast.keyword(arg="warps_per_cta", value=ast.List(elts=[ast.Constant(value=4)], ctx=ast.Load())),
+                        ast.keyword(arg="order", value=ast.List(elts=[ast.Constant(value=0)], ctx=ast.Load())),
+                    ],
+                )
+                node.keywords.append(ast.keyword(arg="layout", value=layout_call))
 
         return node
 
