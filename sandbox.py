@@ -58,7 +58,7 @@ def _is_triton_jit_decorator(node: ast.expr) -> bool:
 
 class TritonToGluonTransformer(ast.NodeTransformer):
 
-    def __init__(self, globals_map: Optional[dict] = None) -> None:
+    def __init__(self, globals_map: Optional[dict] = None, convert_only_names: Optional[set[str]] = None) -> None:
         super().__init__()
         self.insert_gluon_import = True  # Add "import gluon as gl" unless already present
         # Track import aliases found in the parsed source (best-effort)
@@ -72,6 +72,9 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         self._need_dot_helper: bool = False
         # Track if we need default layout helper
         self._need_default_layout_helper: bool = False
+        # Function conversion scoping
+        self._convert_only: Optional[set[str]] = convert_only_names
+        self._current_function: Optional[str] = None
 
     def visit_Import(self, node: ast.Import) -> Optional[ast.AST]:
         # Preserve imports; mark if gluon import is already present
@@ -171,31 +174,28 @@ class TritonToGluonTransformer(ast.NodeTransformer):
 
     def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
         node = self.generic_visit(node)
+        # Only rewrite inside selected functions (if scoping is enabled)
+        if self._convert_only is not None and self._current_function not in self._convert_only:
+            return node
         parts = self._parts(node)
         # Map tl.constexpr / triton.language.constexpr -> ttgl.constexpr
-        if parts and ((len(parts) == 2 and self._is_name_from_module_prefix(parts[0], "triton.language")
-                       and parts[1] == "constexpr") or
-                      (len(parts) == 3 and self._is_name_from_module_prefix(parts[0], "triton")
-                       and parts[1] == "language" and parts[2] == "constexpr")):
+        if parts and (
+            (len(parts) == 2 and self._is_name_from_module_prefix(parts[0], "triton.language") and parts[1] == "constexpr")
+            or (
+                len(parts) == 3
+                and self._is_name_from_module_prefix(parts[0], "triton")
+                and parts[1] == "language"
+                and parts[2] == "constexpr"
+            )
+        ):
             return _reconstruct_attr(["ttgl", "constexpr"])
         # Map common dtypes: tl.float32 -> ttgl.float32, etc.
         DTYPE_ATTRS = {
-            "float16",
-            "bfloat16",
-            "float32",
-            "float64",
-            "int1",
-            "int8",
-            "int16",
-            "int32",
-            "int64",
-            "uint8",
-            "uint16",
-            "uint32",
-            "uint64",
+            "float16", "bfloat16", "float32", "float64",
+            "int1", "int8", "int16", "int32", "int64",
+            "uint8", "uint16", "uint32", "uint64",
         }
-        if parts and len(parts) == 2 and self._is_name_from_module_prefix(
-                parts[0], "triton.language") and parts[1] in DTYPE_ATTRS:
+        if parts and len(parts) == 2 and self._is_name_from_module_prefix(parts[0], "triton.language") and parts[1] in DTYPE_ATTRS:
             return _reconstruct_attr(["ttgl", parts[1]])
         return node
 
@@ -204,39 +204,49 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         return node
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
-        # Decorators: @triton.jit -> @gluon.jit; retain other decorators
-        new_decorators = []
-        for dec in node.decorator_list:
-            # Match @triton.jit or @jit imported from triton
-            is_jit = False
-            if isinstance(dec, ast.Attribute):
-                parts = self._parts(dec)
-                if parts and len(parts) == 2 and self._is_name_from_module_prefix(parts[0],
-                                                                                  "triton") and parts[1] == "jit":
-                    is_jit = True
-                # Fallback string-y check
-                if not is_jit and parts == ["triton", "jit"]:
-                    is_jit = True
-            elif isinstance(dec, ast.Name):
-                if self._is_name_from_module_prefix(dec.id, "triton") and (dec.id == "jit"
-                                                                           or dec.id in self._symbol_to_module):
-                    target = self._symbol_to_module.get(dec.id, "")
-                    is_jit = dec.id == "jit" or target.endswith(".jit")
-                # Fallback: plain 'jit'
-                if not is_jit and dec.id == "jit":
-                    is_jit = True
-            if is_jit:
-                new_decorators.append(
-                    ast.Attribute(value=ast.Name(id="gluon", ctx=ast.Load()), attr="jit", ctx=ast.Load()))
-            else:
-                new_decorators.append(self.visit(dec))
-        node.decorator_list = new_decorators
-
-        self.generic_visit(node)
-        return node
+        # Track current function for scoping
+        prev_fn = self._current_function
+        self._current_function = node.name
+        try:
+            should_convert = self._convert_only is None or node.name in self._convert_only
+            # Decorators: @triton.jit -> @gluon.jit; retain other decorators
+            if should_convert:
+                new_decorators = []
+                for dec in node.decorator_list:
+                    # Match @triton.jit or @jit imported from triton
+                    is_jit = False
+                    if isinstance(dec, ast.Attribute):
+                        parts = self._parts(dec)
+                        if parts and len(parts) == 2 and self._is_name_from_module_prefix(parts[0], "triton") and parts[1] == "jit":
+                            is_jit = True
+                        # Fallback string-y check
+                        if not is_jit and parts == ["triton", "jit"]:
+                            is_jit = True
+                    elif isinstance(dec, ast.Name):
+                        if self._is_name_from_module_prefix(dec.id, "triton") and (dec.id == "jit" or dec.id in self._symbol_to_module):
+                            target = self._symbol_to_module.get(dec.id, "")
+                            is_jit = dec.id == "jit" or target.endswith(".jit")
+                        # Fallback: plain 'jit'
+                        if not is_jit and dec.id == "jit":
+                            is_jit = True
+                    if is_jit:
+                        new_decorators.append(
+                            ast.Attribute(value=ast.Name(id="gluon", ctx=ast.Load()), attr="jit", ctx=ast.Load())
+                        )
+                    else:
+                        new_decorators.append(self.visit(dec))
+                node.decorator_list = new_decorators
+            # Visit body
+            self.generic_visit(node)
+            return node
+        finally:
+            self._current_function = prev_fn
 
     def visit_Call(self, node: ast.Call) -> ast.AST:
         node = self.generic_visit(node)
+        # Only rewrite inside selected functions (if scoping is enabled)
+        if self._convert_only is not None and self._current_function not in self._convert_only:
+            return node
         if self._is_tl_call(node.func, "arange"):
             return self._handle_tl_arange(node)
         if self._is_tl_call(node.func, "program_id"):
@@ -299,6 +309,9 @@ class TritonToGluonTransformer(ast.NodeTransformer):
 
     def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
         node = self.generic_visit(node)
+        # Only rewrite inside selected functions (if scoping is enabled)
+        if self._convert_only is not None and self._current_function not in self._convert_only:
+            return node
         # For patterns like x[None, :] or x[:, None], ensure x has a SliceLayout along the expanded dim
         dim = None
         if isinstance(node.slice, ast.Tuple) and len(node.slice.elts) == 2:
@@ -326,8 +339,7 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                     ast.Constant(value=dim),
                     ast.Call(
                         func=ast.Name(id="default_blocked_layout", ctx=ast.Load()),
-                        args=[parent_shape,
-                              ast.Call(func=self._ttgl_attr("num_warps"), args=[], keywords=[])],
+                        args=[parent_shape, ast.Call(func=self._ttgl_attr("num_warps"), args=[], keywords=[])],
                         keywords=[],
                     ),
                 ],
@@ -429,17 +441,81 @@ class TritonToGluonTransformer(ast.NodeTransformer):
 
 
 def convert_triton_to_gluon(func_or_src: Union[str, object]) -> str:
-    src = get_source(func_or_src)
+    # If given a live function, prefer converting the entire defining module
+    if not isinstance(func_or_src, str):
+        try:
+            mod = inspect.getmodule(func_or_src)
+            if mod is not None:
+                src = inspect.getsource(mod)
+                globals_map = getattr(mod, "__dict__", None)
+                entry_name = getattr(func_or_src, "__name__", None)
+            else:
+                src = get_source(func_or_src)
+                globals_map = getattr(func_or_src, "__globals__", None)
+                entry_name = getattr(func_or_src, "__name__", None)
+        except OSError:
+            src = get_source(func_or_src)
+            globals_map = getattr(func_or_src, "__globals__", None)
+            entry_name = getattr(func_or_src, "__name__", None)
+    else:
+        src = func_or_src
+        globals_map = None
+        entry_name = None
+
     tree = ast.parse(src)
 
-    # Provide globals map if we were given a live function
-    globals_map = None
-    if not isinstance(func_or_src, str):
-        globals_map = getattr(func_or_src, "__globals__", None)
+    # Compute reachable function names from entry (only top-level, by simple name calls)
+    convert_only_names: Optional[set[str]] = None
+    if entry_name is not None:
+        name_to_def: dict[str, ast.FunctionDef] = {}
+        jit_names: set[str] = set()
+        for n in tree.body:
+            if isinstance(n, ast.FunctionDef):
+                name_to_def[n.name] = n
+                # detect original triton.jit decoration
+                is_jit_orig = False
+                for dec in n.decorator_list:
+                    if isinstance(dec, ast.Attribute):
+                        parts = [dec.value.id, dec.attr] if isinstance(dec.value, ast.Name) else None
+                        if parts == ["triton", "jit"]:
+                            is_jit_orig = True
+                    elif isinstance(dec, ast.Name):
+                        if dec.id == "jit":
+                            is_jit_orig = True
+                if is_jit_orig:
+                    jit_names.add(n.name)
+        reachable: set[str] = set()
+        work: list[str] = []
+        if entry_name in jit_names:
+            reachable.add(entry_name)
+            work.append(entry_name)
+        # BFS on simple name calls, but only traverse into jit-decorated functions
+        while work:
+            fn = work.pop()
+            fn_node = name_to_def.get(fn)
+            if not fn_node:
+                continue
+            for sub in ast.walk(fn_node):
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+                    callee = sub.func.id
+                    if callee in jit_names and callee not in reachable:
+                        reachable.add(callee)
+                        work.append(callee)
+        convert_only_names = reachable if reachable else (jit_names if entry_name in jit_names else None)
 
-    transformer = TritonToGluonTransformer(globals_map)
+    transformer = TritonToGluonTransformer(globals_map, convert_only_names)
     new_tree = transformer.visit(tree)
     ast.fix_missing_locations(new_tree)
+
+    # If scoping is enabled, prune to imports and reachable functions only
+    if convert_only_names:
+        pruned_body = []
+        for stmt in new_tree.body:
+            if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                pruned_body.append(stmt)
+            elif isinstance(stmt, ast.FunctionDef) and stmt.name in convert_only_names:
+                pruned_body.append(stmt)
+        new_tree.body = pruned_body
 
     out = unparse(new_tree)
 
