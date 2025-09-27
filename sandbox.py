@@ -389,21 +389,42 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                 acc_kw = kw.value
             elif kw.arg in ("out_dtype", "input_precision") and kw.value is not None:
                 extra_kwargs.append(ast.keyword(arg=kw.arg, value=kw.value))
-        if a_expr is None or b_expr is None or acc_kw is None:
+        if a_expr is None or b_expr is None:
             return node
         self._need_dot_helper = True
+        args = [a_expr, b_expr]
+        if acc_kw is not None:
+            args.append(acc_kw)
         return ast.Call(
             func=ast.Name(id="dot_accumulate", ctx=ast.Load()),
-            args=[a_expr, b_expr, acc_kw],
+            args=args,
             keywords=extra_kwargs,
         )
 
     def visit_AugAssign(self, node: ast.AugAssign) -> ast.AST:
-        # Do not pattern-match += around tl.dot; only transform the tl.dot call itself
-        return self.generic_visit(node)
+        node = self.generic_visit(node)
+        # Handle accumulation form: acc += tl.dot(a, b, ...)
+        if isinstance(node.op, ast.Add) and isinstance(node.value, ast.Call) and self._is_tl_call(node.value.func, "dot"):
+            if isinstance(node.target, ast.Name) and len(node.value.args) >= 2:
+                self._need_dot_helper = True
+                acc_name = ast.Name(id=node.target.id, ctx=ast.Load())
+                a_expr = node.value.args[0]
+                b_expr = node.value.args[1]
+                # Map supported kwargs
+                extra_kwargs = []
+                for kw in node.value.keywords:
+                    if kw.arg in ("out_dtype", "input_precision") and kw.value is not None:
+                        extra_kwargs.append(ast.keyword(arg=kw.arg, value=kw.value))
+                    # Ignore 'acc' kw in += form; target is the accumulator
+                helper_call = ast.Call(
+                    func=ast.Name(id="dot_accumulate", ctx=ast.Load()),
+                    args=[a_expr, b_expr, acc_name],
+                    keywords=extra_kwargs,
+                )
+                return ast.Assign(targets=[node.target], value=helper_call)
+        return node
 
     def visit_Assign(self, node: ast.Assign) -> ast.AST:
-        # Do not pattern-match x = x + tl.dot(...); only transform the tl.dot call itself
         return self.generic_visit(node)
 
 

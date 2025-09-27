@@ -27,8 +27,6 @@ def matmul_tile_kernel(a_ptr, b_ptr, c_ptr, M, N, K, BLOCK_M: tl.constexpr, BLOC
 def test_triton_to_gluon_dot_minimal(tmp_path):
     # Convert directly from the Triton kernel object
     converted = convert_triton_to_gluon(matmul_tile_kernel.fn)
-
-    print(converted)
     # Write converted kernel to a file so @gluon.jit can retrieve source
     mod_path = tmp_path / "converted_dot_kernel.py"
     mod_path.write_text(converted)
@@ -124,11 +122,8 @@ def test_simple_matmul(dtype_src_str, dtype_dst_str, BLOCK_M, BLOCK_N, BLOCK_K, 
     dtype_src_str = "float32" if dtype_src_str == "tensorfloat32" else dtype_src_str
     dtype_src = getattr(torch, dtype_src_str)
 
-
     # Convert directly from the Triton kernel object
     converted = convert_triton_to_gluon(matmul_kernel.fn)
-
-    print(converted)
     # Write converted kernel to a file so @gluon.jit can retrieve source
     mod_path = tmp_path / "converted_dot_kernel.py"
     mod_path.write_text(converted)

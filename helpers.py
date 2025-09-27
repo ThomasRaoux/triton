@@ -16,8 +16,8 @@ def dot_accumulate(a, b, acc=None, input_precision=None, allow_tf32=None, max_nu
         _semantic=None):
     # TODO: check if MMAv5 cannot be used and fallback to mmav2
     # Shapes (constexpr)
-    M: ttgl.constexpr = acc.type.shape[0]
-    N: ttgl.constexpr = acc.type.shape[1]
+    M: ttgl.constexpr = a.type.shape[0]
+    N: ttgl.constexpr = b.type.shape[1]
     K: ttgl.constexpr = a.type.shape[1]
     # Shared memory layouts for inputs (simple default)
     nvmma_layout: ttgl.constexpr = ttgl.NVMMASharedLayout(swizzle_byte_width=128, transposed=False, element_bitwidth=16,
@@ -28,8 +28,11 @@ def dot_accumulate(a, b, acc=None, input_precision=None, allow_tf32=None, max_nu
     # Allocate TMEM accumulator initialized with current acc
     acc_tmem_layout: ttgl.constexpr = TensorMemoryLayout([M, N], col_stride=1)
     tmem_reg_layout: ttgl.constexpr = get_tmem_32x32b_reg_layout(M, N, [M, N], ttgl.num_warps())
-    acc_temp = ttgl.convert_layout(acc, tmem_reg_layout)
-    acc_tmem = allocate_tensor_memory(acc.dtype, [M, N], acc_tmem_layout, acc_temp)
+    if acc is not None:
+        acc_temp = ttgl.convert_layout(acc, tmem_reg_layout)
+    else:
+        acc_temp = ttgl.zeros([M, N], out_dtype, layout=tmem_reg_layout)
+    acc_tmem = allocate_tensor_memory(acc_temp.dtype, [M, N], acc_tmem_layout, acc_temp)
     # Barrier for commit
     bar = ttgl.allocate_shared_memory(ttgl.int64, [1], mbarrier.MBarrierLayout())
     mbarrier.init(bar, count=1)
@@ -39,7 +42,8 @@ def dot_accumulate(a, b, acc=None, input_precision=None, allow_tf32=None, max_nu
     mbarrier.wait(bar, phase=0)
     # Load back from TMEM using a register layout and convert to acc layout
     out = acc_tmem.load(tmem_reg_layout)
-    out = ttgl.convert_layout(out, acc.type.layout)
+    ret_layout: ttgl.constexpr = default_blocked_layout([M, N], ttgl.num_warps())
+    out = ttgl.convert_layout(out, ret_layout)
     return out
 
 
