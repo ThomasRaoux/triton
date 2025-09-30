@@ -74,3 +74,20 @@ def descriptor_store(desc, offsets, value):
     tma.async_copy_shared_to_global(desc, offsets, alloc)
     tma.store_wait(0)
     alloc._keep_alive()
+
+
+@gluon.jit
+def descriptor_load(desc, offsets):
+    # Allocate shared memory tile matching descriptor block
+    smem = ttgl.allocate_shared_memory(desc.dtype, desc.block_shape, desc.layout)
+    # Allocate and initialize an mbarrier for the async TMA load
+    bar = ttgl.allocate_shared_memory(ttgl.int64, [1], mbarrier.MBarrierLayout())
+    mbarrier.init(bar, count=1)
+    # Issue async copy from global (descriptor) to shared memory and wait for completion
+    mbarrier.expect(bar, desc.block_type.nbytes)
+    tma.async_copy_global_to_shared(desc, offsets, bar, smem)
+    mbarrier.wait(bar, phase=0)
+    # Load from shared memory into a register tensor using a reasonable default layout
+    ret_layout: ttgl.constexpr = default_blocked_layout(desc.block_shape, ttgl.num_warps())
+    out = smem.load(ret_layout)
+    return out

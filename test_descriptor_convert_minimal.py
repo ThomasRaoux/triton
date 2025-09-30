@@ -42,3 +42,36 @@ def test_triton_to_gluon_descriptor_roundtrip(tmp_path):
     torch.testing.assert_close(y, torch.ones_like(y))
 
 
+
+@triton.jit
+def descriptor_copy_kernel(in_desc, out_desc, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
+    tile = in_desc.load([0, 0])
+    out_desc.store([0, 0], tile)
+
+
+def test_triton_to_gluon_descriptor_load_roundtrip(tmp_path):
+    converted = convert_triton_to_gluon(descriptor_copy_kernel.fn)
+    mod_path = tmp_path / "converted_descriptor_copy_kernel.py"
+    mod_path.write_text(converted)
+
+    spec = importlib.util.spec_from_file_location("converted_descriptor_copy_kernel", mod_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["converted_descriptor_copy_kernel"] = module
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    kernel = getattr(module, "descriptor_copy_kernel")
+
+    M = N = 64
+    BLOCK_M = BLOCK_N = 64
+    x = torch.ones((M, N), device="cuda", dtype=torch.float16) * 3.0
+    y = torch.zeros((M, N), device="cuda", dtype=torch.float16)
+
+    grid = (1,)
+    block_shape = [BLOCK_M, BLOCK_N]
+    layout = ttgl.NVMMASharedLayout.get_default_for(block_shape, ttgl.float16)
+    in_desc = gluon.nvidia.hopper.TensorDescriptor.from_tensor(x, block_shape, layout)
+    out_desc = gluon.nvidia.hopper.TensorDescriptor.from_tensor(y, block_shape, layout)
+    kernel[grid](in_desc, out_desc, BLOCK_M, BLOCK_N)
+
+    torch.testing.assert_close(y, x)
+

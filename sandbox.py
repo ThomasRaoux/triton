@@ -99,6 +99,7 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             for stmt in reversed(gl_import_mod):
                 node.body.insert(0, stmt)
         # Always import helpers unconditionally
+        node.body.insert(0, ast.ImportFrom(module="helpers", names=[ast.alias(name="descriptor_load", asname=None)], level=0))
         node.body.insert(0, ast.ImportFrom(module="helpers", names=[ast.alias(name="descriptor_store", asname=None)], level=0))
         node.body.insert(0, ast.ImportFrom(module="helpers", names=[ast.alias(name="default_blocked_layout", asname=None)], level=0))
         node.body.insert(0, ast.ImportFrom(module="helpers", names=[ast.alias(name="dot_accumulate", asname=None)], level=0))
