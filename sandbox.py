@@ -392,9 +392,6 @@ class TritonToGluonTransformer(ast.NodeTransformer):
     def _handle_tl_dot(self, node: ast.Call) -> ast.AST:
         # Rewrite tl.dot(a, b, acc=..., out_dtype=..., input_precision=...) -> dot_accumulate(a, b, acc, out_dtype=..., input_precision=...)
         # Only transform when an explicit acc kwarg is provided; otherwise leave unchanged
-        has_acc = any(kw.arg == "acc" for kw in node.keywords)
-        if len(node.args) < 2 or not has_acc:
-            return node
         return ast.Call(
             func=ast.Name(id="dot_accumulate", ctx=ast.Load()),
             args=list(node.args),
@@ -402,25 +399,7 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         )
 
     def visit_AugAssign(self, node: ast.AugAssign) -> ast.AST:
-        node = self.generic_visit(node)
-        # Handle accumulation form: acc += tl.dot(a, b, ...)
-        if isinstance(node.op, ast.Add) and isinstance(node.value, ast.Call) and self._is_tl_call(node.value.func, "dot"):
-            if isinstance(node.target, ast.Name) and len(node.value.args) >= 2:
-                acc_name = ast.Name(id=node.target.id, ctx=ast.Load())
-                a_expr = node.value.args[0]
-                b_expr = node.value.args[1]
-                # Map supported kwargs
-                extra_kwargs = []
-                for kw in node.value.keywords:
-                    if kw.arg in ("out_dtype", "input_precision", "allow_tf32", "max_num_imprecise_acc") and kw.value is not None:
-                        extra_kwargs.append(ast.keyword(arg=kw.arg, value=kw.value))
-                helper_call = ast.Call(
-                    func=ast.Name(id="dot_accumulate", ctx=ast.Load()),
-                    args=[a_expr, b_expr, acc_name],
-                    keywords=extra_kwargs,
-                )
-                return ast.Assign(targets=[node.target], value=helper_call)
-        return node
+        return self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign) -> ast.AST:
         return self.generic_visit(node)
