@@ -9,7 +9,7 @@ from triton.experimental.gluon.language.nvidia.blackwell import (
     tcgen05_mma,
     tcgen05_commit,
 )
-
+from triton.experimental.gluon.language.nvidia.hopper import tma, mbarrier, fence_async_shared
 
 @gluon.jit
 def dot_accumulate(a, b, acc=None, input_precision=None, allow_tf32=None, max_num_imprecise_acc=None, out_dtype=ttgl.float32,
@@ -67,3 +67,10 @@ def default_blocked_layout(shape: ttgl.constexpr, num_warps: ttgl.constexpr) -> 
     order = [i for i in range(rank)]
     return ttgl.BlockedLayout(size_per_thread=size_per_thread, threads_per_warp=threads_per_warp,
                               warps_per_cta=warps_per_cta, order=order)
+
+@gluon.jit
+def descriptor_store(desc, offsets, value):
+    alloc = ttgl.allocate_shared_memory(desc.dtype, desc.block_shape, desc.layout, value)
+    tma.async_copy_shared_to_global(desc, offsets, alloc)
+    tma.store_wait(0)
+    alloc._keep_alive()

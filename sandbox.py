@@ -68,10 +68,6 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         self._globals: dict = globals_map or {}
         # Temp counter for generating unique variable names
         self._temp_counter: int = 0
-        # Track if we need the dot helper import
-        self._need_dot_helper: bool = False
-        # Track if we need default layout helper
-        self._need_default_layout_helper: bool = False
         # Function conversion scoping
         self._convert_only: Optional[set[str]] = convert_only_names
         self._current_function: Optional[str] = None
@@ -102,16 +98,10 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             gl_import_mod = ast.parse(GLUON_IMPORT_LINES).body
             for stmt in reversed(gl_import_mod):
                 node.body.insert(0, stmt)
-        # Import dot helper if it is needed
-        if self._need_dot_helper:
-            node.body.insert(
-                0, ast.ImportFrom(module="helpers", names=[ast.alias(name="dot_accumulate", asname=None)], level=0))
-        # Import default layout helper if needed
-        if self._need_default_layout_helper:
-            node.body.insert(
-                0,
-                ast.ImportFrom(module="helpers", names=[ast.alias(name="default_blocked_layout", asname=None)],
-                               level=0))
+        # Always import helpers unconditionally
+        node.body.insert(0, ast.ImportFrom(module="helpers", names=[ast.alias(name="descriptor_store", asname=None)], level=0))
+        node.body.insert(0, ast.ImportFrom(module="helpers", names=[ast.alias(name="default_blocked_layout", asname=None)], level=0))
+        node.body.insert(0, ast.ImportFrom(module="helpers", names=[ast.alias(name="dot_accumulate", asname=None)], level=0))
         return node
 
     def _parts(self, node: ast.AST) -> Optional[list]:
@@ -261,6 +251,18 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             return self._handle_cdiv(node)
         if self._is_tl_call(node.func, "dot"):
             return self._handle_tl_dot(node)
+        # tl.make_tensor_descriptor -> make_descriptor helper
+        if self._is_tl_call(node.func, "make_tensor_descriptor"):
+            return ast.Call(func=ast.Name(id="make_descriptor", ctx=ast.Load()), args=list(node.args), keywords=list(node.keywords))
+        # desc.load(...) / desc.store(...)
+        if isinstance(node.func, ast.Attribute) and node.func.attr in ("load", "store"):
+            base = node.func.value
+            if node.func.attr == "load":
+                # descriptor_load(desc, offsets)
+                return ast.Call(func=ast.Name(id="descriptor_load", ctx=ast.Load()), args=[base] + list(node.args), keywords=list(node.keywords))
+            else:
+                # descriptor_store(desc, offsets, value)
+                return ast.Call(func=ast.Name(id="descriptor_store", ctx=ast.Load()), args=[base] + list(node.args), keywords=list(node.keywords))
         return node
 
     def _default_auto_layout_kw(self) -> ast.keyword:
@@ -270,7 +272,6 @@ class TritonToGluonTransformer(ast.NodeTransformer):
 
     def _default_helper_layout_kw(self, shape_expr: ast.expr) -> ast.keyword:
         # layout=default_blocked_layout(shape, ttgl.num_warps())
-        self._need_default_layout_helper = True
         layout_call = ast.Call(
             func=ast.Name(id="default_blocked_layout", ctx=ast.Load()),
             args=[shape_expr, ast.Call(func=self._ttgl_attr("num_warps"), args=[], keywords=[])],
@@ -280,7 +281,6 @@ class TritonToGluonTransformer(ast.NodeTransformer):
 
     def _make_slice_layout_value(self, dim_value: int, shape_expr: ast.expr) -> ast.Call:
         # ttgl.SliceLayout(dim, default_blocked_layout(shape, ttgl.num_warps()))
-        self._need_default_layout_helper = True
         return ast.Call(
             func=self._ttgl_attr("SliceLayout"),
             args=[
@@ -332,7 +332,6 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             else:
                 parent_shape = ast.List(elts=[ast.Constant(value=1), len_expr], ctx=ast.Load())
             # Build SliceLayout(dim, default_blocked_layout(parent_shape, ttgl.num_warps()))
-            self._need_default_layout_helper = True
             slice_layout = ast.Call(
                 func=self._ttgl_attr("SliceLayout"),
                 args=[
@@ -399,17 +398,13 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         for kw in node.keywords:
             if kw.arg == "acc":
                 acc_kw = kw.value
-            elif kw.arg in ("out_dtype", "input_precision") and kw.value is not None:
+            elif kw.arg in ("out_dtype", "input_precision", "allow_tf32", "max_num_imprecise_acc") and kw.value is not None:
                 extra_kwargs.append(ast.keyword(arg=kw.arg, value=kw.value))
-        if a_expr is None or b_expr is None:
+        if a_expr is None or b_expr is None or acc_kw is None:
             return node
-        self._need_dot_helper = True
-        args = [a_expr, b_expr]
-        if acc_kw is not None:
-            args.append(acc_kw)
         return ast.Call(
             func=ast.Name(id="dot_accumulate", ctx=ast.Load()),
-            args=args,
+            args=[a_expr, b_expr, acc_kw],
             keywords=extra_kwargs,
         )
 
@@ -418,16 +413,14 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         # Handle accumulation form: acc += tl.dot(a, b, ...)
         if isinstance(node.op, ast.Add) and isinstance(node.value, ast.Call) and self._is_tl_call(node.value.func, "dot"):
             if isinstance(node.target, ast.Name) and len(node.value.args) >= 2:
-                self._need_dot_helper = True
                 acc_name = ast.Name(id=node.target.id, ctx=ast.Load())
                 a_expr = node.value.args[0]
                 b_expr = node.value.args[1]
                 # Map supported kwargs
                 extra_kwargs = []
                 for kw in node.value.keywords:
-                    if kw.arg in ("out_dtype", "input_precision") and kw.value is not None:
+                    if kw.arg in ("out_dtype", "input_precision", "allow_tf32", "max_num_imprecise_acc") and kw.value is not None:
                         extra_kwargs.append(ast.keyword(arg=kw.arg, value=kw.value))
-                    # Ignore 'acc' kw in += form; target is the accumulator
                 helper_call = ast.Call(
                     func=ast.Name(id="dot_accumulate", ctx=ast.Load()),
                     args=[a_expr, b_expr, acc_name],
