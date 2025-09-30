@@ -392,21 +392,13 @@ class TritonToGluonTransformer(ast.NodeTransformer):
     def _handle_tl_dot(self, node: ast.Call) -> ast.AST:
         # Rewrite tl.dot(a, b, acc=..., out_dtype=..., input_precision=...) -> dot_accumulate(a, b, acc, out_dtype=..., input_precision=...)
         # Only transform when an explicit acc kwarg is provided; otherwise leave unchanged
-        a_expr = node.args[0] if len(node.args) > 0 else None
-        b_expr = node.args[1] if len(node.args) > 1 else None
-        acc_kw = None
-        extra_kwargs = []
-        for kw in node.keywords:
-            if kw.arg == "acc":
-                acc_kw = kw.value
-            elif kw.arg in ("out_dtype", "input_precision", "allow_tf32", "max_num_imprecise_acc") and kw.value is not None:
-                extra_kwargs.append(ast.keyword(arg=kw.arg, value=kw.value))
-        if a_expr is None or b_expr is None or acc_kw is None:
+        has_acc = any(kw.arg == "acc" for kw in node.keywords)
+        if len(node.args) < 2 or not has_acc:
             return node
         return ast.Call(
             func=ast.Name(id="dot_accumulate", ctx=ast.Load()),
-            args=[a_expr, b_expr, acc_kw],
-            keywords=extra_kwargs,
+            args=list(node.args),
+            keywords=list(node.keywords),
         )
 
     def visit_AugAssign(self, node: ast.AugAssign) -> ast.AST:
