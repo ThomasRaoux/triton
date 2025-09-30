@@ -110,3 +110,9 @@ def tl_arange(start, stop=None, step=None):
     # Derive default 1D layout when not provided
     layout: ttgl.constexpr = default_blocked_layout([(stop - start) // step], ttgl.num_warps())
     return ttgl.arange(start, stop, layout=layout)
+
+
+@gluon.jit
+def tl_full(shape, value, dtype=None):
+    layout: ttgl.constexpr = default_blocked_layout(shape, ttgl.num_warps())
+    return ttgl.full(shape, value, dtype, layout=layout)

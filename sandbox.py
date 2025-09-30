@@ -129,6 +129,7 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         # Always import helpers unconditionally
         node.body.insert(0, ast.ImportFrom(module="helpers", names=[ast.alias(name="tl_arange", asname=None)], level=0))
         node.body.insert(0, ast.ImportFrom(module="helpers", names=[ast.alias(name="tl_zeros", asname=None)], level=0))
+        node.body.insert(0, ast.ImportFrom(module="helpers", names=[ast.alias(name="tl_full", asname=None)], level=0))
         node.body.insert(0, ast.ImportFrom(module="helpers", names=[ast.alias(name="descriptor_load", asname=None)], level=0))
         node.body.insert(0, ast.ImportFrom(module="helpers", names=[ast.alias(name="descriptor_store", asname=None)], level=0))
         node.body.insert(0, ast.ImportFrom(module="helpers", names=[ast.alias(name="default_blocked_layout", asname=None)], level=0))
@@ -163,17 +164,15 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             parts = self._parts(func)
             if not parts:
                 return False
-            # alias.module symbol: tl.symbol
-            if len(parts) == 2 and self._is_name_from_module_prefix(parts[0], "triton.language") and parts[1] == symbol:
-                return True
-            # triton.language.symbol
-            if (
-                len(parts) == 3
-                and self._is_name_from_module_prefix(parts[0], "triton")
-                and parts[1] == "language"
-                and parts[2] == symbol
-            ):
-                return True
+            # General rule: if the root name resolves to a module from triton.language,
+            # and the last attribute matches the target symbol, consider it a TL call.
+            # This covers tl.symbol, tl.submodule.symbol, triton.language.symbol, t.language.sub.symbol, etc.
+            if len(parts) >= 2 and parts[-1] == symbol:
+                if self._is_name_from_module_prefix(parts[0], "triton.language"):
+                    return True
+                # Also accept alias to triton itself with explicit .language prefix
+                if len(parts) >= 3 and self._is_name_from_module_prefix(parts[0], "triton") and parts[1] == "language":
+                    return True
             return False
         if isinstance(func, ast.Name):
             # from triton.language import symbol as name
@@ -234,6 +233,22 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             if should_convert:
                 new_decorators = []
                 for dec in node.decorator_list:
+                    # Drop any @triton.language._tensor_member_fn or aliases to it
+                    drop = False
+                    if isinstance(dec, ast.Attribute):
+                        parts = self._parts(dec)
+                        if parts and len(parts) >= 2 and parts[-1] == "_tensor_member_fn":
+                            # Resolve root against triton.language or triton . language
+                            if self._is_name_from_module_prefix(parts[0], "triton.language"):
+                                drop = True
+                            if len(parts) >= 3 and self._is_name_from_module_prefix(parts[0], "triton") and parts[1] == "language":
+                                drop = True
+                    elif isinstance(dec, ast.Name):
+                        target = self._symbol_to_module.get(dec.id, "")
+                        if target.endswith("._tensor_member_fn"):
+                            drop = True
+                    if drop:
+                        continue
                     # Match @triton.jit or @jit imported from triton
                     is_jit = False
                     if isinstance(dec, ast.Attribute):
@@ -283,6 +298,8 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             return self._handle_tl_store(node)
         if self._is_tl_call(node.func, "zeros"):
             return self._handle_tl_zeros(node)
+        if self._is_tl_call(node.func, "full"):
+            return self._handle_tl_full(node)
         if self._is_tl_call(node.func, "cdiv"):
             return self._handle_cdiv(node)
         if self._is_tl_call(node.func, "dot"):
@@ -384,6 +401,10 @@ class TritonToGluonTransformer(ast.NodeTransformer):
     def _handle_tl_zeros(self, node: ast.Call) -> ast.Call:
         # Forward to helper with same signature as tl.zeros
         return ast.Call(func=ast.Name(id="tl_zeros", ctx=ast.Load()), args=list(node.args), keywords=list(node.keywords))
+
+    def _handle_tl_full(self, node: ast.Call) -> ast.Call:
+        # Forward to helper with same signature as tl.full
+        return ast.Call(func=ast.Name(id="tl_full", ctx=ast.Load()), args=list(node.args), keywords=list(node.keywords))
 
     def _handle_cdiv(self, node: ast.Call) -> ast.Call:
         # tl.cdiv(x, y) or triton.cdiv(x, y) -> ttgl.cdiv(x, y)
