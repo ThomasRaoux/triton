@@ -91,3 +91,22 @@ def descriptor_load(desc, offsets):
     ret_layout: ttgl.constexpr = default_blocked_layout(desc.block_shape, ttgl.num_warps())
     out = smem.load(ret_layout)
     return out
+
+
+@gluon.jit
+def tl_zeros(shape, dtype=None):
+    layout: ttgl.constexpr = default_blocked_layout(shape, ttgl.num_warps())
+    return ttgl.zeros(shape, dtype, layout=layout)
+
+
+@gluon.jit
+def tl_arange(start, stop=None, step=None):
+    # Normalize signature: tl.arange(N) -> (0, N)
+    if stop is None:
+        stop = start
+        start = 0
+    if step is None:
+        step = 1
+    # Derive default 1D layout when not provided
+    layout: ttgl.constexpr = default_blocked_layout([(stop - start) // step], ttgl.num_warps())
+    return ttgl.arange(start, stop, layout=layout)
