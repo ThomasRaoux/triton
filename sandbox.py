@@ -18,6 +18,31 @@ def unparse(tree: ast.AST) -> str:
     return ast.unparse(tree)
 
 
+def _is_supported_external(obj: object) -> bool:
+    # Only allow external functions that are @triton.jit or @gluon.constexpr_function
+    # Inspect source decorators to decide.
+    try:
+        src = inspect.getsource(obj)
+        tree = ast.parse(src)
+        for n in tree.body:
+            if isinstance(n, ast.FunctionDef):
+                for dec in n.decorator_list:
+                    # triton.jit or jit
+                    if isinstance(dec, ast.Attribute) and isinstance(dec.value, ast.Name):
+                        if dec.value.id == "triton" and dec.attr == "jit":
+                            return True
+                        if dec.value.id == "gluon" and dec.attr == "constexpr_function":
+                            return True
+                    if isinstance(dec, ast.Name) and dec.id in ("jit", "constexpr_function"):
+                        return True
+        return False
+    except Exception:
+        # Best-effort: detect Triton JIT wrapper objects exposing .fn
+        if hasattr(obj, "fn") and inspect.isfunction(getattr(obj, "fn")):
+            return True
+        return False
+
+
 def _flatten_attr(node: ast.AST) -> Optional[list]:
     # Converts nested attributes into ["base", "a", "b"] for base.a.b
     parts = []
@@ -58,7 +83,8 @@ def _is_triton_jit_decorator(node: ast.expr) -> bool:
 
 class TritonToGluonTransformer(ast.NodeTransformer):
 
-    def __init__(self, globals_map: Optional[dict] = None, convert_only_names: Optional[set[str]] = None) -> None:
+    def __init__(self, globals_map: Optional[dict] = None, convert_only_names: Optional[set[str]] = None,
+                 external_attr_to_local: Optional[set[tuple[str, str]]] = None) -> None:
         super().__init__()
         self.insert_gluon_import = True  # Add "import gluon as gl" unless already present
         # Track import aliases found in the parsed source (best-effort)
@@ -71,6 +97,8 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         # Function conversion scoping
         self._convert_only: Optional[set[str]] = convert_only_names
         self._current_function: Optional[str] = None
+        # External calls referenced as alias.attr that should be rewritten to local attr
+        self._external_attr_to_local: set[tuple[str, str]] = external_attr_to_local or set()
 
     def visit_Import(self, node: ast.Import) -> Optional[ast.AST]:
         # Preserve imports; mark if gluon import is already present
@@ -237,6 +265,11 @@ class TritonToGluonTransformer(ast.NodeTransformer):
 
     def visit_Call(self, node: ast.Call) -> ast.AST:
         node = self.generic_visit(node)
+        # Rewrite alias.func(...) to func(...) when marked as external callee
+        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+            pair = (node.func.value.id, node.func.attr)
+            if pair in self._external_attr_to_local:
+                return ast.Call(func=ast.Name(id=node.func.attr, ctx=ast.Load()), args=list(node.args), keywords=list(node.keywords))
         # Only rewrite inside selected functions (if scoping is enabled)
         if self._convert_only is not None and self._current_function not in self._convert_only:
             return node
@@ -372,6 +405,32 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         return self.generic_visit(node)
 
 
+def convert_triton_function_only(func: object) -> str:
+    # Convert a single Triton JIT function definition without pulling the whole module
+    # Unwrap Triton JIT wrapper objects
+    if hasattr(func, "fn") and inspect.isfunction(getattr(func, "fn")):
+        func = getattr(func, "fn")
+    src = get_source(func)
+    globals_map = getattr(func, "__globals__", None)
+    entry_name = getattr(func, "__name__", None)
+
+    tree = ast.parse(src)
+    convert_only_names: Optional[set[str]] = {entry_name} if entry_name else None
+    transformer = TritonToGluonTransformer(globals_map, convert_only_names)
+    new_tree = transformer.visit(tree)
+    ast.fix_missing_locations(new_tree)
+    # Prune to only the entry function
+    if convert_only_names:
+        pruned_body = []
+        for stmt in new_tree.body:
+            if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                pruned_body.append(stmt)
+            elif isinstance(stmt, ast.FunctionDef) and stmt.name in convert_only_names:
+                pruned_body.append(stmt)
+        new_tree.body = pruned_body
+    return unparse(new_tree)
+
+
 def convert_triton_to_gluon(func_or_src: Union[str, object]) -> str:
     # If given a live function, prefer converting the entire defining module
     if not isinstance(func_or_src, str):
@@ -398,6 +457,8 @@ def convert_triton_to_gluon(func_or_src: Union[str, object]) -> str:
 
     # Compute reachable function names from entry (only top-level, by simple name calls)
     convert_only_names: Optional[set[str]] = None
+    external_callees: list[object] = []
+    external_attr_to_local: set[tuple[str, str]] = set()
     if entry_name is not None:
         name_to_def: dict[str, ast.FunctionDef] = {}
         jit_names: set[str] = set()
@@ -428,14 +489,37 @@ def convert_triton_to_gluon(func_or_src: Union[str, object]) -> str:
             if not fn_node:
                 continue
             for sub in ast.walk(fn_node):
-                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
-                    callee = sub.func.id
-                    if callee in jit_names and callee not in reachable:
-                        reachable.add(callee)
-                        work.append(callee)
+                if isinstance(sub, ast.Call):
+                    if isinstance(sub.func, ast.Name):
+                        callee = sub.func.id
+                        if callee in jit_names and callee not in reachable:
+                            reachable.add(callee)
+                            work.append(callee)
+                        # Track external jit callees referenced by name via globals
+                        if callee not in name_to_def and globals_map is not None and callee in globals_map:
+                            obj = globals_map[callee]
+                            try:
+                                if _is_supported_external(obj) and obj not in external_callees:
+                                    external_callees.append(obj)
+                            except Exception:
+                                pass
+                    # Handle module alias calls: alias.func(...)
+                    if isinstance(sub.func, ast.Attribute) and isinstance(sub.func.value, ast.Name) and globals_map is not None:
+                        alias = sub.func.value.id
+                        attr = sub.func.attr
+                        mod_obj = globals_map.get(alias)
+                        try:
+                            if mod_obj is not None and hasattr(mod_obj, attr):
+                                obj = getattr(mod_obj, attr)
+                                if _is_supported_external(obj):
+                                    if obj not in external_callees:
+                                        external_callees.append(obj)
+                                        external_attr_to_local.add((alias, attr))
+                        except Exception:
+                            pass
         convert_only_names = reachable if reachable else (jit_names if entry_name in jit_names else None)
 
-    transformer = TritonToGluonTransformer(globals_map, convert_only_names)
+    transformer = TritonToGluonTransformer(globals_map, convert_only_names, external_attr_to_local)
     new_tree = transformer.visit(tree)
     ast.fix_missing_locations(new_tree)
 
@@ -455,5 +539,26 @@ def convert_triton_to_gluon(func_or_src: Union[str, object]) -> str:
     first_lines = "\n".join(out.splitlines()[0:5])
     if "triton.experimental.gluon" not in first_lines:
         out = GLUON_IMPORT_LINES + "\n\n" + out
+
+    # Append converted definitions for external callees (from other modules)
+    if external_callees:
+        appended_defs: list[str] = []
+        # Avoid duplicating functions already present
+        present_names = set()
+        for stmt in new_tree.body:
+            if isinstance(stmt, ast.FunctionDef):
+                present_names.add(stmt.name)
+        for ext_fn in external_callees:
+            try:
+                ext_src = convert_triton_function_only(ext_fn)
+                ext_tree = ast.parse(ext_src)
+                for stmt in ext_tree.body:
+                    if isinstance(stmt, ast.FunctionDef) and stmt.name not in present_names:
+                        appended_defs.append(unparse(ast.Module(body=[stmt], type_ignores=[])))
+                        present_names.add(stmt.name)
+            except Exception:
+                continue
+        if appended_defs:
+            out = out.rstrip() + "\n\n" + "\n\n".join(s.strip() for s in appended_defs) + "\n"
 
     return out

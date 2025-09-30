@@ -45,7 +45,7 @@ def test_triton_to_gluon_add_minimal(tmp_path):
     out = torch.empty_like(x)
 
     grid = ((n + BLOCK - 1) // BLOCK,)
-    kernel[grid](x, y, out, n, BLOCK, num_warps=4)
+    kernel[grid](x, y, out, n, BLOCK)
 
     torch.testing.assert_close(out, x + y)
 

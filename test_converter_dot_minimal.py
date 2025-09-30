@@ -112,6 +112,7 @@ def test_simple_matmul(dtype_src_str, dtype_dst_str, BLOCK_M, BLOCK_N, BLOCK_K, 
 
     # Convert directly from the Triton kernel object
     converted = convert_triton_to_gluon(matmul_kernel.fn)
+    print(converted)
     # Write converted kernel to a file so @gluon.jit can retrieve source
     mod_path = tmp_path / "converted_dot_kernel.py"
     mod_path.write_text(converted)
@@ -131,7 +132,7 @@ def test_simple_matmul(dtype_src_str, dtype_dst_str, BLOCK_M, BLOCK_N, BLOCK_K, 
     output = torch.empty((M, N), dtype=dtype_dst, device=device)
     grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1)
     k = kernel[grid](a, b, output, M, N, K, a.stride(0), a.stride(1), b.stride(0), b.stride(1), output.stride(0),
-                            output.stride(1), BLOCK_M, BLOCK_N, BLOCK_K, num_warps=NUM_WARPS)
+                            output.stride(1), BLOCK_M, BLOCK_N, BLOCK_K)
     ref_out = torch.matmul(A, B).to(torch.float32)
     output = output.to(torch.float32)
     atol = 0.001
