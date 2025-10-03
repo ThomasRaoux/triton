@@ -20,7 +20,6 @@ def add_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr):
 def test_triton_to_gluon_add_minimal(tmp_path):
     # Convert directly from the Triton kernel object (using its original function)
     converted = convert_triton_to_gluon(add_kernel)
-    print(converted)
   
     # Write converted kernel to a file so @gluon.jit can retrieve source
     mod_path = tmp_path / "converted_kernel.py"

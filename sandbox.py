@@ -4,8 +4,15 @@ import inspect
 from typing import Union, Optional
 import triton
 import triton.language.core as tlc
+from triton.experimental.gluon import language as ttgl_mod
 import sys
 import importlib
+
+TL_TO_TTGL_DTYPES: set[str] = {
+    "float16", "bfloat16", "float32", "float64",
+    "int1", "int8", "int16", "int32", "int64",
+    "uint8", "uint16", "uint32", "uint64",
+}
 
 GLUON_IMPORT_LINES = ("from triton.experimental import gluon\n"
                       "from triton.experimental.gluon import language as ttgl\n"
@@ -137,6 +144,15 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                 return self._forward_call(node, ast.Name(id=getattr(base, "__name__", ""), ctx=ast.Load()))
         return node
 
+    def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+        node = self.generic_visit(node)
+        parts = self._flatten_attr(node)
+        if parts:
+            last = parts[-1]
+            if last in TL_TO_TTGL_DTYPES:
+                return self._ttgl_attr(last)
+        return node
+
     def _default_helper_layout_kw(self, shape_expr: ast.expr) -> ast.keyword:
         # layout=default_blocked_layout(shape, ttgl.num_warps())
         layout_call = ast.Call(
@@ -161,10 +177,6 @@ class TritonToGluonTransformer(ast.NodeTransformer):
 
     def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
         node = self.generic_visit(node)
-        return node
-        # Only rewrite inside selected functions (if scoping is enabled)
-        if self._convert_only is not None and self._current_function not in self._convert_only:
-            return node
         # For patterns like x[None, :] or x[:, None], ensure x has a SliceLayout along the expanded dim
         dim = None
         if isinstance(node.slice, ast.Tuple) and len(node.slice.elts) == 2:
