@@ -131,6 +131,8 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                     "cdiv": self._ttgl_attr("cdiv"),
                     "full": ast.Name(id="tl_full", ctx=ast.Load()),
                     "dot": ast.Name(id="dot_accumulate", ctx=ast.Load()),
+                    "load_tensor_descriptor": ast.Name(id="tl_load_tensor_descriptor", ctx=ast.Load()),
+                    "store_tensor_descriptor": ast.Name(id="tl_store_tensor_descriptor", ctx=ast.Load()),
                 }
                 target = mapping.get(simple)
                 if target is not None:

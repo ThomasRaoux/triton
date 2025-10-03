@@ -69,7 +69,7 @@ def default_blocked_layout(shape: ttgl.constexpr, num_warps: ttgl.constexpr) -> 
                               warps_per_cta=warps_per_cta, order=order)
 
 @gluon.jit
-def descriptor_store(desc, offsets, value):
+def tl_store_tensor_descriptor(desc, offsets, value):
     alloc = ttgl.allocate_shared_memory(desc.dtype, desc.block_shape, desc.layout, value)
     tma.async_copy_shared_to_global(desc, offsets, alloc)
     tma.store_wait(0)
@@ -77,7 +77,7 @@ def descriptor_store(desc, offsets, value):
 
 
 @gluon.jit
-def descriptor_load(desc, offsets):
+def tl_load_tensor_descriptor(desc, offsets):
     # Allocate shared memory tile matching descriptor block
     smem = ttgl.allocate_shared_memory(desc.dtype, desc.block_shape, desc.layout)
     # Allocate and initialize an mbarrier for the async TMA load

@@ -13,11 +13,12 @@ from sandbox import convert_triton_to_gluon
 def descriptor_store_kernel(desc, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, V: tl.constexpr):
     # Store a constant tile using the provided descriptor
     tile = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float16) + V
-    desc.store([0, 0], tile)
+    tl.store_tensor_descriptor(desc, [0, 0], tile)
 
 
 def test_triton_to_gluon_descriptor_roundtrip(tmp_path):
-    converted = convert_triton_to_gluon(descriptor_store_kernel.fn)
+    converted = convert_triton_to_gluon(descriptor_store_kernel)
+
     # Persist converted code so @gluon.jit can access source
     mod_path = tmp_path / "converted_descriptor_kernel.py"
     mod_path.write_text(converted)
@@ -45,12 +46,12 @@ def test_triton_to_gluon_descriptor_roundtrip(tmp_path):
 
 @triton.jit
 def descriptor_copy_kernel(in_desc, out_desc, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
-    tile = in_desc.load([0, 0])
-    out_desc.store([0, 0], tile)
+    tile = tl.load_tensor_descriptor(in_desc, [0, 0])
+    tl.store_tensor_descriptor(out_desc, [0, 0], tile)
 
 
 def test_triton_to_gluon_descriptor_load_roundtrip(tmp_path):
-    converted = convert_triton_to_gluon(descriptor_copy_kernel.fn)
+    converted = convert_triton_to_gluon(descriptor_copy_kernel)
     mod_path = tmp_path / "converted_descriptor_copy_kernel.py"
     mod_path.write_text(converted)
 
