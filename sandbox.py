@@ -4,6 +4,8 @@ import inspect
 from typing import Union, Optional
 import triton
 import triton.language.core as tlc
+import sys
+import importlib
 
 GLUON_IMPORT_LINES = ("from triton.experimental import gluon\n"
                       "from triton.experimental.gluon import language as ttgl\n"
@@ -12,12 +14,17 @@ GLUON_IMPORT_LINES = ("from triton.experimental import gluon\n"
 
 class TritonToGluonTransformer(ast.NodeTransformer):
 
-    def __init__(self, globals_map: Optional[dict]):
+    def __init__(self, globals_map: Optional[dict] = None,
+                 shared_jit_set: Optional[set] = None,
+                 shared_queue: Optional[list] = None):
         super().__init__()
         # Temp counter for generating unique variable names
         self._temp_counter: int = 0
-        # Globals from the original context (module/function) for resolving names
-        self._globals: dict = globals_map
+        # Resolution scope (globals ∪ nonlocals)
+        self._scope: dict = globals_map or {}
+        # Track discovered JIT functions to inline/append later
+        self._jit_functions: set = shared_jit_set if shared_jit_set is not None else set()
+        self.queue: list = shared_queue if shared_queue is not None else []
 
     def _is_triton_constexpr_annotation(self, ann: ast.expr) -> bool:
         # Resolve the annotation to a Python object and compare by identity
@@ -55,17 +62,45 @@ class TritonToGluonTransformer(ast.NodeTransformer):
     def _resolve_value(self, expr: ast.expr):
       # Resolve Name or dotted Attribute from recorded globals
       if isinstance(expr, ast.Name):
-          return self._globals.get(expr.id)
+          # Try scope first, then loaded modules, then importable module
+          val = self._scope.get(expr.id)
+          if val is None:
+              val = sys.modules.get(expr.id)
+          if val is None:
+              try:
+                  val = importlib.import_module(expr.id)
+              except Exception:
+                  val = None
+          return val
       if isinstance(expr, ast.Attribute):
           parts = self._flatten_attr(expr)
           if not parts:
               return None
-          obj = self._globals.get(parts[0])
-          for attr in parts[1:]:
+          # Try from most-specific module/object root down to least
+          for i in range(len(parts), 0, -1):
+              root = ".".join(parts[:i])
+              # 1) scope can contain fully-qualified names
+              obj = self._scope.get(root)
+              # 2) already-loaded modules
               if obj is None:
-                  return None
-              obj = getattr(obj, attr, None)
-          return obj
+                  obj = sys.modules.get(root)
+              # 3) importable modules
+              if obj is None:
+                  try:
+                      obj = importlib.import_module(root)
+                  except Exception:
+                      obj = None
+              if obj is None:
+                  continue
+              # Walk remaining attributes
+              rem = parts[i:]
+              for attr in rem:
+                  obj = getattr(obj, attr, None)
+                  if obj is None:
+                      break
+              if obj is not None:
+                  return obj
+          return None
       return None
 
 
@@ -73,12 +108,13 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         return ast.Call(func=target_func, args=list(node.args), keywords=list(node.keywords))
 
     def visit_Call(self, node: ast.Call) -> ast.AST:
+        node = self.generic_visit(node)
         fn_obj = self._resolve_value(node.func)
         if fn_obj is not None:
             fn_obj = triton.language.core._unwrap_if_constexpr(fn_obj)
+            base = getattr(fn_obj, "fn", fn_obj)
+            name = getattr(base, "__qualname__", getattr(base, "__name__", str(base)))
             if triton.language.core.is_builtin(fn_obj):
-                base = getattr(fn_obj, "fn", fn_obj)
-                name = getattr(base, "__qualname__", getattr(base, "__name__", str(base)))
                 simple = name.split(".")[-1]
                 mapping: dict[str, ast.expr] = {
                     "arange": ast.Name(id="tl_arange", ctx=ast.Load()),
@@ -86,17 +122,19 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                     "load": self._ttgl_attr("load"),
                     "store": self._ttgl_attr("store"),
                     "cdiv": self._ttgl_attr("cdiv"),
-                    "zeros": ast.Name(id="tl_zeros", ctx=ast.Load()),
                     "full": ast.Name(id="tl_full", ctx=ast.Load()),
                     "dot": ast.Name(id="dot_accumulate", ctx=ast.Load()),
                 }
                 target = mapping.get(simple)
                 if target is not None:
                     return self._forward_call(node, target)
+            # Track JITFunction callees
             if isinstance(fn_obj, triton.runtime.JITFunction):
-                base = getattr(fn_obj, "fn", fn_obj)
-                name = getattr(base, "__qualname__", getattr(base, "__name__", str(base)))
-                print("call jit function", name)
+                if fn_obj not in self._jit_functions:
+                    self._jit_functions.add(fn_obj)
+                    self.queue.append(fn_obj)
+                # Strip namespace: rewrite to local function name
+                return self._forward_call(node, ast.Name(id=getattr(base, "__name__", ""), ctx=ast.Load()))
         return node
 
     def _default_helper_layout_kw(self, shape_expr: ast.expr) -> ast.keyword:
@@ -195,10 +233,27 @@ class TritonToGluonTransformer(ast.NodeTransformer):
 
 def convert_triton_to_gluon(src: triton.runtime.JITFunction) -> str:
     tree = ast.parse(src._src)
-    transformer = TritonToGluonTransformer(globals_map=getattr(src, "__globals__", {}))
+    capture_scope = getattr(src, "__globals__", {}) or {}
+    shared_jit_set: set = set()
+    function_queue: list = []
+    transformer = TritonToGluonTransformer(globals_map=capture_scope,
+                                           shared_jit_set=shared_jit_set,
+                                           shared_queue=function_queue)
     new_tree = transformer.visit(tree)
     ast.fix_missing_locations(new_tree)
     out = ast.unparse(new_tree)
+    # Process discovered callee JITFunctions, converting and appending them
+    while function_queue:
+        callee = function_queue.pop(0)
+        callee_src = callee._src
+        callee_tree = ast.parse(callee_src)
+        callee_scope = getattr(callee, "__globals__", {}) or {}
+        callee_transformer = TritonToGluonTransformer(globals_map=callee_scope,
+                                                     shared_jit_set=shared_jit_set,
+                                                     shared_queue=function_queue)
+        callee_new = callee_transformer.visit(callee_tree)
+        ast.fix_missing_locations(callee_new)
+        out += "\n\n" + ast.unparse(callee_new)
     # add imports
     out = GLUON_IMPORT_LINES + "\n\n" + out
     return out

@@ -94,12 +94,6 @@ def descriptor_load(desc, offsets):
 
 
 @gluon.jit
-def tl_zeros(shape, dtype=None):
-    layout: ttgl.constexpr = default_blocked_layout(shape, ttgl.num_warps())
-    return ttgl.zeros(shape, dtype, layout=layout)
-
-
-@gluon.jit
 def tl_arange(start, stop=None, step=None):
     # Normalize signature: tl.arange(N) -> (0, N)
     if stop is None:
