@@ -8,7 +8,7 @@ from sandbox import convert_triton_to_gluon
 
 
 @triton.jit
-def add_inner(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr):
+def add_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     offsets = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offsets < n_elements
@@ -16,16 +16,12 @@ def add_inner(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr):
     y = tl.load(y_ptr + offsets, mask=mask)
     tl.store(out_ptr + offsets, x + y, mask=mask)
 
-@triton.jit
-def add_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr):
-    add_inner(x_ptr, y_ptr, out_ptr, n_elements, BLOCK)
-
 
 def test_triton_to_gluon_add_minimal(tmp_path):
     # Convert directly from the Triton kernel object (using its original function)
-    converted = convert_triton_to_gluon(add_kernel.fn)
-
+    converted = convert_triton_to_gluon(add_kernel)
     print(converted)
+  
     # Write converted kernel to a file so @gluon.jit can retrieve source
     mod_path = tmp_path / "converted_kernel.py"
     mod_path.write_text(converted)

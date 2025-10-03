@@ -13,7 +13,8 @@ from sandbox import convert_triton_to_gluon
 
 def test_triton_to_gluon_dot_minimal(tmp_path):
     # Convert directly from the Triton kernel object
-    converted = convert_triton_to_gluon(k.matmul_tile_kernel.fn)
+    converted = convert_triton_to_gluon(k.matmul_tile_kernel)
+    print(converted)
     # Write converted kernel to a file so @gluon.jit can retrieve source
     mod_path = tmp_path / "converted_dot_kernel.py"
     mod_path.write_text(converted)
@@ -111,6 +112,7 @@ def test_simple_matmul(dtype_src_str, dtype_dst_str, BLOCK_M, BLOCK_N, BLOCK_K, 
 
     # Convert directly from the Triton kernel object
     converted = convert_triton_to_gluon(matmul_kernel.fn)
+    print(converted)
     # Write converted kernel to a file so @gluon.jit can retrieve source
     mod_path = tmp_path / "converted_dot_kernel.py"
     mod_path.write_text(converted)
