@@ -46,9 +46,9 @@ class BlackwellMXScaleLayout(Layout):
 
 
 @triton.jit
-def unswizzle_mx_scale_bw(x, SIZE_OUTER: tl.constexpr = SWIZZLE_SIZE_OUTER,
-                          SIZE_INNER: tl.constexpr = SWIZZLE_SIZE_INNER,
-                          ALIGN_INNER: tl.constexpr = SWIZZLE_ALIGN_INNER):
+def unswizzle_mx_scale_bw(x, SIZE_OUTER: tl.constexpr = 128,
+                          SIZE_INNER: tl.constexpr = 4,
+                          ALIGN_INNER: tl.constexpr = 8):
     shape_0: tl.constexpr = x.shape[0]
     shape_1: tl.constexpr = x.shape[1]
     tl.static_assert(shape_1 % SIZE_OUTER == 0)

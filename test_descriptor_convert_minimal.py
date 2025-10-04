@@ -13,7 +13,7 @@ from sandbox import convert_triton_to_gluon
 def descriptor_store_kernel(desc, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, V: tl.constexpr):
     # Store a constant tile using the provided descriptor
     tile = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float16) + V
-    tl.store_tensor_descriptor(desc, [0, 0], tile)
+    desc.store([0, 0], tile)
 
 
 def test_triton_to_gluon_descriptor_roundtrip(tmp_path):
@@ -46,8 +46,8 @@ def test_triton_to_gluon_descriptor_roundtrip(tmp_path):
 
 @triton.jit
 def descriptor_copy_kernel(in_desc, out_desc, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
-    tile = tl.load_tensor_descriptor(in_desc, [0, 0])
-    tl.store_tensor_descriptor(out_desc, [0, 0], tile)
+    tile = in_desc.load([0, 0])
+    out_desc.store([0, 0], tile)
 
 
 def test_triton_to_gluon_descriptor_load_roundtrip(tmp_path):

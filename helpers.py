@@ -12,7 +12,7 @@ from triton.experimental.gluon.language.nvidia.blackwell import (
 from triton.experimental.gluon.language.nvidia.hopper import tma, mbarrier, fence_async_shared
 
 @gluon.jit
-def dot_accumulate(a, b, acc=None, input_precision=None, allow_tf32=None, max_num_imprecise_acc=None, out_dtype=ttgl.float32,
+def tl_dot(a, b, acc=None, input_precision=None, allow_tf32=None, max_num_imprecise_acc=None, out_dtype=ttgl.float32,
         _semantic=None):
     # TODO: check if MMAv5 cannot be used and fallback to mmav2
     # Shapes (constexpr)
@@ -46,6 +46,11 @@ def dot_accumulate(a, b, acc=None, input_precision=None, allow_tf32=None, max_nu
     out = ttgl.convert_layout(out, ret_layout)
     return out
 
+@gluon.jit
+def tl_dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None, fast_math=False, lhs_k_pack=True,
+               rhs_k_pack=True, out_dtype=ttgl.float32, _semantic=None):
+    ttlg.static_assert(False, "TODO: implement scaled dot in gluon")
+    return None
 
 @gluon.constexpr_function
 def default_blocked_layout(shape: ttgl.constexpr, num_warps: ttgl.constexpr) -> ttgl.constexpr:
@@ -67,6 +72,18 @@ def default_blocked_layout(shape: ttgl.constexpr, num_warps: ttgl.constexpr) -> 
     order = [i for i in range(rank)]
     return ttgl.BlockedLayout(size_per_thread=size_per_thread, threads_per_warp=threads_per_warp,
                               warps_per_cta=warps_per_cta, order=order)
+@gluon.jit
+def tl_obj_store(obj, offsets, value):
+    if isinstance(obj, ttgl.nvidia.hopper.tma.tensor_descriptor):
+        return tl_store_tensor_descriptor(obj, offsets, value)
+    else:
+        return obj.store(offsets, value)
+@gluon.jit
+def tl_obj_load(obj, offsets):
+    if isinstance(obj, ttgl.nvidia.hopper.tma.tensor_descriptor):
+        return tl_load_tensor_descriptor(obj, offsets)
+    else:
+        return obj.load(offsets)        
 
 @gluon.jit
 def tl_store_tensor_descriptor(desc, offsets, value):

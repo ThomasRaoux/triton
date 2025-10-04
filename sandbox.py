@@ -8,10 +8,11 @@ from triton.experimental.gluon import language as ttgl_mod
 import sys
 import importlib
 
-TL_TO_TTGL_DTYPES: set[str] = {
+TL_TO_TTGL_ATTR: set[str] = {
     "float16", "bfloat16", "float32", "float64",
     "int1", "int8", "int16", "int32", "int64",
-    "uint8", "uint16", "uint32", "uint64",
+    "uint8", "uint16", "uint32", "uint64", "float8e5", 
+    "float8e5b16", "float8e4nv", "float8e4b8", "float8e4b15", "constexpr",
 }
 
 GLUON_IMPORT_LINES = ("from triton.experimental import gluon\n"
@@ -129,8 +130,31 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                     "load": self._ttgl_attr("load"),
                     "store": self._ttgl_attr("store"),
                     "cdiv": self._ttgl_attr("cdiv"),
+                    "static_assert": self._ttgl_attr("static_assert"),
+                    "device_assert": self._ttgl_attr("device_assert"),
+                    "max_contiguous": self._ttgl_attr("max_contiguous"),
+                    "multiple_of": self._ttgl_attr("multiple_of"),
+                    "assume": self._ttgl_attr("assume"),
+                    "minimum": self._ttgl_attr("minimum"),
+                    "maximum": self._ttgl_attr("maximum"),
+                    "fma": self._ttgl_attr("fma"),
+                    "where": self._ttgl_attr("where"),
+                    "cast": self._ttgl_attr("cast"),
+                    "inline_asm_elementwise": self._ttgl_attr("inline_asm_elementwise"),
+                    "join": self._ttgl_attr("join"),
+                    "atomic_max": self._ttgl_attr("atomic_max"),
+                    "atomic_min": self._ttgl_attr("atomic_min"),
+                    "atomic_or": self._ttgl_attr("atomic_or"),
+                    "atomic_xchg": self._ttgl_attr("atomic_xchg"),
+                    "atomic_xor": self._ttgl_attr("atomic_xor"),
+                    "atomic_add": self._ttgl_attr("atomic_add"),
+                    "atomic_and": self._ttgl_attr("atomic_and"),
+                    "atomic_cas": self._ttgl_attr("atomic_cas"),
+                    "num_warps": self._ttgl_attr("num_warps"),
+                    "reduce": self._ttgl_attr("reduce"),
                     "full": ast.Name(id="tl_full", ctx=ast.Load()),
-                    "dot": ast.Name(id="dot_accumulate", ctx=ast.Load()),
+                    "dot": ast.Name(id="tl_dot", ctx=ast.Load()),
+                    "dot_scaled": ast.Name(id="tl_dot_scaled", ctx=ast.Load()),
                     "load_tensor_descriptor": ast.Name(id="tl_load_tensor_descriptor", ctx=ast.Load()),
                     "store_tensor_descriptor": ast.Name(id="tl_store_tensor_descriptor", ctx=ast.Load()),
                 }
@@ -144,6 +168,15 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                     self.queue.append(fn_obj)
                 # Strip namespace: rewrite to local function name
                 return self._forward_call(node, ast.Name(id=getattr(base, "__name__", ""), ctx=ast.Load()))
+        else:
+            # Generic object store: obj.store(x, ...) -> tl_obj_store(obj, x, ...)
+            if isinstance(node.func, ast.Attribute) and node.func.attr in ["store", "load"]:
+                target = "tl_obj_" + node.func.attr
+                return ast.Call(
+                    func=ast.Name(id=target, ctx=ast.Load()),
+                    args=[node.func.value] + list(node.args),
+                    keywords=list(node.keywords),
+                )
         return node
 
     def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
@@ -151,7 +184,7 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         parts = self._flatten_attr(node)
         if parts:
             last = parts[-1]
-            if last in TL_TO_TTGL_DTYPES:
+            if last in TL_TO_TTGL_ATTR:
                 return self._ttgl_attr(last)
         return node
 
