@@ -52,6 +52,16 @@ def tl_dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=No
     ttlg.static_assert(False, "TODO: implement scaled dot in gluon")
     return None
 
+@gluon.jit
+def tl_make_tensor_descriptor(base, shape, strides, block_shape, padding_option="zero"):
+    ttlg.static_assert(False, "TODO: implement make_tensor_descriptor in gluon")
+    return None
+
+
+@gluon.constexpr_function
+def get_num_threads_per_warp() -> ttgl.constexpr:
+    return 32
+
 @gluon.constexpr_function
 def default_blocked_layout(shape: ttgl.constexpr, num_warps: ttgl.constexpr) -> ttgl.constexpr:
     # shape: list of positive ints (constexpr)
@@ -60,7 +70,7 @@ def default_blocked_layout(shape: ttgl.constexpr, num_warps: ttgl.constexpr) -> 
     size_per_thread = [1 for _ in range(rank)]
     # Distribute 32 threads per warp across dimensions (simple heuristic: last-fastest)
     threads_per_warp = [1 for _ in range(rank)]
-    remaining_threads = 32
+    remaining_threads = get_num_threads_per_warp()
     for dim in range(rank - 1, -1, -1):
         threads_per_warp[dim] = remaining_threads
         remaining_threads = 1

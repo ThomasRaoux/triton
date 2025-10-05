@@ -140,6 +140,8 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                     "fma": self._ttgl_attr("fma"),
                     "where": self._ttgl_attr("where"),
                     "cast": self._ttgl_attr("cast"),
+                    "reshape": self._ttgl_attr("reshape"),
+                    "trans": self._ttgl_attr("trans"),
                     "inline_asm_elementwise": self._ttgl_attr("inline_asm_elementwise"),
                     "join": self._ttgl_attr("join"),
                     "atomic_max": self._ttgl_attr("atomic_max"),
@@ -155,8 +157,10 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                     "full": ast.Name(id="tl_full", ctx=ast.Load()),
                     "dot": ast.Name(id="tl_dot", ctx=ast.Load()),
                     "dot_scaled": ast.Name(id="tl_dot_scaled", ctx=ast.Load()),
+                    "make_tensor_descriptor": ast.Name(id="tl_make_tensor_descriptor", ctx=ast.Load()),
                     "load_tensor_descriptor": ast.Name(id="tl_load_tensor_descriptor", ctx=ast.Load()),
                     "store_tensor_descriptor": ast.Name(id="tl_store_tensor_descriptor", ctx=ast.Load()),
+                    "num_threads": ast.Name(id="get_num_threads_per_warp", ctx=ast.Load()),
                 }
                 target = mapping.get(simple)
                 if target is not None:
@@ -168,15 +172,14 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                     self.queue.append(fn_obj)
                 # Strip namespace: rewrite to local function name
                 return self._forward_call(node, ast.Name(id=getattr(base, "__name__", ""), ctx=ast.Load()))
-        else:
-            # Generic object store: obj.store(x, ...) -> tl_obj_store(obj, x, ...)
-            if isinstance(node.func, ast.Attribute) and node.func.attr in ["store", "load"]:
-                target = "tl_obj_" + node.func.attr
-                return ast.Call(
-                    func=ast.Name(id=target, ctx=ast.Load()),
-                    args=[node.func.value] + list(node.args),
-                    keywords=list(node.keywords),
-                )
+            if fn_obj is triton.language.core.range:
+                # skip all keywords except arg1, arg2, and step and replace with range.
+                allowed = {"arg1", "arg2", "step"}
+                new_keywords = [kw for kw in node.keywords if kw.arg in allowed]
+                new_args = list(node.args[:3])
+                return ast.copy_location(ast.Call(func=ast.Name(id="range", ctx=ast.Load()), args=new_args, keywords=new_keywords),node,)
+            if fn_obj is triton.language.core.static_range:
+                return self._forward_call(node, ast.Name(id="ttgl.static_range", ctx=ast.Load()))
         return node
 
     def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
@@ -277,6 +280,8 @@ class TritonToGluonTransformer(ast.NodeTransformer):
 
     def visit_Assign(self, node: ast.Assign) -> ast.AST:
         return self.generic_visit(node)
+    
+
 
 def convert_triton_to_gluon(src: triton.runtime.JITFunction) -> str:
     tree = ast.parse(src._src)

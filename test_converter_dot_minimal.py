@@ -72,7 +72,7 @@ def matmul_kernel(  #
         a_ptrs = a_ptr + (offs_k[:, None] * stride_ak + offs_am[None, :] * stride_am)
     b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
     accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=output_ptr.dtype.element_ty)
-    for k in range(0, tl.cdiv(K, BLOCK_K)):
+    for k in tl.range(0, tl.cdiv(K, BLOCK_K), step=1, num_stages=4):
         a = tl.load(a_ptrs)
         if A_TRANS:
             a = a.T
