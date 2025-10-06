@@ -11,7 +11,7 @@ from triton.experimental.gluon.language.nvidia.blackwell import (
 )
 from triton.experimental.gluon.language.nvidia.hopper import tma, mbarrier, fence_async_shared
 from triton.experimental.gluon.language.nvidia.blackwell import tma as tma_blackwell
-from typing import List
+from typing import List, Tuple
 
 @gluon.jit
 def tl_dot(a, b, acc=None, input_precision=None, allow_tf32=None, 
@@ -165,8 +165,13 @@ def tl_full(shape, value, dtype=None):
 
 @gluon.jit
 def reset_to_default_layout(value):
-    layout: ttgl.constexpr = default_blocked_layout(value.type.shape, ttgl.num_warps())
-    return ttgl.convert_layout(value, layout=layout)
+    ty: ttgl.constexpr = value.type
+    if isinstance(ty, ttgl.tuple_type):
+      layout: ttgl.constexpr = default_blocked_layout(value[0].type.shape, ttgl.num_warps())
+      return (ttgl.convert_layout(value[0], layout=layout), ttgl.convert_layout(value[1], layout=layout))
+    else:
+      layout: ttgl.constexpr = default_blocked_layout(ty.shape, ttgl.num_warps())
+      return ttgl.convert_layout(value, layout=layout)
 
 
 def current_target():
