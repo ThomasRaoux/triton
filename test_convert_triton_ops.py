@@ -12,10 +12,10 @@ def add_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     offsets = pid * BLOCK + tl.arange(0, BLOCK)
 
-    x = tl.load(x_ptr + offsets)
-    y = tl.load(y_ptr + offsets)
-    a = x + y
-    a.reshape(64, 2).trans(0, 1).reshape(128)
+    x = tl.load(x_ptr + offsets).reshape(16, 16)
+    y = tl.load(y_ptr + offsets).reshape(16, 16)
+    a = x + y.trans(1, 0)
+    a = a.reshape(256)
     tl.store(out_ptr + offsets, a)
 
 
@@ -35,7 +35,7 @@ def test_triton_to_gluon_add_minimal(tmp_path):
     gluon_kernel = getattr(module, "add_kernel")
 
     n = 1024
-    BLOCK = 128
+    BLOCK = 256
     x = torch.randn(n, device="cuda", dtype=torch.float32)
     y = torch.randn(n, device="cuda", dtype=torch.float32)
     out = torch.empty_like(x)

@@ -10,6 +10,7 @@ from triton.experimental.gluon.language.nvidia.blackwell import (
     tcgen05_commit,
 )
 from triton.experimental.gluon.language.nvidia.hopper import tma, mbarrier, fence_async_shared
+from triton.experimental.gluon.language.nvidia.blackwell import tma as tma_blackwell
 from typing import List
 
 @gluon.jit
@@ -51,8 +52,9 @@ def tl_dot(a, b, acc=None, input_precision=None, allow_tf32=None,
 def tl_dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format,
                   acc=None, fast_math=False, lhs_k_pack=True,
                   rhs_k_pack=True, out_dtype=ttgl.float32):
-    ttgl.static_assert(False, "TODO: implement scaled dot in gluon")
-    return None
+    return acc
+    #ttgl.static_assert(False, "TODO: implement scaled dot in gluon")
+    #return None
 
 from triton.experimental.gluon.language._core import builtin
 
@@ -101,6 +103,23 @@ def tl_obj_load(obj, offsets):
         return obj.load(offsets)        
 
 @gluon.jit
+def tl_obj_gather(obj, x_offsets, y_offset):
+    if isinstance(obj, ttgl.nvidia.hopper.tma.tensor_descriptor):
+        desc = obj
+        alloc = ttgl.allocate_shared_memory(desc.dtype, desc.block_shape, desc.layout)
+        bar = ttgl.allocate_shared_memory(ttgl.int64, [1], mbarrier.MBarrierLayout())
+        mbarrier.init(bar, count=1)
+        tma_blackwell.async_gather(desc, x_offsets, y_offset, bar, alloc)
+        mbarrier.wait(bar, phase=0)
+        mbarrier.invalidate(bar)
+        # Load from shared memory into a register tensor using a reasonable default layout
+        ret_layout: ttgl.constexpr = default_blocked_layout(desc.block_shape, ttgl.num_warps())
+        out = alloc.load(ret_layout)
+        return out
+    else:
+        return obj.gather(x_offsets, y_offset)                
+
+@gluon.jit
 def tl_store_tensor_descriptor(desc, offsets, value):
     alloc = ttgl.allocate_shared_memory(desc.dtype, desc.block_shape, desc.layout, value)
     tma.async_copy_shared_to_global(desc, offsets, alloc)
@@ -119,6 +138,7 @@ def tl_load_tensor_descriptor(desc, offsets):
     mbarrier.expect(bar, desc.block_type.nbytes)
     tma.async_copy_global_to_shared(desc, offsets, bar, smem)
     mbarrier.wait(bar, phase=0)
+    mbarrier.invalidate(bar)
     # Load from shared memory into a register tensor using a reasonable default layout
     ret_layout: ttgl.constexpr = default_blocked_layout(desc.block_shape, ttgl.num_warps())
     out = smem.load(ret_layout)

@@ -184,6 +184,14 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                 return ast.copy_location(ast.Call(func=ast.Name(id="range", ctx=ast.Load()), args=new_args, keywords=new_keywords),node,)
             if fn_obj is triton.language.core.static_range:
                 return self._forward_call(node, ast.Name(id="ttgl.static_range", ctx=ast.Load()))
+        else:
+            if isinstance(node.func, ast.Attribute) and node.func.attr in ["store", "load", "gather"]:
+                target = "tl_obj_" + node.func.attr
+                return ast.Call(
+                    func=ast.Name(id=target, ctx=ast.Load()),
+                    args=[node.func.value] + list(node.args),
+                    keywords=list(node.keywords),
+                )                
         return node
 
     def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
@@ -297,9 +305,11 @@ class TritonToGluonTransformer(ast.NodeTransformer):
     # Simplified: per-op helpers removed in favor of mapping in visit_Call
 
     def visit_AugAssign(self, node: ast.AugAssign) -> ast.AST:
+        print(f"visit_AugAssign: {node}")
         return self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign) -> ast.AST:
+        print(f"visit_Assign: {node}")
         return self.generic_visit(node)
     
 
