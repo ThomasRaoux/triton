@@ -107,12 +107,12 @@ def _p_matmul_ogs(
     # tl.static_assert(SWIZZLE_MX_VALUE is None, "NYI. Value swizzling")
 
     # why is this faster than using host-side tensor descriptor?!
-    if Y_TMA_MODE is not None:
-        Y = tl.make_tensor_descriptor(YPtr, Y.shape, Y.strides[:-1] + (1,), Y.block_shape)
+    #if Y_TMA_MODE is not None:
+    #    Y = tl.make_tensor_descriptor(YPtr, Y.shape, Y.strides[:-1] + (1,), Y.block_shape)
 
     is_w_microscaled: tl.constexpr = WMxScale is not None
     tl.static_assert(not is_w_microscaled or W_TRANSPOSE, "NYI. Non-transposed mxfp4 weights")
-    MX_PACK_DIVISOR: tl.constexpr = MXFP_BLOCK_SIZE
+    MX_PACK_DIVISOR: tl.constexpr = 32
     if is_w_microscaled:
         w_type: tl.constexpr = get_dtype(W)
         tl.static_assert(w_type == tl.uint8 or (w_type == tl.float8e4nv or w_type == tl.float8e5),

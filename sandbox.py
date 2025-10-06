@@ -12,7 +12,8 @@ TL_TO_TTGL_ATTR: set[str] = {
     "float16", "bfloat16", "float32", "float64",
     "int1", "int8", "int16", "int32", "int64",
     "uint8", "uint16", "uint32", "uint64", "float8e5", 
-    "float8e5b16", "float8e4nv", "float8e4b8", "float8e4b15", "constexpr",
+    "float8e5b16", "float8e4nv", "float8e4b8", "float8e4b15", "constexpr", "tensor",
+    "dtype",
 }
 
 GLUON_IMPORT_LINES = ("from triton.experimental import gluon\n"
@@ -22,9 +23,10 @@ GLUON_IMPORT_LINES = ("from triton.experimental import gluon\n"
 
 class TritonToGluonTransformer(ast.NodeTransformer):
 
-    def __init__(self, globals_map: Optional[dict] = None,
-                 shared_jit_set: Optional[set] = None,
-                 shared_queue: Optional[list] = None):
+    def __init__(self, globals_map: Optional[dict],
+                 shared_jit_set: Optional[set],
+                 shared_queue: Optional[list],
+                 is_jit):
         super().__init__()
         # Temp counter for generating unique variable names
         self._temp_counter: int = 0
@@ -33,6 +35,7 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         # Track discovered JIT functions to inline/append later
         self._jit_functions: set = shared_jit_set if shared_jit_set is not None else set()
         self.queue: list = shared_queue if shared_queue is not None else []
+        self._is_jit = is_jit
 
     def _is_triton_constexpr_annotation(self, ann: ast.expr) -> bool:
         # Resolve the annotation to a Python object and compare by identity
@@ -130,6 +133,7 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                     "load": self._ttgl_attr("load"),
                     "store": self._ttgl_attr("store"),
                     "cdiv": self._ttgl_attr("cdiv"),
+                    "static_print": self._ttgl_attr("static_print"),
                     "static_assert": self._ttgl_attr("static_assert"),
                     "device_assert": self._ttgl_attr("device_assert"),
                     "max_contiguous": self._ttgl_attr("max_contiguous"),
@@ -166,7 +170,7 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                 if target is not None:
                     return self._forward_call(node, target)
             # Track JITFunction callees
-            if isinstance(fn_obj, triton.runtime.JITFunction):
+            if isinstance(fn_obj, triton.runtime.jit.JITCallable):
                 if fn_obj not in self._jit_functions:
                     self._jit_functions.add(fn_obj)
                     self.queue.append(fn_obj)
@@ -187,8 +191,23 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         parts = self._flatten_attr(node)
         if parts:
             last = parts[-1]
-            if last in TL_TO_TTGL_ATTR:
-                return self._ttgl_attr(last)
+            # Only rewrite dtypes when the resolved object is a tl.dtype instance
+            # or the tl.dtype class itself (e.g., tl.float16 or tl.dtype.float16 / tl.dtype)
+            resolved = self._resolve_value(node)
+            if resolved is not None:
+                try:
+                    if isinstance(resolved, tlc.dtype):
+                        return self._ttgl_attr(last)
+                except Exception:
+                    pass
+                if resolved is tlc.dtype and last == "dtype":
+                    return self._ttgl_attr("dtype")
+                if resolved is tlc.tensor and last == "tensor":
+                    return self._ttgl_attr("tensor")
+                if resolved is tlc.constexpr and last == "constexpr":
+                    return self._ttgl_attr("constexpr")
+            if last == "tensor_descriptor":
+                return self._ttgl_attr("nvidia.hopper.tma.tensor_descriptor")
         return node
 
     def _default_helper_layout_kw(self, shape_expr: ast.expr) -> ast.keyword:
@@ -268,8 +287,10 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         # Keyword-only args
         for arg in node.args.kwonlyargs:
             arg.annotation = self._maybe_rewrite_constexpr_annotation(arg.annotation)
-        # Unconditionally add @gluon.jit decorator
-        node.decorator_list.insert(0, ast.Attribute(value=ast.Name(id="gluon", ctx=ast.Load()), attr="jit", ctx=ast.Load()))
+        if self._is_jit:
+            node.decorator_list.insert(0, ast.Attribute(value=ast.Name(id="gluon", ctx=ast.Load()), attr="jit", ctx=ast.Load()))
+        else:
+            node.decorator_list.insert(0, ast.Attribute(value=ast.Name(id="gluon", ctx=ast.Load()), attr="constexpr_function", ctx=ast.Load()))
         # Process body
         return self.generic_visit(node)
 
@@ -283,14 +304,15 @@ class TritonToGluonTransformer(ast.NodeTransformer):
     
 
 
-def convert_triton_to_gluon(src: triton.runtime.JITFunction) -> str:
+def convert_triton_to_gluon(src: triton.runtime.jit.JITCallable) -> str:
     tree = ast.parse(src._src)
     capture_scope = getattr(src, "__globals__", {}) or {}
     shared_jit_set: set = set()
     function_queue: list = []
     transformer = TritonToGluonTransformer(globals_map=capture_scope,
                                            shared_jit_set=shared_jit_set,
-                                           shared_queue=function_queue)
+                                           shared_queue=function_queue,
+                                           is_jit=True)
     new_tree = transformer.visit(tree)
     ast.fix_missing_locations(new_tree)
     out = ast.unparse(new_tree)
@@ -300,9 +322,11 @@ def convert_triton_to_gluon(src: triton.runtime.JITFunction) -> str:
         callee_src = callee._src
         callee_tree = ast.parse(callee_src)
         callee_scope = getattr(callee, "__globals__", {}) or {}
+        jit = isinstance(callee, triton.runtime.JITFunction)
         callee_transformer = TritonToGluonTransformer(globals_map=callee_scope,
                                                      shared_jit_set=shared_jit_set,
-                                                     shared_queue=function_queue)
+                                                     shared_queue=function_queue,
+                                                     is_jit=jit)
         callee_new = callee_transformer.visit(callee_tree)
         ast.fix_missing_locations(callee_new)
         out += "\n\n" + ast.unparse(callee_new)

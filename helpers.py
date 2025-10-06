@@ -10,10 +10,11 @@ from triton.experimental.gluon.language.nvidia.blackwell import (
     tcgen05_commit,
 )
 from triton.experimental.gluon.language.nvidia.hopper import tma, mbarrier, fence_async_shared
+from typing import List
 
 @gluon.jit
-def tl_dot(a, b, acc=None, input_precision=None, allow_tf32=None, max_num_imprecise_acc=None, out_dtype=ttgl.float32,
-        _semantic=None):
+def tl_dot(a, b, acc=None, input_precision=None, allow_tf32=None, 
+           max_num_imprecise_acc=None, out_dtype=ttgl.float32):
     # TODO: check if MMAv5 cannot be used and fallback to mmav2
     # Shapes (constexpr)
     M: ttgl.constexpr = a.type.shape[0]
@@ -47,20 +48,24 @@ def tl_dot(a, b, acc=None, input_precision=None, allow_tf32=None, max_num_imprec
     return out
 
 @gluon.jit
-def tl_dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None, fast_math=False, lhs_k_pack=True,
-               rhs_k_pack=True, out_dtype=ttgl.float32, _semantic=None):
-    ttlg.static_assert(False, "TODO: implement scaled dot in gluon")
+def tl_dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format,
+                  acc=None, fast_math=False, lhs_k_pack=True,
+                  rhs_k_pack=True, out_dtype=ttgl.float32):
+    ttgl.static_assert(False, "TODO: implement scaled dot in gluon")
     return None
 
-@gluon.jit
-def tl_make_tensor_descriptor(base, shape, strides, block_shape, padding_option="zero"):
-    ttlg.static_assert(False, "TODO: implement make_tensor_descriptor in gluon")
+from triton.experimental.gluon.language._core import builtin
+
+@builtin
+def tl_make_tensor_descriptor(base, shape: List[ttgl.tensor], strides: List[ttgl.tensor], block_shape: List[ttgl.constexpr],
+                              padding_option: ttgl.constexpr="zero", _semantic=None):
+    ttgl.static_assert(False, "TODO: implement make_tensor_descriptor in gluon", _semantic=_semantic)
     return None
 
 
 @gluon.constexpr_function
 def get_num_threads_per_warp() -> ttgl.constexpr:
-    return 32
+    return ttgl.constexpr(32)
 
 @gluon.constexpr_function
 def default_blocked_layout(shape: ttgl.constexpr, num_warps: ttgl.constexpr) -> ttgl.constexpr:
@@ -137,3 +142,15 @@ def tl_arange(start, stop=None, step=None):
 def tl_full(shape, value, dtype=None):
     layout: ttgl.constexpr = default_blocked_layout(shape, ttgl.num_warps())
     return ttgl.full(shape, value, dtype, layout=layout)
+
+def current_target():
+    from triton.runtime import driver
+    try:
+        active_driver = driver.active
+    except RuntimeError:
+        # If there is no active driver, return None
+        return None
+    return active_driver.get_current_target()
+
+
+current_target.__triton_builtin__ = True
