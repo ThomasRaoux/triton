@@ -146,6 +146,7 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                     "cast": self._ttgl_attr("cast"),
                     "reshape": self._ttgl_attr("reshape"),
                     "trans": self._ttgl_attr("trans"),
+                    "split": self._ttgl_attr("split"),
                     "inline_asm_elementwise": self._ttgl_attr("inline_asm_elementwise"),
                     "join": self._ttgl_attr("join"),
                     "atomic_max": self._ttgl_attr("atomic_max"),
@@ -168,7 +169,13 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                 }
                 target = mapping.get(simple)
                 if target is not None:
-                    return self._forward_call(node, target)
+                    node = self._forward_call(node, target)
+                    # For shape/layout changing ops, wrap to reset layout
+                    if simple in {"reshape", "trans", "split", "join"}:
+                        forwarded = self._forward_call(node, target)
+                        wrapped = ast.Call(func=ast.Name(id="reset_to_default_layout", ctx=ast.Load()), args=[forwarded], keywords=[])
+                        node = ast.copy_location(wrapped, node)
+                    return node
             # Track JITFunction callees
             if isinstance(fn_obj, triton.runtime.jit.JITCallable):
                 if fn_obj not in self._jit_functions:
@@ -192,6 +199,13 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                     args=[node.func.value] + list(node.args),
                     keywords=list(node.keywords),
                 )                
+            if isinstance(node.func, ast.Attribute) and node.func.attr in ["reshape", "trans", "split", "join"]:
+                wrapped = ast.Call(
+                    func=ast.Name(id="reset_to_default_layout", ctx=ast.Load()),
+                    args=[node],
+                    keywords=[],
+                )
+                return ast.copy_location(wrapped, node)
         return node
 
     def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
@@ -305,11 +319,9 @@ class TritonToGluonTransformer(ast.NodeTransformer):
     # Simplified: per-op helpers removed in favor of mapping in visit_Call
 
     def visit_AugAssign(self, node: ast.AugAssign) -> ast.AST:
-        print(f"visit_AugAssign: {node}")
         return self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign) -> ast.AST:
-        print(f"visit_Assign: {node}")
         return self.generic_visit(node)
     
 

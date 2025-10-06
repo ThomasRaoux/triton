@@ -163,6 +163,12 @@ def tl_full(shape, value, dtype=None):
     layout: ttgl.constexpr = default_blocked_layout(shape, ttgl.num_warps())
     return ttgl.full(shape, value, dtype, layout=layout)
 
+@gluon.jit
+def reset_to_default_layout(value):
+    layout: ttgl.constexpr = default_blocked_layout(value.type.shape, ttgl.num_warps())
+    return ttgl.convert_layout(value, layout=layout)
+
+
 def current_target():
     from triton.runtime import driver
     try:

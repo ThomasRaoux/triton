@@ -12,7 +12,7 @@ def add_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     offsets = pid * BLOCK + tl.arange(0, BLOCK)
 
-    x = tl.load(x_ptr + offsets).reshape(16, 16)
+    x = tl.reshape(tl.load(x_ptr + offsets), 16, 16)
     y = tl.load(y_ptr + offsets).reshape(16, 16)
     a = x + y.trans(1, 0)
     a = a.reshape(256)
