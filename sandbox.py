@@ -116,7 +116,8 @@ class TritonToGluonTransformer(ast.NodeTransformer):
 
 
     def _forward_call(self, node: ast.Call, target_func: ast.expr) -> ast.Call:
-        return ast.Call(func=target_func, args=list(node.args), keywords=list(node.keywords))
+        new_keywords = [kw for kw in node.keywords if kw.arg not in {"can_reorder"}]
+        return ast.Call(func=target_func, args=list(node.args), keywords=list(new_keywords))
 
     def visit_Call(self, node: ast.Call) -> ast.AST:
         node = self.generic_visit(node)
@@ -171,7 +172,7 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                 if target is not None:
                     node = self._forward_call(node, target)
                     # For shape/layout changing ops, wrap to reset layout
-                    if simple in {"reshape", "trans", "split", "join"}:
+                    if simple in {"reshape", "trans", "split", "join", "reduce"}:
                         forwarded = self._forward_call(node, target)
                         wrapped = ast.Call(func=ast.Name(id="reset_to_default_layout", ctx=ast.Load()), args=[forwarded], keywords=[])
                         node = ast.copy_location(wrapped, node)
@@ -199,7 +200,7 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                     args=[node.func.value] + list(node.args),
                     keywords=list(node.keywords),
                 )                
-            if isinstance(node.func, ast.Attribute) and node.func.attr in ["reshape", "trans", "split", "join"]:
+            if isinstance(node.func, ast.Attribute) and node.func.attr in ["reshape", "trans", "split", "join", "reduce"]:
                 wrapped = ast.Call(
                     func=ast.Name(id="reset_to_default_layout", ctx=ast.Load()),
                     args=[node],

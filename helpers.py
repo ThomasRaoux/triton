@@ -167,11 +167,17 @@ def tl_full(shape, value, dtype=None):
 def reset_to_default_layout(value):
     ty: ttgl.constexpr = value.type
     if isinstance(ty, ttgl.tuple_type):
-      layout: ttgl.constexpr = default_blocked_layout(value[0].type.shape, ttgl.num_warps())
-      return (ttgl.convert_layout(value[0], layout=layout), ttgl.convert_layout(value[1], layout=layout))
+      out = ()
+      for i in ttgl.static_range(len(value)):
+        r = ttgl.convert_layout(value[i], layout=default_blocked_layout(value[i].type.shape, ttgl.num_warps()))
+        out = out + (r,)
+      return out
     else:
-      layout: ttgl.constexpr = default_blocked_layout(ty.shape, ttgl.num_warps())
-      return ttgl.convert_layout(value, layout=layout)
+      if hasattr(ty, "shape"):
+        layout: ttgl.constexpr = default_blocked_layout(ty.shape, ttgl.num_warps())
+        return ttgl.convert_layout(value, layout=layout)
+      else:
+        return value
 
 
 def current_target():
@@ -185,3 +191,27 @@ def current_target():
 
 
 current_target.__triton_builtin__ = True
+
+@gluon.jit
+def sm86_max_nan_xorsign_abs_f32(a, b):
+    """Wrapper for max.NaN.xorsign.abs.f32 PTX instruction.
+
+    Computes the maximum of the absolute values of the two inputs and sets its sign to the XOR of the signs of the inputs.
+    NaN inputs are propagated to the output.
+
+    Requires CUDA compute capability 8.6+ (A100 and A30 Ampere GPUs don't support it, but A40/A16/A10/A2, Ada, and Hopper GPUs do).
+    """
+   # ttgl.static_assert(cuda_capability_geq(8, 6), "max.NaN.xorsign.abs.f32 requires CUDA compute capability 8.6+")
+   # ttgl.static_assert(a.dtype == ttgl.float32, "max.NaN.xorsign.abs.f32 requires float32 inputs")
+   # ttgl.static_assert(b.dtype == ttgl.float32, "max.NaN.xorsign.abs.f32 requires float32 inputs")
+
+    return ttgl.inline_asm_elementwise(
+        """{
+    max.NaN.xorsign.abs.f32 $0, $1, $2;
+    }""",
+        "=r,r,r",
+        [a, b],
+        dtype=ttgl.float32,
+        is_pure=True,
+        pack=1,
+    )
