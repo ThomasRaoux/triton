@@ -171,8 +171,13 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                 target = mapping.get(simple)
                 if target is not None:
                     node = self._forward_call(node, target)
+                    # For split, apply on the source argument rather than wrapping destination
+                    if simple == "split":
+                        src = node.args[0]
+                        wrapped_src = ast.Call(func=ast.Name(id="set_split_src_layout", ctx=ast.Load()), args=[src], keywords=[])
+                        node.args[0] = ast.copy_location(wrapped_src, src)
                     # For shape/layout changing ops, wrap to reset layout
-                    if simple in {"reshape", "trans", "split", "join", "reduce"}:
+                    if simple in {"reshape", "trans", "join", "reduce", "split"}:
                         forwarded = self._forward_call(node, target)
                         wrapped = ast.Call(func=ast.Name(id="reset_to_default_layout", ctx=ast.Load()), args=[forwarded], keywords=[])
                         node = ast.copy_location(wrapped, node)
@@ -201,6 +206,11 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                     keywords=list(node.keywords),
                 )                
             if isinstance(node.func, ast.Attribute) and node.func.attr in ["reshape", "trans", "split", "join", "reduce"]:
+                if node.func.attr == "split":
+                    recv = node.func.value
+                    wrapped_recv = ast.Call(func=ast.Name(id="set_split_src_layout", ctx=ast.Load()), args=[recv], keywords=[])
+                    new_func = ast.Attribute(value=ast.copy_location(wrapped_recv, recv), attr=node.func.attr, ctx=ast.Load())
+                    node = ast.copy_location(ast.Call(func=new_func, args=list(node.args), keywords=list(node.keywords)), node)
                 wrapped = ast.Call(
                     func=ast.Name(id="reset_to_default_layout", ctx=ast.Load()),
                     args=[node],

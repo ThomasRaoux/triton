@@ -79,14 +79,13 @@ def default_blocked_layout(shape: ttgl.constexpr, num_warps: ttgl.constexpr) -> 
     threads_per_warp = [1 for _ in range(rank)]
     remaining_threads = get_num_threads_per_warp()
     for dim in range(rank - 1, -1, -1):
-        threads_per_warp[dim] = remaining_threads
-        remaining_threads = 1
-        break
+        threads_per_warp[dim] = min(remaining_threads, shape[dim])
+        remaining_threads = remaining_threads // threads_per_warp[dim]
     # Use provided num_warps to distribute warps per CTA (put all on first dim)
     warps_per_cta = [1 for _ in range(rank)]
     warps_per_cta[0] = num_warps
-    # Natural order [0, 1, ..., rank-1]
-    order = [i for i in range(rank)]
+    # Natural order [rank-1, rank-2, ..., 0]
+    order = [i for i in range(rank-1, -1, -1)]
     return ttgl.BlockedLayout(size_per_thread=size_per_thread, threads_per_warp=threads_per_warp,
                               warps_per_cta=warps_per_cta, order=order)
 @gluon.jit
@@ -146,16 +145,12 @@ def tl_load_tensor_descriptor(desc, offsets):
 
 
 @gluon.jit
-def tl_arange(start, stop=None, step=None):
+def tl_arange(start: ttgl.constexpr, stop: ttgl.constexpr=None):
     # Normalize signature: tl.arange(N) -> (0, N)
-    if stop is None:
-        stop = start
-        start = 0
-    if step is None:
-        step = 1
-    # Derive default 1D layout when not provided
-    layout: ttgl.constexpr = default_blocked_layout([(stop - start) // step], ttgl.num_warps())
-    return ttgl.arange(start, stop, layout=layout)
+    _start: ttgl.constexpr = start if stop is not None else 0
+    _stop: ttgl.constexpr = stop if stop is not None else start
+    layout: ttgl.constexpr = default_blocked_layout([_stop - _start], ttgl.num_warps())
+    return ttgl.arange(_start, _stop, layout=layout)
 
 
 @gluon.jit
@@ -178,6 +173,32 @@ def reset_to_default_layout(value):
         return ttgl.convert_layout(value, layout=layout)
       else:
         return value
+
+@gluon.constexpr_function
+def get_split_src_layout(shape: ttgl.constexpr, num_warps: ttgl.constexpr) -> ttgl.constexpr:
+    # shape: list of positive ints (constexpr)
+    rank = len(shape)
+    # set the most inner dimension to 2
+    size_per_thread = [1 if i != rank - 1 else 2 for i in range(rank)]
+    # Distribute 32 threads per warp across dimensions (simple heuristic: last-fastest)
+    threads_per_warp = [1 for _ in range(rank)]
+    remaining_threads = get_num_threads_per_warp()
+    for dim in range(rank - 2, -1, -1):
+        threads_per_warp[dim] = min(shape[dim], remaining_threads)
+        remaining_threads = remaining_threads // threads_per_warp[dim]
+    # Use provided num_warps to distribute warps per CTA (put all on first dim)
+    warps_per_cta = [1 for _ in range(rank)]
+    warps_per_cta[0] = num_warps
+    # Natural order [rank-1, rank-2, ..., 0]
+    order = [i for i in range(rank-1, -1, -1)]
+    return ttgl.BlockedLayout(size_per_thread=size_per_thread, threads_per_warp=threads_per_warp,
+                              warps_per_cta=warps_per_cta, order=order)
+
+@gluon.jit
+def set_split_src_layout(value):
+    layout: ttgl.constexpr = get_split_src_layout(value.type.shape, ttgl.num_warps())
+    return ttgl.convert_layout(value, layout=layout)
+
 
 
 def current_target():
