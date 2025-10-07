@@ -8,13 +8,6 @@ from triton.experimental.gluon import language as ttgl_mod
 import sys
 import importlib
 
-TL_TO_TTGL_ATTR: set[str] = {
-    "float16", "bfloat16", "float32", "float64",
-    "int1", "int8", "int16", "int32", "int64",
-    "uint8", "uint16", "uint32", "uint64", "float8e5", 
-    "float8e5b16", "float8e4nv", "float8e4b8", "float8e4b15", "constexpr", "tensor",
-    "dtype",
-}
 
 GLUON_IMPORT_LINES = ("from triton.experimental import gluon\n"
                       "from triton.experimental.gluon import language as ttgl\n"
@@ -28,8 +21,6 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                  shared_queue: Optional[list],
                  is_jit):
         super().__init__()
-        # Temp counter for generating unique variable names
-        self._temp_counter: int = 0
         # Resolution scope (globals ∪ nonlocals)
         self._scope: dict = globals_map or {}
         # Track discovered JIT functions to inline/append later
@@ -55,10 +46,6 @@ class TritonToGluonTransformer(ast.NodeTransformer):
 
     def _ttgl_attr(self, name: str) -> ast.AST:
         return ast.Attribute(value=ast.Name(id="ttgl", ctx=ast.Load()), attr=name, ctx=ast.Load())
-
-    def _new_temp_name(self, base: str) -> str:
-        self._temp_counter += 1
-        return f"__{base}_{self._temp_counter}"
 
     def _flatten_attr(self, node: ast.AST) -> list[str] | None:
       parts, cur = [], node
@@ -242,15 +229,6 @@ class TritonToGluonTransformer(ast.NodeTransformer):
             if last == "tensor_descriptor":
                 return self._ttgl_attr("nvidia.hopper.tma.tensor_descriptor")
         return node
-
-    def _default_helper_layout_kw(self, shape_expr: ast.expr) -> ast.keyword:
-        # layout=default_blocked_layout(shape, ttgl.num_warps())
-        layout_call = ast.Call(
-            func=ast.Name(id="default_blocked_layout", ctx=ast.Load()),
-            args=[shape_expr, ast.Call(func=self._ttgl_attr("num_warps"), args=[], keywords=[])],
-            keywords=[],
-        )
-        return ast.keyword(arg="layout", value=layout_call)
 
     def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
         node = self.generic_visit(node)

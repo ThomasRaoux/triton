@@ -96,12 +96,13 @@ def tl_obj_store(obj, offsets, value):
         return tl_store_tensor_descriptor(obj, offsets, value)
     else:
         return obj.store(offsets, value)
+
 @gluon.jit
 def tl_obj_load(obj, offsets):
     if isinstance(obj, ttgl.nvidia.hopper.tma.tensor_descriptor):
         return tl_load_tensor_descriptor(obj, offsets)
     else:
-        return obj.load(offsets)        
+        return obj.load(offsets)
 
 @gluon.jit
 def tl_obj_gather(obj, x_offsets, y_offset):
