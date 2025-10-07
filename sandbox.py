@@ -252,19 +252,6 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         )
         return ast.keyword(arg="layout", value=layout_call)
 
-    def _make_slice_layout_value(self, dim_value: int, shape_expr: ast.expr) -> ast.Call:
-        # ttgl.SliceLayout(dim, default_blocked_layout(shape, ttgl.num_warps()))
-        return ast.Call(
-            func=self._ttgl_attr("SliceLayout"),
-            args=[
-                ast.Constant(value=dim_value),
-                ast.Call(func=ast.Name(id="default_blocked_layout", ctx=ast.Load()),
-                         args=[shape_expr,
-                               ast.Call(func=self._ttgl_attr("num_warps"), args=[], keywords=[])], keywords=[]),
-            ],
-            keywords=[],
-        )
-
     def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
         node = self.generic_visit(node)
         # For patterns like x[None, :] or x[:, None], ensure x has a SliceLayout along the expanded dim

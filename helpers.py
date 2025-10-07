@@ -77,10 +77,12 @@ def default_blocked_layout(shape: ttgl.constexpr, num_warps: ttgl.constexpr) -> 
     size_per_thread = [1 for _ in range(rank)]
     # Distribute 32 threads per warp across dimensions (simple heuristic: last-fastest)
     threads_per_warp = [1 for _ in range(rank)]
-    remaining_threads = get_num_threads_per_warp()
-    for dim in range(rank - 1, -1, -1):
-        threads_per_warp[dim] = min(remaining_threads, shape[dim])
-        remaining_threads = remaining_threads // threads_per_warp[dim]
+    # TODO: pick a better layout based on shape. Using this allows to not have to convert layout when broadcasting but may blow up register pressure.
+    threads_per_warp[rank - 1] = get_num_threads_per_warp()
+   # remaining_threads = get_num_threads_per_warp()
+   # for dim in range(rank - 1, -1, -1):
+   #     threads_per_warp[dim] = min(remaining_threads, shape[dim])
+   #     remaining_threads = remaining_threads // threads_per_warp[dim]
     # Use provided num_warps to distribute warps per CTA (put all on first dim)
     warps_per_cta = [1 for _ in range(rank)]
     warps_per_cta[0] = num_warps
@@ -105,9 +107,12 @@ def tl_obj_load(obj, offsets):
 def tl_obj_gather(obj, x_offsets, y_offset):
     if isinstance(obj, ttgl.nvidia.hopper.tma.tensor_descriptor):
         desc = obj
-        alloc = ttgl.allocate_shared_memory(desc.dtype, desc.block_shape, desc.layout)
+        desc_shape: ttgl.constexpr = [x_offsets.shape[0], desc.block_shape[1]]
+        alloc = ttgl.allocate_shared_memory(desc.dtype, desc_shape, desc.layout)
         bar = ttgl.allocate_shared_memory(ttgl.int64, [1], mbarrier.MBarrierLayout())
         mbarrier.init(bar, count=1)
+        x_offsets_layout: ttgl.constexpr = ttgl.SliceLayout(0, ttgl.BlockedLayout([1, 4], [32, 1], [1, ttgl.num_warps()], [1, 0]))
+        x_offsets = ttgl.convert_layout(x_offsets, x_offsets_layout)
         tma_blackwell.async_gather(desc, x_offsets, y_offset, bar, alloc)
         mbarrier.wait(bar, phase=0)
         mbarrier.invalidate(bar)

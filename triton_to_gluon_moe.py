@@ -175,7 +175,6 @@ if __name__ == '__main__':
         import importlib.util
         from sandbox import convert_triton_to_gluon
         txt = convert_triton_to_gluon(_p_matmul_ogs_default)
-        print(txt)
         mod_path = "/tmp/converted_kernel.py"
         with open(mod_path, "w", encoding="utf-8") as f:
             f.write(txt)
@@ -207,8 +206,9 @@ if __name__ == '__main__':
                 new_kwargs[key] = value
 
         #print(txt)
-        kernel.run(*new_args, **new_kwargs, grid=(152,), warmup=True)
         _p_matmul_ogs_default.run(*input_reader.args, **input_reader.kwargs, **evo_kwargs, grid=(152,), warmup=args.dry)
+
+        kernel.run(*new_args, **new_kwargs, grid=(152,), warmup=True)
 
     run_fn()
 
