@@ -29,7 +29,9 @@ from triton.experimental.gluon.language.nvidia.blackwell import (
     TensorMemoryScalesLayout,
     allocate_tensor_memory,
     get_tmem_32x32b_reg_layout,
+    get_tmem_scales_reg_layout,
     tcgen05_mma,
+    tcgen05_mma_scaled,
     tcgen05_commit,
     tcgen05_copy,
     float2,
@@ -1329,3 +1331,65 @@ def kernel_auto_layout_constant(threads_per_warp: ttgl.constexpr):
 
 def test_auto_layout_constant():
     kernel_auto_layout_constant.warmup(THREADS_PER_WARP, grid=(1, ))
+
+
+@pytest.mark.skipif(not is_blackwell(), reason="Requires Blackwell")
+def test_tcgen05_mma_scaled_minimal():
+    M = 128
+    N = 128
+    K = 128
+    threads_per_warp = ttgl.constexpr(THREADS_PER_WARP)
+
+    @gluon.jit
+    def kernel(out_ptr):
+        # Simple register layout for creating constants and storing results
+        reg_layout: ttgl.constexpr = ttgl.BlockedLayout([1, 1], [threads_per_warp, 1], [ttgl.num_warps(), 1], [1, 0])
+
+        # Shared-memory layouts for MMA operands
+        nvmma_layout: ttgl.constexpr = ttgl.NVMMASharedLayout(swizzle_byte_width=128, transposed=False,
+                                                              element_bitwidth=8, rank=2)
+        M: ttgl.constexpr = 128
+        K: ttgl.constexpr = 128
+        N: ttgl.constexpr = 128
+        # Allocate zero operands in shared memory (values don't matter since scales are zero)
+        a_init = ttgl.zeros([M, K], ttgl.float8e5, layout=reg_layout)
+        b_init = ttgl.zeros([K, N], ttgl.float8e5, layout=reg_layout)
+        a_smem = ttgl.allocate_shared_memory(ttgl.float8e5, [M, K], nvmma_layout, a_init)
+        b_smem = ttgl.allocate_shared_memory(ttgl.float8e5, [K, N], nvmma_layout, b_init)
+
+        # Accumulator in TMEM initialized to ones
+        acc_tmem_layout: ttgl.constexpr = TensorMemoryLayout([M, N], col_stride=1)
+        tmem_reg_layout: ttgl.constexpr = get_tmem_32x32b_reg_layout(M, N, [M, N], ttgl.num_warps())
+        acc_init = ttgl.full([M, N], 1, ttgl.float32, layout=tmem_reg_layout)
+        acc_tmem = allocate_tensor_memory(ttgl.float32, [M, N], acc_tmem_layout, acc_init)
+
+        # Zero scales in TMEM
+        scale_layout: ttgl.constexpr = TensorMemoryScalesLayout()
+        scale_reg_layout: ttgl.constexpr = get_tmem_scales_reg_layout(M, N, [M, N], ttgl.num_warps())
+        a_scale_init = ttgl.zeros([M, 32], ttgl.int8, layout=scale_reg_layout)
+        b_scale_init = ttgl.zeros([M, 32], ttgl.int8, layout=scale_reg_layout)
+        a_scale_tmem = allocate_tensor_memory(ttgl.int8, [M, 32], scale_layout, a_scale_init)
+        b_scale_tmem = allocate_tensor_memory(ttgl.int8, [M, 32], scale_layout, b_scale_init)
+
+        # Issue a single scaled MMA and commit
+        bar = ttgl.allocate_shared_memory(ttgl.int64, [1], mbarrier.MBarrierLayout())
+        mbarrier.init(bar, count=1)
+        tcgen05_mma_scaled(a_smem, b_smem, acc_tmem, a_scale_tmem, b_scale_tmem, "e5m2", "e5m2", use_acc=True)
+        tcgen05_commit(bar)
+        mbarrier.wait(bar, phase=0)
+
+        # Load result from TMEM and store to global
+        out_reg = acc_tmem.load(tmem_reg_layout)
+        store_layout: ttgl.constexpr = reg_layout
+        offs_m = ttgl.arange(0, M, layout=ttgl.SliceLayout(1, store_layout))[:, None]
+        offs_n = ttgl.arange(0, N, layout=ttgl.SliceLayout(0, store_layout))[None, :]
+        offs = offs_m * N + offs_n
+        ttgl.store(out_ptr + offs, ttgl.convert_layout(out_reg, store_layout))
+
+    out = torch.empty((M, N), dtype=torch.float32, device="cuda")
+    compiled = kernel[(1, )](out)
+    ref = torch.ones_like(out)
+    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+    ttgir = compiled.asm["ttgir"]
+    assert "ttng.tc_gen5_mma_scaled" in ttgir
+

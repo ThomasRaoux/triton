@@ -4,9 +4,12 @@ from triton.experimental.gluon.language.nvidia import hopper
 from triton.experimental.gluon.language.nvidia.hopper import mbarrier
 from triton.experimental.gluon.language.nvidia.blackwell import (
     TensorMemoryLayout,
+    TensorMemoryScalesLayout,
     allocate_tensor_memory,
     get_tmem_32x32b_reg_layout,
+    get_tmem_scales_reg_layout,
     tcgen05_mma,
+    tcgen05_mma_scaled,
     tcgen05_commit,
 )
 from triton.experimental.gluon.language.nvidia.hopper import tma, mbarrier, fence_async_shared
@@ -52,9 +55,49 @@ def tl_dot(a, b, acc=None, input_precision=None, allow_tf32=None,
 def tl_dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format,
                   acc=None, fast_math=False, lhs_k_pack=True,
                   rhs_k_pack=True, out_dtype=ttgl.float32):
-    return acc
-    #ttgl.static_assert(False, "TODO: implement scaled dot in gluon")
-    #return None
+    # TODO: check if MMAv5_scaled cannot be used and fallback to mmav5/mmav3 or mmav2
+    # Shapes (constexpr)
+    M: ttgl.constexpr = lhs_scale.type.shape[0]
+    N: ttgl.constexpr = rhs_scale.type.shape[0]
+    K: ttgl.constexpr = lhs_scale.type.shape[1] * 32
+    # Shared memory layouts for inputs (simple default)
+    nvmma_layout_a: ttgl.constexpr = ttgl.NVMMASharedLayout(swizzle_byte_width=32, transposed=False, element_bitwidth=8,
+                                                          rank=2)
+    nvmma_layout_b: ttgl.constexpr = ttgl.NVMMASharedLayout(swizzle_byte_width=32, transposed=True, element_bitwidth=8,
+                                                          rank=2)
+    
+    # Allocate shared memory and initialize with values
+    a_smem = ttgl.allocate_shared_memory(lhs.dtype, lhs.shape, nvmma_layout_a, lhs)
+    b_smem = ttgl.allocate_shared_memory(rhs.dtype, rhs.shape, nvmma_layout_b, rhs)
+    # Allocate TMEM accumulator initialized with current acc
+    acc_tmem_layout: ttgl.constexpr = TensorMemoryLayout([M, N], col_stride=1)
+    tmem_reg_layout: ttgl.constexpr = get_tmem_32x32b_reg_layout(M, N, [M, N], ttgl.num_warps())
+    if acc is not None:
+        acc_temp = ttgl.convert_layout(acc, tmem_reg_layout)
+    else:
+        acc_temp = ttgl.zeros([M, N], out_dtype, layout=tmem_reg_layout)
+    acc_tmem = allocate_tensor_memory(acc_temp.dtype, [M, N], acc_tmem_layout, acc_temp)
+    # Barrier for commit
+    bar = ttgl.allocate_shared_memory(ttgl.int64, [1], mbarrier.MBarrierLayout())
+    mbarrier.init(bar, count=1)
+    scale_layout: ttgl.constexpr = TensorMemoryScalesLayout()
+    scale_layout_reg_lhs: ttgl.constexpr = get_tmem_scales_reg_layout(lhs_scale.type.shape[0], lhs_scale.type.shape[1], lhs_scale.type.shape, ttgl.num_warps())
+    scale_layout_reg_rhs: ttgl.constexpr = get_tmem_scales_reg_layout(rhs_scale.type.shape[1], rhs_scale.type.shape[0], rhs_scale.type.shape, ttgl.num_warps())
+    lhs_scale = ttgl.convert_layout(lhs_scale, scale_layout_reg_lhs)
+    rhs_scale = ttgl.convert_layout(rhs_scale, scale_layout_reg_rhs)
+    a_scale_tmem = allocate_tensor_memory(lhs_scale.dtype, lhs_scale.shape, scale_layout, lhs_scale)
+    b_scale_tmem = allocate_tensor_memory(rhs_scale.dtype, rhs_scale.shape, scale_layout, rhs_scale)
+
+
+    # MMA into TMEM, accumulating into existing TMEM contents
+    tcgen05_mma_scaled(a_smem, b_smem, acc_tmem, a_scale_tmem, b_scale_tmem, lhs_format, rhs_format, use_acc=True)
+    tcgen05_commit(bar)
+    mbarrier.wait(bar, phase=0)
+    # Load back from TMEM using a register layout and convert to acc layout
+    out = acc_tmem.load(tmem_reg_layout)
+    ret_layout: ttgl.constexpr = default_blocked_layout([M, N], ttgl.num_warps())
+    out = ttgl.convert_layout(out, ret_layout)
+    return out
 
 from triton.experimental.gluon.language._core import builtin
 
