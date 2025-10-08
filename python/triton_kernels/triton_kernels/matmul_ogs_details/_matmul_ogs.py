@@ -124,7 +124,7 @@ def _matmul_ogs(
 
     is_x_microscaled: tl.constexpr = XMxScale is not None
     is_w_microscaled: tl.constexpr = WMxScale is not None
-    MX_PACK_DIVISOR: tl.constexpr = MXFP_BLOCK_SIZE
+    MX_PACK_DIVISOR: tl.constexpr = 32
     if is_w_microscaled:
         w_type: tl.constexpr = W.dtype.element_ty
         is_mxfp4: tl.constexpr = w_type == tl.uint8

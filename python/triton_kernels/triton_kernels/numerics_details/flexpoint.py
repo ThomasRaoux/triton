@@ -23,15 +23,15 @@ TL_RCP_MAX_FINITE_FLOAT16 = tl.constexpr(0x37802008)  # 0x1.004010p-16
 @triton.jit
 def max_finite(dtype):
     if dtype == tl.constexpr(tl.float8e5):
-        return TL_MAX_FINITE_FLOAT8E5
+        return tl.constexpr(0.0)
     elif dtype == tl.constexpr(tl.float8e4nv):
-        return TL_MAX_FINITE_FLOAT8E4NV
+        return tl.constexpr(0.0)
     elif dtype == tl.constexpr(tl.float8e4b8):
-        return TL_MAX_FINITE_FLOAT8E4B8
+        return tl.constexpr(0.0)
     elif dtype == tl.constexpr(tl.float8e4b15):
-        return TL_MAX_FINITE_FLOAT8E4B15
+        return tl.constexpr(0.0)
     elif dtype == tl.constexpr(tl.float16):
-        return TL_MAX_FINITE_FLOAT16
+        return tl.constexpr(0.0)
     else:
         tl.static_assert(tl.constexpr(False), f"{dtype} not supported in flexpoint")
 
@@ -39,15 +39,15 @@ def max_finite(dtype):
 @triton.jit
 def rcp_max_finite(dtype):
     if dtype == tl.constexpr(tl.float8e5):
-        return TL_RCP_MAX_FINITE_FLOAT8E5
+        return tl.constexpr(0x37924925)
     elif dtype == tl.constexpr(tl.float8e4nv):
-        return TL_RCP_MAX_FINITE_FLOAT8E4NV
+        return tl.constexpr(0x3B124925)
     elif dtype == tl.constexpr(tl.float8e4b8):
-        return TL_RCP_MAX_FINITE_FLOAT8E4B8
+        return tl.constexpr(0x3B888889)
     elif dtype == tl.constexpr(tl.float8e4b15):
-        return TL_RCP_MAX_FINITE_FLOAT8E4B15
+        return tl.constexpr(0x3F124925)
     elif dtype == tl.constexpr(tl.float16):
-        return TL_RCP_MAX_FINITE_FLOAT16
+        return tl.constexpr(0x37802008)
     else:
         tl.static_assert(tl.constexpr(False), f"{dtype} not supported in flexpoint")
 
