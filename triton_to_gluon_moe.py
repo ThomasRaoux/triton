@@ -190,28 +190,48 @@ if __name__ == '__main__':
         for arg in input_reader.args:
             if isinstance(arg, triton.tools.tensor_descriptor.TensorDescriptor):
                 block_shape = arg.block_shape
+                tensor = arg.base
+                if isinstance(tensor, torch.Tensor):
+                    tensor = tensor.clone()
                 dtype = arg.base.dtype
                 layout = gl.NVMMASharedLayout.get_default_for(block_shape, torch_dtype_to_triton(dtype))
-                new_desc = gluon.nvidia.hopper.TensorDescriptor(arg.base, arg.shape, arg.strides, block_shape, layout)
+                new_desc = gluon.nvidia.hopper.TensorDescriptor(tensor, arg.shape, arg.strides, block_shape, layout)
                 new_args.append(new_desc)
             else:
+                if isinstance(arg, torch.Tensor):
+                    arg = arg.clone()
                 new_args.append(arg)
         new_kwargs = {}
         for key, value in input_reader.kwargs.items():
             if isinstance(value, triton.tools.tensor_descriptor.TensorDescriptor):
                 block_shape = value.block_shape
                 dtype = value.base.dtype
+                tensor = value.base
+                if isinstance(tensor, torch.Tensor):
+                    tensor = tensor.clone()
                 layout = gl.NVMMASharedLayout.get_default_for(block_shape, torch_dtype_to_triton(dtype))
-                new_desc = gluon.nvidia.hopper.TensorDescriptor(value.base, value.shape, value.strides, block_shape, layout)
+                new_desc = gluon.nvidia.hopper.TensorDescriptor(tensor, value.shape, value.strides, block_shape, layout)
                 new_kwargs[key] = new_desc
             else:
+                if isinstance(value, torch.Tensor):
+                    value = value.clone()
                 new_kwargs[key] = value
 
-        _p_matmul_ogs_default.run(*input_reader.args, **input_reader.kwargs, **evo_kwargs, grid=(152,), warmup=args.dry)
-
-        kernel.run(*new_args, **new_kwargs, grid=(152,), warmup=True)
+        _p_matmul_ogs_default.run(*input_reader.args, **input_reader.kwargs, **evo_kwargs, grid=(1,), warmup=args.dry)
+        kernel.run(*new_args, **new_kwargs, grid=(1,), warmup=False)
+        print(new_args[0])
+        print(input_reader.args[0])
+       # for i in range(len(new_args)):
+       #     if isinstance(new_args[i], torch.Tensor):
+       #         print(new_args[i])
+       #         print(input_reader.args[i])
+       # for key, value in new_kwargs.items():
+       #     if isinstance(value, torch.Tensor):
+       #         print(value)
+       #         print(input_reader.kwargs[key])
 
     run_fn()
+
 
     if args.bench:
         time = do_bench_cudagraph(run_fn, quantiles=[0.5])

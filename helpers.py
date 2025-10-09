@@ -65,7 +65,7 @@ def tl_dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format,
     nvmma_layout_a: ttgl.constexpr = ttgl.NVMMASharedLayout(swizzle_byte_width=32, transposed=False, element_bitwidth=8,
                                                           rank=2)
     nvmma_layout_b: ttgl.constexpr = ttgl.NVMMASharedLayout(swizzle_byte_width=32, transposed=True, element_bitwidth=8,
-                                                          rank=2)
+                                                          rank=2, fp4_padded=True)
     
     # Allocate shared memory and initialize with values
     a_smem = ttgl.allocate_shared_memory(lhs.dtype, lhs.shape, nvmma_layout_a, lhs)
@@ -158,6 +158,7 @@ def tl_obj_gather(obj, x_offsets, y_offset):
         mbarrier.init(bar, count=1)
         x_offsets_layout: ttgl.constexpr = ttgl.SliceLayout(0, ttgl.BlockedLayout([1, 4], [32, 1], [1, ttgl.num_warps()], [1, 0]))
         x_offsets = ttgl.convert_layout(x_offsets, x_offsets_layout)
+        mbarrier.expect(bar, desc_shape[0] * desc_shape[1] * alloc.type.element_ty.primitive_bitwidth // 8)
         tma_blackwell.async_gather(desc, x_offsets, y_offset, bar, alloc)
         mbarrier.wait(bar, phase=0)
         mbarrier.invalidate(bar)

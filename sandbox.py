@@ -129,6 +129,7 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                     "static_print": self._ttgl_attr("static_print"),
                     "static_assert": self._ttgl_attr("static_assert"),
                     "device_assert": self._ttgl_attr("device_assert"),
+                    "device_print": self._ttgl_attr("device_print"),
                     "max_contiguous": self._ttgl_attr("max_contiguous"),
                     "multiple_of": self._ttgl_attr("multiple_of"),
                     "assume": self._ttgl_attr("assume"),
