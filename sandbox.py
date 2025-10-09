@@ -7,6 +7,8 @@ import triton.language.core as tlc
 from triton.experimental.gluon import language as ttgl_mod
 import sys
 import importlib
+import importlib.util
+import copy
 
 
 GLUON_IMPORT_LINES = ("from triton.experimental import gluon\n"
@@ -16,17 +18,20 @@ GLUON_IMPORT_LINES = ("from triton.experimental import gluon\n"
 
 class TritonToGluonTransformer(ast.NodeTransformer):
 
-    def __init__(self, globals_map: Optional[dict],
-                 shared_jit_set: Optional[set],
-                 shared_queue: Optional[list],
-                 is_jit):
+    def __init__(self, globals_map: dict,
+                 shared_jit_set: set,
+                 shared_queue: list,
+                 is_jit,
+                 constexpr_globals: dict):
         super().__init__()
         # Resolution scope (globals ∪ nonlocals)
         self._scope: dict = globals_map or {}
         # Track discovered JIT functions to inline/append later
-        self._jit_functions: set = shared_jit_set if shared_jit_set is not None else set()
-        self.queue: list = shared_queue if shared_queue is not None else []
+        self._jit_functions: set = shared_jit_set
+        self.queue: list = shared_queue
         self._is_jit = is_jit
+        # Maps module_file -> {name: value}
+        self._constexpr_globals: dict = constexpr_globals
 
     def _is_triton_constexpr_annotation(self, ann: ast.expr) -> bool:
         # Resolve the annotation to a Python object and compare by identity
@@ -230,6 +235,20 @@ class TritonToGluonTransformer(ast.NodeTransformer):
                 return self._ttgl_attr("nvidia.hopper.tma.tensor_descriptor")
         return node
 
+    def visit_Name(self, node):
+        node = self.generic_visit(node)
+        fn_obj = self._resolve_value(node)
+        if fn_obj is not None:
+            if isinstance(fn_obj, triton.language.core.constexpr):
+                name = getattr(node, "id", None)
+                if name is not None:
+                    # Use the current capture scope's file for the defining module
+                    module_file = self._scope.get("__file__")
+                    if isinstance(module_file, str):
+                        bucket = self._constexpr_globals.setdefault(module_file, {})
+                        bucket[name] = fn_obj
+        return node
+
     def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
         node = self.generic_visit(node)
         # For patterns like x[None, :] or x[:, None], ensure x has a SliceLayout along the expanded dim
@@ -301,16 +320,91 @@ class TritonToGluonTransformer(ast.NodeTransformer):
         return self.generic_visit(node)
     
 
+def _unparse_original_assignments(constexpr_globals: dict) -> list[str]:
+    # Build assignment strings for captured globals by parsing each module once.
+    def _collect_names(t, out):
+        if isinstance(t, ast.Name):
+            out.append(t.id)
+        elif isinstance(t, (ast.Tuple, ast.List)):
+            for e in t.elts:
+                _collect_names(e, out)
+
+    def _parse_assigns_and_imports(path: str) -> tuple[dict[str, ast.AST], dict[str, str]]:
+        try:
+            with open(path, "r") as f:
+                mod = ast.parse(f.read())
+        except Exception:
+            return {}, {}
+        assigns: dict[str, ast.AST] = {}
+        imports: dict[str, str] = {}
+        for n in getattr(mod, "body", []):
+            if isinstance(n, ast.Assign):
+                names: list[str] = []
+                for tgt in n.targets:
+                    _collect_names(tgt, names)
+                for nm in names:
+                    assigns[nm] = n
+            elif isinstance(n, ast.AnnAssign):
+                names: list[str] = []
+                _collect_names(n.target, names)
+                if n.value is not None:
+                    for nm in names:
+                        assigns[nm] = n
+            elif isinstance(n, ast.ImportFrom) and n.level == 0 and isinstance(n.module, str):
+                for alias in n.names:
+                    alias_name = alias.asname or alias.name.split(".")[-1]
+                    imports[alias_name] = n.module
+        return assigns, imports
+
+    def _rewrite_constexpr_to_ttgl(node: ast.AST) -> ast.AST:
+        class _R(ast.NodeTransformer):
+            def visit_Call(self, n: ast.Call) -> ast.AST:
+                n = self.generic_visit(n)
+                if isinstance(n.func, ast.Attribute) and n.func.attr == "constexpr":
+                    n.func = ast.copy_location(ast.Attribute(value=ast.Name(id="ttgl", ctx=ast.Load()), attr="constexpr", ctx=ast.Load()), n.func)
+                return n
+        return _R().visit(node)
+
+    results: list[str] = []
+    imported_cache: dict[str, dict[str, ast.AST]] = {}
+    for mod_file, name_to_obj in constexpr_globals.items():
+        assigns, imports = _parse_assigns_and_imports(mod_file)
+        for name in sorted(name_to_obj.keys()):
+            node = assigns.get(name)
+            if node is None:
+                target_mod = imports.get(name)
+                if target_mod:
+                    try:
+                        spec = importlib.util.find_spec(target_mod)
+                        origin = getattr(spec, "origin", None) if spec is not None else None
+                    except Exception:
+                        origin = None
+                    if origin:
+                        assign_map = imported_cache.get(origin)
+                        if assign_map is None:
+                            assign_map, _ = _parse_assigns_and_imports(origin)
+                            imported_cache[origin] = assign_map
+                        node = assign_map.get(name)
+            if node is not None:
+                edited = _rewrite_constexpr_to_ttgl(copy.deepcopy(node))
+                ast.fix_missing_locations(edited)
+                results.append(ast.unparse(edited))
+            else:
+                results.append(f"{name} = {repr(name_to_obj[name])}")
+    return results
+
 
 def convert_triton_to_gluon(src: triton.runtime.jit.JITCallable) -> str:
     tree = ast.parse(src._src)
     capture_scope = getattr(src, "__globals__", {}) or {}
     shared_jit_set: set = set()
     function_queue: list = []
+    constexpr_globals: dict = {}
     transformer = TritonToGluonTransformer(globals_map=capture_scope,
                                            shared_jit_set=shared_jit_set,
                                            shared_queue=function_queue,
-                                           is_jit=True)
+                                           is_jit=True,
+                                           constexpr_globals=constexpr_globals)
     new_tree = transformer.visit(tree)
     ast.fix_missing_locations(new_tree)
     out = ast.unparse(new_tree)
@@ -324,10 +418,17 @@ def convert_triton_to_gluon(src: triton.runtime.jit.JITCallable) -> str:
         callee_transformer = TritonToGluonTransformer(globals_map=callee_scope,
                                                      shared_jit_set=shared_jit_set,
                                                      shared_queue=function_queue,
-                                                     is_jit=jit)
+                                                     is_jit=jit,
+                                                     constexpr_globals=constexpr_globals)
         callee_new = callee_transformer.visit(callee_tree)
         ast.fix_missing_locations(callee_new)
         out += "\n\n" + ast.unparse(callee_new)
+
+    out = "\n\n" + out
+
+    # pull constexpr globals from the original source code
+    for line in _unparse_original_assignments(constexpr_globals):
+        out = line + "\n" + out
     # add imports
     out = GLUON_IMPORT_LINES + "\n\n" + out
     return out

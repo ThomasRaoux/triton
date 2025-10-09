@@ -178,6 +178,8 @@ if __name__ == '__main__':
         mod_path = "/tmp/converted_kernel.py"
         with open(mod_path, "w", encoding="utf-8") as f:
             f.write(txt)
+        print(txt)
+
         spec = importlib.util.spec_from_file_location("converted_kernel", mod_path)
         module = importlib.util.module_from_spec(spec)
         sys.modules["converted_kernel"] = module
@@ -205,7 +207,6 @@ if __name__ == '__main__':
             else:
                 new_kwargs[key] = value
 
-        #print(txt)
         _p_matmul_ogs_default.run(*input_reader.args, **input_reader.kwargs, **evo_kwargs, grid=(152,), warmup=args.dry)
 
         kernel.run(*new_args, **new_kwargs, grid=(152,), warmup=True)
