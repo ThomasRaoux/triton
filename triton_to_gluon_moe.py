@@ -178,7 +178,6 @@ if __name__ == '__main__':
         mod_path = "/tmp/converted_kernel.py"
         with open(mod_path, "w", encoding="utf-8") as f:
             f.write(txt)
-        print(txt)
 
         spec = importlib.util.spec_from_file_location("converted_kernel", mod_path)
         module = importlib.util.module_from_spec(spec)
@@ -217,10 +216,11 @@ if __name__ == '__main__':
                     value = value.clone()
                 new_kwargs[key] = value
 
-        _p_matmul_ogs_default.run(*input_reader.args, **input_reader.kwargs, **evo_kwargs, grid=(1,), warmup=args.dry)
-        kernel.run(*new_args, **new_kwargs, grid=(1,), warmup=False)
-        print(new_args[0])
-        print(input_reader.args[0])
+        _p_matmul_ogs_default.run(*input_reader.args, **input_reader.kwargs, **evo_kwargs, grid=(152,), warmup=args.dry)
+        kernel.run(*new_args, **new_kwargs, grid=(152,), warmup=False)
+      #  print(new_args[0])
+      #  print(input_reader.args[0])
+        torch.testing.assert_close(new_args[0].base.to(torch.float32), input_reader.args[0].base.to(torch.float32), atol=0, rtol=0)
        # for i in range(len(new_args)):
        #     if isinstance(new_args[i], torch.Tensor):
        #         print(new_args[i])
