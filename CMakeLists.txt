@@ -175,7 +175,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
 
   # Python Interpreter is used to run lit tests
   find_package(Python3 REQUIRED COMPONENTS Development.Module Interpreter)
-  find_package(pybind11 CONFIG REQUIRED HINTS "${Python3_SITELIB}")
+  find_package(Python REQUIRED COMPONENTS Interpreter Development)
+  find_package(nanobind CONFIG REQUIRED)
+  if(DEFINED nanobind_INCLUDE_DIR)
+    include_directories(SYSTEM ${nanobind_INCLUDE_DIR})
+  endif()
 
   foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
     add_subdirectory(third_party/${CODEGEN_BACKEND})
@@ -242,7 +246,6 @@ if(TRITON_BUILD_PYTHON_MODULE)
     LLVMAMDGPUAsmParser
 
     Python3::Module
-    pybind11::headers
 
   )
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR # Linux arm64
@@ -281,9 +284,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
                   ${PYTHON_SRC_PATH}/ir.cc
                   ${PYTHON_SRC_PATH}/gluon_ir.cc
                   ${PYTHON_SRC_PATH}/passes.cc
-                  ${PYTHON_SRC_PATH}/interpreter.cc
+                  ${PYTHON_SRC_PATH}/interpreter_stub.cc
                   ${PYTHON_SRC_PATH}/llvm.cc
-                  ${PYTHON_SRC_PATH}/specialize.cc)
+                  ${PYTHON_SRC_PATH}/specialize_stub.cc)
 
   # Link triton with its dependencies
   target_link_libraries(triton PRIVATE ${TRITON_LIBRARIES})

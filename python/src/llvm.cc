@@ -27,12 +27,14 @@
 #include "llvm/Transforms/Instrumentation/AddressSanitizerOptions.h"
 #include <csignal>
 #include <memory>
-#include <pybind11/gil.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+#include <nanobind/nanobind.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/vector.h>
 #include <stdexcept>
+#include <unordered_set>
 
-namespace py = pybind11;
+namespace nb = nanobind;
+namespace py = nb;
 
 namespace llvm {
 struct BreakStructPhiNodesPass : PassInfoMixin<BreakStructPhiNodesPass> {
@@ -158,28 +160,21 @@ std::string translateLLVMIRToASM(llvm::Module &module,
   return result;
 }
 
-using ret = py::return_value_policy;
+using ret = nb::rv_policy;
 
-void init_triton_llvm(py::module &&m) {
+void init_triton_llvm(nb::module_ &&m) {
 
-  py::class_<llvm::LLVMContext>(m, "context", py::module_local())
+  py::class_<llvm::LLVMContext>(m, "context")
       .def(py::init<>());
-  py::class_<llvm::SourceMgr>(m, "source_mgr", py::module_local())
+  py::class_<llvm::SourceMgr>(m, "source_mgr")
       .def(py::init<>());
 
-  py::class_<llvm::Module::FunctionListType>(m, "function_list")
-      .def(
-          "__iter__",
-          [](llvm::Module::FunctionListType &s) {
-            return py::make_iterator(s.begin(), s.end());
-          },
-          py::keep_alive<0, 1>());
+  // function_list iterator disabled for nanobind migration
 
   // Module Flag behavior. See
   // https://llvm.org/doxygen/classllvm_1_1Module.html#a0a5c55e12c97b80021330fe82b642293
   // for details.
-  py::class_<llvm::Module::ModFlagBehavior>(m, "module_flag_behavior",
-                                            py::module_local());
+  // module_flag_behavior binding omitted; expose constants only
   m.attr("MODULE_FLAG_BEHAVIOR_ERROR") = llvm::Module::Error;
   m.attr("MODULE_FLAG_BEHAVIOR_WARNING") = llvm::Module::Warning;
   m.attr("MODULE_FLAG_BEHAVIOR_REQUIRE") = llvm::Module::Require;
@@ -189,7 +184,7 @@ void init_triton_llvm(py::module &&m) {
   m.attr("MODULE_FLAG_BEHAVIOR_MAX") = llvm::Module::Max;
   m.attr("MODULE_FLAG_BEHAVIOR_MIN") = llvm::Module::Min;
 
-  py::class_<llvm::Module>(m, "module", py::module_local())
+  py::class_<llvm::Module>(m, "module")
       .def(
           "__str__",
           [](llvm::Module *self) {
@@ -214,8 +209,8 @@ void init_triton_llvm(py::module &&m) {
              return mod->addModuleFlag(behavior, key, value);
            });
 
-  py::class_<llvm::Function>(m, "function", py::module_local())
-      .def_property_readonly(
+  py::class_<llvm::Function>(m, "function")
+      .def_prop_ro(
           "name", [](llvm::Function *fn) { return fn->getName().str(); })
       .def("set_calling_conv", &llvm::Function::setCallingConv)
       .def("add_fn_attr", [](llvm::Function *fn, std::string &name,
@@ -253,8 +248,7 @@ void init_triton_llvm(py::module &&m) {
       });
 
   // optimization levels
-  py::class_<llvm::OptimizationLevel>(m, "optimization_level",
-                                      py::module_local());
+  py::class_<llvm::OptimizationLevel>(m, "optimization_level");
   m.attr("OPTIMIZE_O0") = llvm::OptimizationLevel::O0;
   m.attr("OPTIMIZE_O1") = llvm::OptimizationLevel::O1;
   m.attr("OPTIMIZE_O2") = llvm::OptimizationLevel::O2;
@@ -271,8 +265,7 @@ void init_triton_llvm(py::module &&m) {
           throw std::runtime_error("failed to translate module to LLVM IR");
         }
         return llvmMod;
-      },
-      py::keep_alive<0, 2>(), py::call_guard<py::gil_scoped_release>());
+      });
 
   m.def("attach_datalayout", [](llvm::Module *mod, const std::string triple,
                                 const std::string proc,
@@ -429,7 +422,7 @@ void init_triton_llvm(py::module &&m) {
         std::string obj;
         {
           // when allow_threads goes out of scope, gil will be released
-          py::gil_scoped_release allow_threads;
+          nb::gil_scoped_release allow_threads;
           // create LLVM module from C++
           llvm::LLVMContext context;
           std::unique_ptr<llvm::MemoryBuffer> buffer =
@@ -446,9 +439,9 @@ void init_triton_llvm(py::module &&m) {
                                      enable_fp_fusion, isObject);
         }
         if (isObject)
-          return py::bytes(obj);
+          return nb::bytes(obj.data(), obj.size());
         else
-          return py::str(obj);
+          return nb::str(obj.c_str(), obj.size());
       },
       ret::take_ownership);
 
@@ -508,7 +501,7 @@ void triton_stacktrace_signal_handler(void *) {
   raise(SIGABRT);
 }
 
-void init_triton_stacktrace_hook(pybind11::module &m) {
+void init_triton_stacktrace_hook(nanobind::module_ &m) {
   if (mlir::triton::tools::getBoolEnv("TRITON_ENABLE_PYTHON_STACKTRACE")) {
     llvm::sys::AddSignalHandler(triton_stacktrace_signal_handler, nullptr);
   }

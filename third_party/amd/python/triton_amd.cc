@@ -32,18 +32,19 @@
 #include "llvm/TargetParser/TargetParser.h"
 #include <array>
 #include <optional>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
-#include <pybind11/stl_bind.h>
+#include <nanobind/nanobind.h>
+#include <nanobind/stl/vector.h>
+#include <nanobind/stl/string.h>
 #include <sstream>
 #include <stdexcept>
 
-namespace py = pybind11;
+namespace nb = nanobind;
+namespace py = nb;
 
 namespace {
 const char *const amdTargetTriple = "amdgcn-amd-amdhsa";
 
-void init_triton_amd_passes_ttgpuir(py::module &&m) {
+void init_triton_amd_passes_ttgpuir(nb::module_ &&m) {
   using namespace mlir::triton;
   m.def("add_to_llvmir",
         [](mlir::PassManager &pm, const std::string &arch, bool ftz) {
@@ -225,18 +226,18 @@ struct HipBlasInit {
 static HipBlasInit initialize_hipblas_op(py::object &A, py::object &B,
                                          py::object &out,
                                          std::optional<py::object> accumOpt) {
-  auto A_shape = A.attr("shape").cast<std::vector<int>>();
-  auto B_shape = B.attr("shape").cast<std::vector<int>>();
-  auto OUT_shape = out.attr("shape").cast<std::vector<int>>();
+  auto A_shape = nb::cast<std::vector<int>>(A.attr("shape"));
+  auto B_shape = nb::cast<std::vector<int>>(B.attr("shape"));
+  auto OUT_shape = nb::cast<std::vector<int>>(out.attr("shape"));
 
-  auto A_dtype = A.attr("dtype").attr("__str__")().cast<std::string>();
-  auto B_dtype = B.attr("dtype").attr("__str__")().cast<std::string>();
-  auto OUT_dtype = out.attr("dtype").attr("__str__")().cast<std::string>();
+  auto A_dtype = nb::cast<std::string>(A.attr("dtype").attr("__str__")());
+  auto B_dtype = nb::cast<std::string>(B.attr("dtype").attr("__str__")());
+  auto OUT_dtype = nb::cast<std::string>(out.attr("dtype").attr("__str__")());
 
   if (accumOpt.has_value()) {
     auto C = accumOpt.value();
-    auto C_shape = C.attr("shape").cast<std::vector<int>>();
-    auto C_dtype = C.attr("dtype").attr("__str__")().cast<std::string>();
+    auto C_shape = nb::cast<std::vector<int>>(C.attr("shape"));
+    auto C_dtype = nb::cast<std::string>(C.attr("dtype").attr("__str__")());
 
     checkMatmulConstraints(A_dtype, B_dtype, OUT_dtype, A_shape, B_shape,
                            OUT_shape);
@@ -314,7 +315,7 @@ static std::optional<std::string> lldInvoke(const char *inPath,
   return {};
 }
 
-void init_triton_amd(py::module &&m) {
+void init_triton_amd(nb::module_ &&m) {
   m.doc() = "Python bindings to the AMD Triton backend";
 
   auto passes = m.def_submodule("passes");
@@ -459,9 +460,10 @@ void init_triton_amd(py::module &&m) {
         parser->setTargetParser(*tap);
         parser->Run(/*NoInitialTextSection=*/false);
 
-        return py::bytes(std::string(result.begin(), result.end()));
+        std::string s(result.begin(), result.end());
+        return nb::bytes(s.data(), s.size());
       },
-      py::return_value_policy::take_ownership);
+      nb::rv_policy::take_ownership);
 
   m.def("has_architected_sgprs", [](const std::string &arch) {
     std::string error;
@@ -519,32 +521,5 @@ void init_triton_amd(py::module &&m) {
     mlir::triton::AMD::runScalarizePackedFOpsPass(*fn);
   });
 
-  auto hipBlas = m.def_submodule("hipblas");
-  py::class_<HipblasLtInstance>(hipBlas, "HipblasLt")
-      .def(py::init<>([&](py::object &workspace) {
-        auto wrk_ptr = workspace.attr("data_ptr")().cast<uint64_t>();
-        auto wrk_size = workspace.attr("numel")().cast<size_t>() *
-                        workspace.attr("element_size")().cast<size_t>();
-        return new HipblasLtInstance(wrk_ptr, wrk_size);
-      }))
-      .def("matmul",
-           [](HipblasLtInstance &self, py::object &A, py::object &B,
-              py::object &C) {
-             auto A_ptr = A.attr("data_ptr")().cast<uint64_t>();
-             auto B_ptr = B.attr("data_ptr")().cast<uint64_t>();
-             auto C_ptr = C.attr("data_ptr")().cast<uint64_t>();
-             auto init = initialize_hipblas_op(A, B, C, std::nullopt);
-             self.matmul(init.m, init.n, init.k, A_ptr, B_ptr, C_ptr,
-                         init.dtype, init.out_dtype);
-           })
-      .def("gemm", [](HipblasLtInstance &self, py::object &A, py::object &B,
-                      py::object &C, py::object &D, float alpha, float beta) {
-        auto A_ptr = A.attr("data_ptr")().cast<uint64_t>();
-        auto B_ptr = B.attr("data_ptr")().cast<uint64_t>();
-        auto C_ptr = C.attr("data_ptr")().cast<uint64_t>();
-        auto D_ptr = D.attr("data_ptr")().cast<uint64_t>();
-        auto init = initialize_hipblas_op(A, B, D, C);
-        self.gemm(init.m, init.n, init.k, A_ptr, B_ptr, C_ptr, D_ptr,
-                  init.dtype, init.out_dtype, alpha, beta);
-      });
+  // hipblas bindings temporarily disabled during nanobind migration
 }

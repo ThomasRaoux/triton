@@ -3,15 +3,16 @@
 #include <map>
 #include <stdexcept>
 
-#include "pybind11/pybind11.h"
-#include "pybind11/stl.h"
-#include "pybind11/stl_bind.h"
+#include <nanobind/nanobind.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/vector.h>
+#include <nanobind/stl/map.h>
 
 using namespace proton;
 
-static void initProton(pybind11::module &&m) {
-  using ret = pybind11::return_value_policy;
-  using namespace pybind11::literals;
+static void initProton(nanobind::module_ &&m) {
+  using ret = nanobind::rv_policy;
+  using namespace nanobind::literals;
 
   m.def(
       "start",
@@ -23,9 +24,9 @@ static void initProton(pybind11::module &&m) {
         SessionManager::instance().activateSession(sessionId);
         return sessionId;
       },
-      pybind11::arg("path"), pybind11::arg("contextSourceName"),
-      pybind11::arg("dataName"), pybind11::arg("profilerName"),
-      pybind11::arg("mode") = "");
+      nanobind::arg("path"), nanobind::arg("contextSourceName"),
+      nanobind::arg("dataName"), nanobind::arg("profilerName"),
+      nanobind::arg("mode") = "");
 
   m.def("activate", [](size_t sessionId) {
     SessionManager::instance().activateSession(sessionId);
@@ -106,10 +107,10 @@ static void initProton(pybind11::module &&m) {
     return SessionManager::instance().getContextDepth(sessionId);
   });
 
-  pybind11::bind_map<std::map<std::string, MetricValueType>>(m, "MetricMap");
+  // Note: nanobind supports STL map conversions; explicit bind_map not required.
 }
 
-PYBIND11_MODULE(libproton, m) {
+NB_MODULE(libproton, m) {
   m.doc() = "Python bindings to the Proton API";
   initProton(std::move(m.def_submodule("proton")));
 }

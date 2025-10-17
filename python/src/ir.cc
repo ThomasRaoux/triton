@@ -1,10 +1,11 @@
 #include "ir.h"
 
 #include <optional>
-#include <pybind11/cast.h>
-#include <pybind11/functional.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+#include <nanobind/nanobind.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/vector.h>
+#include <nanobind/stl/optional.h>
+#include <nanobind/stl/map.h>
 
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -42,7 +43,8 @@
 
 namespace {
 
-namespace py = pybind11;
+namespace nb = nanobind;
+namespace py = nb;
 using namespace mlir;
 using namespace triton;
 namespace tt = triton;
@@ -236,16 +238,16 @@ py::list getTensorDescMetadata(ModuleOp &mod) {
 /* Python bindings for ir                                                    */
 /*****************************************************************************/
 
-void init_triton_ir(py::module &&m) {
-  using ret = py::return_value_policy;
-  using namespace pybind11::literals;
+void init_triton_ir(nb::module_ &&m) {
+  using ret = nb::rv_policy;
+  using namespace nanobind::literals;
 
-  py::enum_<PaddingOption>(m, "PADDING_OPTION", py::module_local())
+  nb::enum_<PaddingOption>(m, "PADDING_OPTION")
       .value("PAD_ZERO", PaddingOption::PAD_ZERO)
       .value("PAD_NAN", PaddingOption::PAD_NAN)
       .export_values();
 
-  py::enum_<CacheModifier>(m, "CACHE_MODIFIER", py::module_local())
+  nb::enum_<CacheModifier>(m, "CACHE_MODIFIER")
       .value("NONE", CacheModifier::NONE)
       .value("CA", CacheModifier::CA)
       .value("CG", CacheModifier::CG)
@@ -255,26 +257,26 @@ void init_triton_ir(py::module &&m) {
       .value("CV", CacheModifier::CV)
       .export_values();
 
-  py::enum_<MemSemantic>(m, "MEM_SEMANTIC", py::module_local())
+  nb::enum_<MemSemantic>(m, "MEM_SEMANTIC")
       .value("ACQUIRE_RELEASE", MemSemantic::ACQUIRE_RELEASE)
       .value("ACQUIRE", MemSemantic::ACQUIRE)
       .value("RELEASE", MemSemantic::RELEASE)
       .value("RELAXED", MemSemantic::RELAXED)
       .export_values();
 
-  py::enum_<MemSyncScope>(m, "MEM_SYNC_SCOPE", py::module_local())
+  nb::enum_<MemSyncScope>(m, "MEM_SYNC_SCOPE")
       .value("GPU", MemSyncScope::GPU)
       .value("CTA", MemSyncScope::CTA)
       .value("SYSTEM", MemSyncScope::SYSTEM)
       .export_values();
 
-  py::enum_<EvictionPolicy>(m, "EVICTION_POLICY", py::module_local())
+  nb::enum_<EvictionPolicy>(m, "EVICTION_POLICY")
       .value("NORMAL", EvictionPolicy::NORMAL)
       .value("EVICT_FIRST", EvictionPolicy::EVICT_FIRST)
       .value("EVICT_LAST", EvictionPolicy::EVICT_LAST)
       .export_values();
 
-  py::enum_<RMWOp>(m, "ATOMIC_OP", py::module_local())
+  nb::enum_<RMWOp>(m, "ATOMIC_OP")
       .value("ADD", RMWOp::ADD)
       .value("FADD", RMWOp::FADD)
       .value("AND", RMWOp::AND)
@@ -286,8 +288,7 @@ void init_triton_ir(py::module &&m) {
       .value("UMIN", RMWOp::UMIN)
       .value("UMAX", RMWOp::UMAX);
 
-  py::enum_<DescriptorReduceKind>(m, "DESCRIPTOR_REDUCE_KIND",
-                                  py::module_local())
+  nb::enum_<DescriptorReduceKind>(m, "DESCRIPTOR_REDUCE_KIND")
       .value("ADD", DescriptorReduceKind::ADD)
       .value("AND", DescriptorReduceKind::AND)
       .value("OR", DescriptorReduceKind::OR)
@@ -297,21 +298,21 @@ void init_triton_ir(py::module &&m) {
       .value("INC", DescriptorReduceKind::INC)
       .value("DEC", DescriptorReduceKind::DEC);
 
-  py::enum_<RoundingMode>(m, "ROUNDING_MODE", py::module_local())
+  nb::enum_<RoundingMode>(m, "ROUNDING_MODE")
       .value("RTZ", RoundingMode::RTZ)
       .value("RTNE", RoundingMode::RTNE);
 
-  py::enum_<PropagateNan>(m, "PROPAGATE_NAN", py::module_local())
+  nb::enum_<PropagateNan>(m, "PROPAGATE_NAN")
       .value("NONE", PropagateNan::NONE)
       .value("ALL", PropagateNan::ALL);
 
-  py::enum_<InputPrecision>(m, "INPUT_PRECISION", py::module_local())
+  nb::enum_<InputPrecision>(m, "INPUT_PRECISION")
       .value("TF32", InputPrecision::TF32)
       .value("TF32x3", InputPrecision::TF32x3)
       .value("IEEE", InputPrecision::IEEE)
       .export_values();
 
-  py::enum_<ScaleDotElemType>(m, "ScaleDotElemTypeTY", py::module_local())
+  nb::enum_<ScaleDotElemType>(m, "ScaleDotElemTypeTY")
       .value("E4M3", ScaleDotElemType::E4M3)
       .value("E5M2", ScaleDotElemType::E5M2)
       .value("E2M3", ScaleDotElemType::E2M3)
@@ -321,18 +322,15 @@ void init_triton_ir(py::module &&m) {
       .value("FP16", ScaleDotElemType::FP16)
       .export_values();
 
-  py::class_<MLIRContext>(m, "context", py::module_local())
-      .def(py::init<>([]() {
-        return std::make_unique<MLIRContext>(MLIRContext::Threading::DISABLED);
-      }))
+  py::class_<MLIRContext>(m, "context")
+      .def(nb::init<>())
       .def("printOpOnDiagnostic",
            [](MLIRContext &self, bool v) { self.printOpOnDiagnostic(v); })
       .def("printStackTraceOnDiagnostic", [](MLIRContext &self, bool v) {
         self.printStackTraceOnDiagnostic(v);
       });
 
-  py::class_<SourceMgrDiagnosticHandler>(m, "source_mgr_diag",
-                                         py::module_local())
+  py::class_<SourceMgrDiagnosticHandler>(m, "source_mgr_diag")
       .def(py::init<llvm::SourceMgr &, MLIRContext *>());
 
   m.def("load_dialects", [](MLIRContext &context) {
@@ -352,7 +350,7 @@ void init_triton_ir(py::module &&m) {
     context.loadAllAvailableDialects();
   });
 
-  py::class_<Type>(m, "type", py::module_local())
+  py::class_<Type>(m, "type")
       .def("is_integer",
            [](Type &self, unsigned width) { return self.isInteger(width); })
       .def("is_fp16", &Type::isF16)
@@ -373,13 +371,13 @@ void init_triton_ir(py::module &&m) {
         return os.str();
       });
 
-  py::class_<FunctionType>(m, "function_type", py::module_local())
+  py::class_<FunctionType>(m, "function_type")
       .def("param_types", [](FunctionType &self) {
         return std::vector<Type>(self.getInputs().begin(),
                                  self.getInputs().end());
       });
 
-  py::class_<Location>(m, "location", py::module_local())
+  py::class_<Location>(m, "location")
       .def("__str__",
            [](Location &self) {
              std::string str;
@@ -394,7 +392,7 @@ void init_triton_ir(py::module &&m) {
         self = dyn_cast<Location>(nameLoc);
       });
 
-  py::class_<Value>(m, "value", py::module_local())
+  py::class_<Value>(m, "value")
       .def(py::init<>())
       .def("set_attr",
            [](Value &self, std::string &name, Attribute &attr) -> void {
@@ -429,13 +427,13 @@ void init_triton_ir(py::module &&m) {
            [](Value &self, Location loc) { return self.setLoc(loc); })
       .def("get_loc", [](Value &self) { return self.getLoc(); });
 
-  py::class_<OpResult, Value>(m, "op_result", py::module_local());
+  py::class_<OpResult, Value>(m, "op_result");
 
-  py::class_<BlockArgument, Value>(m, "block_argument", py::module_local())
+  py::class_<BlockArgument, Value>(m, "block_argument")
       .def("get_loc", &BlockArgument::getLoc)
       .def("set_loc", &BlockArgument::setLoc);
 
-  py::class_<Region>(m, "region", py::module_local())
+  py::class_<Region>(m, "region")
       .def("get_parent_region", &Region::getParentRegion, ret::reference)
       .def("size", [](Region &self) { return self.getBlocks().size(); })
       .def("empty", &Region::empty)
@@ -445,11 +443,11 @@ void init_triton_ir(py::module &&m) {
       .def("push_front",
            [](Region &self, Block *block) { self.push_front(block); });
 
-  py::class_<Block>(m, "block", py::module_local())
+  py::class_<Block>(m, "block")
       .def("arg",
            [](Block &self, int index) -> BlockArgument {
-             if (index >= self.getNumArguments())
-               throw pybind11::index_error("Block argument index out of range");
+            if (index >= self.getNumArguments())
+              throw std::out_of_range("Block argument index out of range");
              return self.getArgument(index);
            })
       .def("add_argument",
@@ -511,13 +509,13 @@ void init_triton_ir(py::module &&m) {
       .def("erase", [](Block &self) { self.erase(); })
       .def("id", [](Block &self) { return (uint64_t)&self; });
 
-  py::class_<Attribute>(m, "attribute", py::module_local());
-  py::class_<IntegerAttr, Attribute>(m, "integer_attr", py::module_local());
-  py::class_<BoolAttr, Attribute>(m, "bool_attr", py::module_local());
-  py::class_<UnitAttr, Attribute>(m, "unit_attr", py::module_local());
+  py::class_<Attribute>(m, "attribute");
+  py::class_<IntegerAttr, Attribute>(m, "integer_attr");
+  py::class_<BoolAttr, Attribute>(m, "bool_attr");
+  py::class_<UnitAttr, Attribute>(m, "unit_attr");
 
   // Ops
-  py::class_<OpState>(m, "OpState", py::module_local())
+  py::class_<OpState>(m, "OpState")
       .def("set_attr",
            [](OpState &self, std::string &name, Attribute &attr) -> void {
              self->setAttr(name, attr);
@@ -526,23 +524,23 @@ void init_triton_ir(py::module &&m) {
            [](OpState &self) -> unsigned { return self->getNumResults(); })
       .def("get_result",
            [](OpState &self, unsigned idx) -> Value {
-             if (idx >= self->getNumResults())
-               throw pybind11::index_error("Op result index out of range");
+            if (idx >= self->getNumResults())
+              throw std::out_of_range("Op result index out of range");
              return self->getResult(idx);
            })
       .def(
           "get_region",
-          [](OpState &self, unsigned idx) -> Region & {
+           [](OpState &self, unsigned idx) -> Region & {
             if (idx >= self->getNumRegions())
-              throw pybind11::index_error("Op region index out of range");
+              throw std::out_of_range("Op region index out of range");
             return self->getRegion(idx);
           },
           ret::reference)
       .def(
           "get_body",
-          [](scf::ForOp &self, unsigned idx) -> Block * {
+           [](scf::ForOp &self, unsigned idx) -> Block * {
             if (idx >= self->getNumRegions())
-              throw pybind11::index_error("Op region index out of range");
+              throw std::out_of_range("Op region index out of range");
             return self.getBody(idx);
           },
           ret::reference)
@@ -575,22 +573,22 @@ void init_triton_ir(py::module &&m) {
       .def("get_operation", [](OpState &self) { return self.getOperation(); });
 
   // scf Ops
-  py::class_<scf::ForOp, OpState>(m, "ForOp", py::module_local())
+  py::class_<scf::ForOp, OpState>(m, "ForOp")
       .def("get_induction_var", &scf::ForOp::getInductionVar);
 
-  py::class_<scf::IfOp, OpState>(m, "IfOp", py::module_local())
+  py::class_<scf::IfOp, OpState>(m, "IfOp")
       .def("get_then_block", &scf::IfOp::thenBlock, ret::reference)
       .def("get_else_block", &scf::IfOp::elseBlock, ret::reference)
       .def("get_then_yield", &scf::IfOp::thenYield)
       .def("get_else_yield", &scf::IfOp::elseYield);
-  py::class_<scf::YieldOp, OpState>(m, "YieldOp", py::module_local());
-  py::class_<scf::WhileOp, OpState>(m, "WhileOp", py::module_local())
+  py::class_<scf::YieldOp, OpState>(m, "YieldOp");
+  py::class_<scf::WhileOp, OpState>(m, "WhileOp")
       .def("get_before", &scf::WhileOp::getBefore, ret::reference)
       .def("get_after", &scf::WhileOp::getAfter, ret::reference);
-  py::class_<scf::ConditionOp, OpState>(m, "ConditionOp", py::module_local());
+  py::class_<scf::ConditionOp, OpState>(m, "ConditionOp");
 
-  py::class_<Operation, std::unique_ptr<Operation, py::nodelete>>(
-      m, "operation", py::module_local())
+  py::class_<Operation>(
+      m, "operation")
       .def("get_name",
            [](Operation &self) {
              llvm::StringRef opName = self.getName().getStringRef();
@@ -608,7 +606,8 @@ void init_triton_ir(py::module &&m) {
              auto ret = self.getAttrOfType<StringAttr>(name);
              if (!ret)
                return py::none();
-             return py::str(ret.getValue().str());
+             std::string s = ret.getValue().str();
+             return nb::str(s.c_str(), s.size());
            })
       .def("get_bool_attr",
            [](Operation &self, const std::string &name) -> py::object {
@@ -622,12 +621,13 @@ void init_triton_ir(py::module &&m) {
              auto ret = self.getAttrOfType<FlatSymbolRefAttr>(name);
              if (!ret)
                return py::none();
-             return py::str(ret.getValue().str());
+             std::string s2 = ret.getValue().str();
+             return nb::str(s2.c_str(), s2.size());
            });
 
   // dynamic_attr is used to transfer ownership of the MLIR context to the
   // module
-  py::class_<ModuleOp, OpState>(m, "module", py::module_local(),
+  py::class_<ModuleOp, OpState>(m, "module",
                                 py::dynamic_attr())
       .def("dump", &ModuleOp::dump)
       .def("str",
@@ -737,13 +737,13 @@ void init_triton_ir(py::module &&m) {
       },
       ret::take_ownership);
 
-  py::class_<FuncOp, OpState>(m, "function", py::module_local())
+  py::class_<FuncOp, OpState>(m, "function")
       // .def_property_readonly("attrs", &ir::function::attrs)
       // .def("add_attr", &ir::function::add_attr);
       .def("args",
            [](FuncOp &self, unsigned idx) -> BlockArgument {
              if (idx >= self.getNumArguments())
-               throw pybind11::index_error(
+               throw std::out_of_range(
                    "Function argument index out of range");
              return self.getArgument(idx);
            })
@@ -756,7 +756,7 @@ void init_triton_ir(py::module &&m) {
           "set_arg_attr",
           [](FuncOp &self, int arg_no, const std::string &name, int val) {
             if (arg_no >= self.getNumArguments())
-              throw pybind11::index_error(
+              throw std::out_of_range(
                   "Function argument index out of range");
             // set arg attributes "name" to value "val"
             auto attrTy = IntegerType::get(self.getContext(), 32);
@@ -765,16 +765,16 @@ void init_triton_ir(py::module &&m) {
           ret::reference)
       //  .def("has_attr", &::FuncOp::hasAttr)
       .def("finalize", [](FuncOp &self) -> void {})
-      .def_property_readonly("type", &FuncOp::getFunctionType)
+      .def_prop_ro("type", &FuncOp::getFunctionType)
       .def("reset_type", &FuncOp::setType);
 
-  py::class_<mlir::OpBuilder>(m, "op_builder", py::module_local(),
+  py::class_<mlir::OpBuilder>(m, "op_builder",
                               py::dynamic_attr())
       .def(py::init<MLIRContext *>());
 
-  py::class_<OpBuilder::InsertPoint>(m, "InsertPoint", py::module_local());
+  py::class_<OpBuilder::InsertPoint>(m, "InsertPoint");
 
-  py::class_<TritonOpBuilder>(m, "builder", py::module_local(),
+  py::class_<TritonOpBuilder>(m, "builder",
                               py::dynamic_attr())
       .def(py::init<MLIRContext *>())
       .def("get_op_builder", &TritonOpBuilder::getBuilder, ret::reference)
@@ -1614,14 +1614,14 @@ void init_triton_ir(py::module &&m) {
       // Built-in instruction
       .def("create_get_program_id",
            [](TritonOpBuilder &self, int axis) -> Value {
-             if (axis < 0 || axis > 3)
-               throw pybind11::index_error("program_id must be in [0,3]");
+            if (axis < 0 || axis > 3)
+              throw std::out_of_range("program_id must be in [0,3]");
              return self.create<GetProgramIdOp>(axis);
            })
       .def("create_get_num_programs",
            [](TritonOpBuilder &self, int axis) -> Value {
-             if (axis < 0 || axis > 3)
-               throw pybind11::index_error("program_id must be in [0,3]");
+            if (axis < 0 || axis > 3)
+              throw std::out_of_range("program_id must be in [0,3]");
              return self.create<GetNumProgramsOp>(axis);
            })
       .def("create_dot",
@@ -1821,7 +1821,7 @@ void init_triton_ir(py::module &&m) {
                                                   paddingOption);
            });
 
-  py::class_<PassManager>(m, "pass_manager", py::module_local())
+  py::class_<PassManager>(m, "pass_manager")
       .def(py::init<MLIRContext *>())
       .def("enable_debug",
            [](PassManager &self) -> bool {
@@ -1925,8 +1925,7 @@ void init_triton_ir(py::module &&m) {
                 setupTritonDiagnosticHandler(context);
             if (failed(self.run(mod.getOperation())))
               throw std::runtime_error("PassManager::run failed");
-          },
-          py::call_guard<py::gil_scoped_release>());
+          });
 }
 
 bool str_eq_ignore_case(const char *s1, const char *s2, int n) {
@@ -2008,7 +2007,7 @@ static PyMethodDef ModuleMethods[] = {
     {NULL, NULL, 0, NULL} // sentinel
 };
 
-void init_triton_env_vars(py::module &m) {
+void init_triton_env_vars(nanobind::module_ &m) {
   m.def("get_cache_invalidating_env_vars",
         []() -> std::map<std::string, std::string> {
           std::map<std::string, std::string> ret;

@@ -1,6 +1,7 @@
 #include "ir.h"
-#include "pybind11/pybind11.h"
-#include <pybind11/stl.h>
+#include <nanobind/nanobind.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/vector.h>
 
 #include <optional>
 #include <stdexcept>
@@ -22,7 +23,8 @@
 #include "llvm/Support/MathExtras.h"
 
 using namespace mlir;
-namespace py = pybind11;
+namespace nb = nanobind;
+namespace py = nb;
 namespace tt = triton;
 namespace ttg = triton::gpu;
 namespace ttng = triton::nvidia_gpu;
@@ -109,10 +111,8 @@ struct GluonLayouts {
   py::handle PaddedSharedLayout;
 
   GluonLayouts() {
-    auto layouts =
-        py::module::import("triton.experimental.gluon.language._layouts");
-    auto amdLayouts =
-        py::module::import("triton.experimental.gluon.language.amd._layouts");
+    auto layouts = nb::module_::import_("triton.experimental.gluon.language._layouts");
+    auto amdLayouts = nb::module_::import_("triton.experimental.gluon.language.amd._layouts");
     AutoLayout = py::object(layouts.attr("AutoLayout")).release();
     BlockedLayout = py::object(layouts.attr("BlockedLayout")).release();
     SliceLayout = py::object(layouts.attr("SliceLayout")).release();
@@ -131,7 +131,7 @@ struct GluonLayouts {
     PaddedSharedLayout =
         py::object(layouts.attr("PaddedSharedLayout")).release();
 
-    auto core = py::module::import("triton.language.core");
+    auto core = nb::module_::import_("triton.language.core");
   }
 };
 
@@ -254,14 +254,14 @@ py::object layoutToGluon(Attribute layout) {
                                       ll.getBases().lookup(kBlock), shape);
   }
 
-  throw py::value_error("Unhandled encoding encountered");
+  throw std::runtime_error("Unhandled encoding encountered");
 }
 
-void init_gluon_ir(py::module &&m) {
-  using ret = py::return_value_policy;
+void init_gluon_ir(nb::module_ &&m) {
+  using ret = nb::rv_policy;
 
   py::class_<GluonOpBuilder, TritonOpBuilder>(
-      m, "GluonOpBuilder", py::module_local(), py::dynamic_attr())
+      m, "GluonOpBuilder", py::dynamic_attr())
       .def(py::init<MLIRContext *>())
       .def("get_op_builder", &GluonOpBuilder::getBuilder, ret::reference)
       .def("get_distributed_ty",
@@ -516,7 +516,7 @@ void init_gluon_ir(py::module &&m) {
              auto layout = ttng::getDistributedLayoutForTmemLdSt(
                  memType, atom, numWarps, ctaLayout);
              if (!layout)
-               return py::none();
+               return nb::none();
              auto attr =
                  ttg::LinearEncodingAttr::get(self.getContext(), *layout);
              return layoutToGluon(attr);
@@ -677,7 +677,7 @@ void init_gluon_ir(py::module &&m) {
              return self.create<ttng::TMEMAllocOp>(resultTy, value);
            })
       .def("create_tmem_alloc",
-           [](GluonOpBuilder &self, Type resultTy, py::none value) -> Value {
+           [](GluonOpBuilder &self, Type resultTy, nb::object value) -> Value {
              return self.create<ttng::TMEMAllocOp>(resultTy, Value{});
            })
       .def("create_tmem_store",
@@ -860,12 +860,11 @@ void init_gluon_ir(py::module &&m) {
         self.create<ttag::AsyncTDMWait>(tokens, num);
       });
 
-  py::class_<ttg::WarpSpecializeOp, OpState>(m, "WarpSpecializeOp",
-                                             py::module_local())
+  py::class_<ttg::WarpSpecializeOp, OpState>(m, "WarpSpecializeOp")
       .def("get_default_region", &ttg::WarpSpecializeOp::getDefaultRegion,
            ret::reference)
       .def("get_partition_op_holder",
-           &ttg::WarpSpecializeOp::getPartitionOpHolder, ret::reference)
+           &ttg::WarpSpecializeOp::getPartitionOpHolder, nb::rv_policy::reference)
       .def("set_requested_registers", [](ttg::WarpSpecializeOp &self,
                                          std::vector<int> &requestedRegisters) {
         self.setRequestedRegisters(requestedRegisters);

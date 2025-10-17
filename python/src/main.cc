@@ -1,8 +1,8 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Signals.h"
-#include <pybind11/pybind11.h>
+#include <nanobind/nanobind.h>
 
-namespace py = pybind11;
+namespace nb = nanobind;
 
 #define FOR_EACH_1(MACRO, X) MACRO(X)
 #define FOR_EACH_2(MACRO, X, ...) MACRO(X) FOR_EACH_1(MACRO, __VA_ARGS__)
@@ -32,21 +32,21 @@ namespace py = pybind11;
 #define FOR_EACH_P(MACRO, ARGS_WITH_PARENS)                                    \
   FOR_EACH_P_INTERMEDIATE(MACRO, REMOVE_PARENS ARGS_WITH_PARENS)
 
-#define DECLARE_BACKEND(name) void init_triton_##name(pybind11::module &&m);
+#define DECLARE_BACKEND(name) void init_triton_##name(nanobind::module_ &&m);
 
 #define INIT_BACKEND(name) init_triton_##name(m.def_submodule(#name));
 
-void init_triton_env_vars(pybind11::module &m);
-void init_triton_ir(pybind11::module &&m);
-void init_triton_llvm(pybind11::module &&m);
-void init_triton_interpreter(pybind11::module &&m);
-void init_triton_passes(pybind11::module &&m);
-void init_triton_stacktrace_hook(pybind11::module &m);
-void init_gluon_ir(pybind11::module &&m);
-void init_native_specialize(pybind11::module &m);
+void init_triton_env_vars(nanobind::module_ &m);
+void init_triton_ir(nanobind::module_ &&m);
+void init_triton_llvm(nanobind::module_ &&m);
+void init_triton_interpreter(nanobind::module_ &&m);
+void init_triton_passes(nanobind::module_ &&m);
+void init_triton_stacktrace_hook(nanobind::module_ &m);
+void init_gluon_ir(nanobind::module_ &&m);
+void init_native_specialize(nanobind::module_ &m);
 FOR_EACH_P(DECLARE_BACKEND, TRITON_BACKENDS_TUPLE)
 
-PYBIND11_MODULE(libtriton, m) {
+NB_MODULE(libtriton, m) {
   m.doc() = "Python bindings to the C++ Triton API";
   init_triton_stacktrace_hook(m);
   init_triton_env_vars(m);

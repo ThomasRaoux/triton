@@ -3,14 +3,15 @@
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
-#include <pybind11/pybind11.h>
+#include <nanobind/nanobind.h>
 #include <string>
 #include <unordered_map>
 #include <utility>
 
 namespace {
 
-namespace py = pybind11;
+namespace nb = nanobind;
+namespace py = nb;
 
 using DTypePtrKey = std::pair<Py_hash_t, bool>;
 using DTypeKey = Py_hash_t;
@@ -566,7 +567,7 @@ static PyMethodDef module_methods[] = {
 
 } // anonymous namespace
 
-void init_native_specialize(pybind11::module &m) {
+void init_native_specialize(nanobind::module_ &m) {
   // add functions to module
   PyModule_AddFunctions(m.ptr(), module_methods);
 }

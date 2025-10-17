@@ -12,20 +12,22 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonInstrument/Transforms/Passes.h"
 #include "triton/Target/LLVMIR/Passes.h"
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+#include <nanobind/nanobind.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/vector.h>
 
-namespace py = pybind11;
+namespace nb = nanobind;
+namespace py = nb;
 
-void init_triton_analysis(py::module &&m) {
-  py::class_<mlir::ModuleAllocation>(m, "allocation", py::module_local())
+void init_triton_analysis(nb::module_ &&m) {
+  py::class_<mlir::ModuleAllocation>(m, "allocation")
       .def(py::init<mlir::ModuleOp>());
-  py::class_<mlir::ModuleMembarAnalysis>(m, "membar", py::module_local())
+  py::class_<mlir::ModuleMembarAnalysis>(m, "membar")
       .def(py::init<mlir::ModuleAllocation *>())
       .def("run", &mlir::ModuleMembarAnalysis::run);
 }
 
-void init_triton_passes_common(py::module &&m) {
+void init_triton_passes_common(nb::module_ &&m) {
   using namespace mlir;
   ADD_PASS_WRAPPER_0("add_sccp", createSCCPPass);
   ADD_PASS_WRAPPER_0("add_symbol_dce", createSymbolDCEPass);
@@ -36,7 +38,7 @@ void init_triton_passes_common(py::module &&m) {
   ADD_PASS_WRAPPER_0("print_ir", createPrintIRPass);
 }
 
-void init_triton_passes_ttir(py::module &&m) {
+void init_triton_passes_ttir(nb::module_ &&m) {
   using namespace mlir::triton;
   ADD_PASS_WRAPPER_0("add_combine", createTritonCombineOps);
   ADD_PASS_WRAPPER_0("add_reorder_broadcast", createTritonReorderBroadcast);
@@ -52,7 +54,7 @@ void init_triton_passes_ttir(py::module &&m) {
                             int, int, int);
 }
 
-void init_triton_passes_ttgpuir(py::module &&m) {
+void init_triton_passes_ttgpuir(nb::module_ &&m) {
   using namespace mlir;
   using namespace mlir::triton::gpu;
   using namespace mlir::triton::instrument;
@@ -96,7 +98,7 @@ void init_triton_passes_ttgpuir(py::module &&m) {
                      createTritonGPUOptimizePartitionWarps);
 }
 
-void init_triton_passes_convert(py::module &&m) {
+void init_triton_passes_convert(nb::module_ &&m) {
   using namespace mlir;
   ADD_PASS_WRAPPER_0("add_scf_to_cf", createSCFToControlFlowPass);
   ADD_PASS_WRAPPER_0("add_cf_to_llvmir", createConvertControlFlowToLLVMPass);
@@ -105,13 +107,13 @@ void init_triton_passes_convert(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_nvvm_to_llvm", createConvertNVVMToLLVMPass);
 }
 
-void init_triton_passes_llvmir(py::module &&m) {
+void init_triton_passes_llvmir(nb::module_ &&m) {
   using namespace mlir;
   ADD_PASS_WRAPPER_0("add_di_scope", mlir::createLLVMDIScope);
   ADD_PASS_WRAPPER_0("add_di_local_variable", mlir::createLLVMDILocalVariable);
 }
 
-void init_gluon_passes(py::module &&m) {
+void init_gluon_passes(nb::module_ &&m) {
   using namespace mlir;
   namespace gluon = mlir::triton::gluon;
   ADD_PASS_WRAPPER_0("add_resolve_auto_encodings",
@@ -120,7 +122,7 @@ void init_gluon_passes(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_inliner", gluon::createGluonInline);
 }
 
-void init_triton_passes(py::module &&m) {
+void init_triton_passes(nb::module_ &&m) {
   init_triton_analysis(m.def_submodule("analysis"));
   init_triton_passes_common(m.def_submodule("common"));
   init_triton_passes_convert(m.def_submodule("convert"));
