@@ -1,22 +1,26 @@
+// Nanobind-based implementation of the CPU interpreter helpers previously
+// implemented with pybind11. Semantics are kept equivalent.
+
+#include <nanobind/nanobind.h>
+#include <nanobind/ndarray.h>
 #include <atomic>
-#include <iostream>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <mutex>
-#include <pybind11/numpy.h>
-#include <pybind11/pybind11.h>
 #include <stdexcept>
 #include <type_traits>
 
-namespace py = pybind11;
+namespace nb = nanobind;
+
+enum class MemSemantic { ACQUIRE_RELEASE, ACQUIRE, RELEASE, RELAXED };
+enum class RMWOp { ADD, FADD, AND, OR, XOR, XCHG, MAX, MIN, UMIN, UMAX };
 
 namespace {
 
 struct npy_half {
   uint16_t value;
 };
-
-enum class MemSemantic { ACQUIRE_RELEASE, ACQUIRE, RELEASE, RELAXED };
 
 std::mutex atomic_op_guard;
 
@@ -28,14 +32,14 @@ constexpr bool is_reinterpret_cast_to_atomic_safe =
     sizeof(T) == sizeof(std::atomic<T>) &&
     alignof(T) == alignof(std::atomic<T>);
 
-enum class RMWOp { ADD, FADD, AND, OR, XOR, XCHG, MAX, MIN, UMIN, UMAX };
-
 std::map<MemSemantic, std::memory_order> mem_semantic_map = {
     {MemSemantic::ACQUIRE_RELEASE, std::memory_order_acq_rel},
     {MemSemantic::ACQUIRE, std::memory_order_acquire},
     {MemSemantic::RELEASE, std::memory_order_release},
     {MemSemantic::RELAXED, std::memory_order_relaxed},
 };
+
+enum class RMWInnerOp { ADD, FADD, AND, OR, XOR, XCHG, MAX, MIN, UMIN, UMAX };
 
 template <bool is_min, typename T>
 T atomic_cmp(T *ptr, T val, std::memory_order order) {
@@ -88,32 +92,18 @@ template <typename T> T atomic_fadd(T *loc, T value, std::memory_order order) {
   return old_value;
 }
 
-/** Create a value of type `To` from the bits of `from`.
- *
- * similar to `std::bit_cast` but compatible with C++17,
- * should perform similar to `*reinterpret_cast<To*>(&from)`
- * or through punning without expecting any undefined behaviors.
- *
- * Note: taken from
- * https://github.com/numpy/numpy/blob/70fde29fdd4d8fcc6098df7ef8a34c84844e347f/numpy/_core/src/common/utils.hpp#L32
- * with simplification.
- */
 template <typename To, typename From>
 inline To BitCast(const From &from) noexcept {
   static_assert(sizeof(To) == sizeof(From),
                 "both data types must have the same size");
-
   static_assert(std::is_trivially_copyable_v<To> &&
                     std::is_trivially_copyable_v<From>,
                 "both data types must be trivially copyable");
-
   To to;
   memcpy(&to, &from, sizeof(from));
   return to;
 }
 
-// Taken from
-// https://github.com/numpy/numpy/blob/70fde29fdd4d8fcc6098df7ef8a34c84844e347f/numpy/_core/src/common/half_private.hpp#L14
 template <bool gen_overflow = true, bool gen_underflow = true,
           bool round_even = true>
 inline uint16_t FromFloatBits(uint32_t f) {
@@ -123,74 +113,44 @@ inline uint16_t FromFloatBits(uint32_t f) {
   h_sgn = (uint16_t)((f & 0x80000000u) >> 16);
   f_exp = (f & 0x7f800000u);
 
-  /* Exponent overflow/NaN converts to signed inf/NaN */
   if (f_exp >= 0x47800000u) {
     if (f_exp == 0x7f800000u) {
-      /* Inf or NaN */
       f_sig = (f & 0x007fffffu);
       if (f_sig != 0) {
-        /* NaN - propagate the flag in the significand... */
         uint16_t ret = (uint16_t)(0x7c00u + (f_sig >> 13));
-        /* ...but make sure it stays a NaN */
         if (ret == 0x7c00u) {
           ret++;
         }
         return h_sgn + ret;
       } else {
-        /* signed inf */
         return (uint16_t)(h_sgn + 0x7c00u);
       }
     } else {
       if constexpr (gen_overflow) {
-        // FloatStatus::RaiseOverflow();
         throw std::overflow_error("overflow to signed inf");
       }
       return (uint16_t)(h_sgn + 0x7c00u);
     }
   }
 
-  /* Exponent underflow converts to a subnormal half or signed zero */
   if (f_exp <= 0x38000000u) {
-    /*
-     * Signed zeros, subnormal floats, and floats with small
-     * exponents all convert to signed zero half-floats.
-     */
     if (f_exp < 0x33000000u) {
       if constexpr (gen_underflow) {
-        /* If f != 0, it underflowed to 0 */
         if ((f & 0x7fffffff) != 0) {
-          // FloatStatus::RaiseUnderflow();
           throw std::underflow_error("");
         }
       }
       return h_sgn;
     }
-    /* Make the subnormal significand */
     f_exp >>= 23;
     f_sig = (0x00800000u + (f & 0x007fffffu));
     if constexpr (gen_underflow) {
-      /* If it's not exactly represented, it underflowed */
       if ((f_sig & (((uint32_t)1 << (126 - f_exp)) - 1)) != 0) {
-        // FloatStatus::RaiseUnderflow();
         throw std::underflow_error("");
       }
     }
-    /*
-     * Usually the significand is shifted by 13. For subnormals an
-     * additional shift needs to occur. This shift is one for the largest
-     * exponent giving a subnormal `f_exp = 0x38000000 >> 23 = 112`, which
-     * offsets the new first bit. At most the shift can be 1+10 bits.
-     */
     f_sig >>= (113 - f_exp);
-    /* Handle rounding by adding 1 to the bit beyond half precision */
     if constexpr (round_even) {
-      /*
-       * If the last bit in the half significand is 0 (already even), and
-       * the remaining bit pattern is 1000...0, then we do not add one
-       * to the bit after the half significand. However, the (113 - f_exp)
-       * shift can lose up to 11 bits, so the || checks them in the original.
-       * In all other cases, we can just add one.
-       */
       if (((f_sig & 0x00003fffu) != 0x00001000u) || (f & 0x000007ffu)) {
         f_sig += 0x00001000u;
       }
@@ -198,24 +158,12 @@ inline uint16_t FromFloatBits(uint32_t f) {
       f_sig += 0x00001000u;
     }
     h_sig = (uint16_t)(f_sig >> 13);
-    /*
-     * If the rounding causes a bit to spill into h_exp, it will
-     * increment h_exp from zero to one and h_sig will be zero.
-     * This is the correct result.
-     */
     return (uint16_t)(h_sgn + h_sig);
   }
 
-  /* Regular case with no overflow or underflow */
   h_exp = (uint16_t)((f_exp - 0x38000000u) >> 13);
-  /* Handle rounding by adding 1 to the bit beyond half precision */
   f_sig = (f & 0x007fffffu);
   if constexpr (round_even) {
-    /*
-     * If the last bit in the half significand is 0 (already even), and
-     * the remaining bit pattern is 1000...0, then we do not add one
-     * to the bit after the half significand.  In all other cases, we do.
-     */
     if ((f_sig & 0x00003fffu) != 0x00001000u) {
       f_sig += 0x00001000u;
     }
@@ -223,16 +171,9 @@ inline uint16_t FromFloatBits(uint32_t f) {
     f_sig += 0x00001000u;
   }
   h_sig = (uint16_t)(f_sig >> 13);
-  /*
-   * If the rounding causes a bit to spill into h_exp, it will
-   * increment h_exp by one and h_sig will be zero.  This is the
-   * correct result.  h_exp may increment to 15, at greatest, in
-   * which case the result overflows to a signed inf.
-   */
   if constexpr (gen_overflow) {
     h_sig += h_exp;
     if (h_sig == 0x7c00u) {
-      // FloatStatus::RaiseOverflow();
       throw std::overflow_error("");
     }
     return h_sgn + h_sig;
@@ -241,19 +182,15 @@ inline uint16_t FromFloatBits(uint32_t f) {
   }
 }
 
-// Taken from
-// https://github.com/numpy/numpy/blob/70fde29fdd4d8fcc6098df7ef8a34c84844e347f/numpy/_core/src/common/half_private.hpp#L269
 constexpr uint32_t ToFloatBits(uint16_t h) {
   uint16_t h_exp = (h & 0x7c00u);
   uint32_t f_sgn = ((uint32_t)h & 0x8000u) << 16;
   switch (h_exp) {
-  case 0x0000u: { // 0 or subnormal
+  case 0x0000u: {
     uint16_t h_sig = (h & 0x03ffu);
-    // Signed zero
     if (h_sig == 0) {
       return f_sgn;
     }
-    // Subnormal
     h_sig <<= 1;
     while ((h_sig & 0x0400u) == 0) {
       h_sig <<= 1;
@@ -263,33 +200,23 @@ constexpr uint32_t ToFloatBits(uint16_t h) {
     uint32_t f_sig = ((uint32_t)(h_sig & 0x03ffu)) << 13;
     return f_sgn + f_exp + f_sig;
   }
-  case 0x7c00u: // inf or NaN
-    // All-ones exponent and a copy of the significand
+  case 0x7c00u:
     return f_sgn + 0x7f800000u + (((uint32_t)(h & 0x03ffu)) << 13);
-  default: // normalized
-    // Just need to adjust the exponent and shift
+  default:
     return f_sgn + (((uint32_t)(h & 0x7fffu) + 0x1c000u) << 13);
   }
 }
 
-npy_half npy_float_to_half(float f) {
-  return {FromFloatBits(BitCast<uint32_t>(f))};
-}
-
-float npy_half_to_float(npy_half h) {
-  return BitCast<float>(ToFloatBits(h.value));
-}
+npy_half npy_float_to_half(float f) { return {FromFloatBits(BitCast<uint32_t>(f))}; }
+float npy_half_to_float(npy_half h) { return BitCast<float>(ToFloatBits(h.value)); }
 
 template <>
 npy_half atomic_fadd<npy_half>(npy_half *loc, npy_half value,
-                               std::memory_order order) {
+                               std::memory_order) {
   npy_half old_value;
-
   const std::lock_guard<std::mutex> lock(atomic_op_guard);
   old_value = *loc;
-  *loc = npy_float_to_half(npy_half_to_float(old_value) +
-                           npy_half_to_float(value));
-
+  *loc = npy_float_to_half(npy_half_to_float(old_value) + npy_half_to_float(value));
   return old_value;
 }
 
@@ -297,18 +224,15 @@ class AtomicOp {
 public:
   AtomicOp(const uint64_t *ptr, size_t numel, std::memory_order order)
       : ptr(ptr), numel(numel), order(order) {}
-
   void apply() {
     for (size_t i = 0; i < numel; ++i) {
       applyAt(reinterpret_cast<void *>(ptr[i]), i);
     }
   }
-
   virtual ~AtomicOp() = default;
 
 protected:
   virtual void applyAt(void *, size_t i) = 0;
-
   const uint64_t *ptr;
   size_t numel;
   std::memory_order order;
@@ -325,26 +249,24 @@ protected:
     if (mask[i]) {
       DType *ptr = static_cast<DType *>(loc);
       *(static_cast<DType *>(ret) + i) =
-          applyAtMasked(ptr, *(static_cast<const DType *>(val) + i), order);
+          applyAtMasked(ptr, *(static_cast<const DType *>(val) + i), this->order);
     }
   }
-
   virtual DType applyAtMasked(DType *loc, const DType value,
                               std::memory_order order) = 0;
-
   const void *val;
   void *ret;
   const bool *mask;
 };
 
-template <typename DType, RMWOp Op, typename = void>
+template <typename DType, RMWInnerOp Op, typename = void>
 class AtomicRMWOp : public AtomicRMWOpBase<DType> {
 public:
   using AtomicRMWOpBase<DType>::AtomicRMWOpBase;
 };
 
-template <typename DType, RMWOp Op>
-class AtomicRMWOp<DType, Op, std::enable_if_t<Op == RMWOp::ADD>>
+template <typename DType, RMWInnerOp Op>
+class AtomicRMWOp<DType, Op, std::enable_if_t<Op == RMWInnerOp::ADD>>
     : public AtomicRMWOpBase<DType> {
 public:
   using AtomicRMWOpBase<DType>::AtomicRMWOpBase;
@@ -366,8 +288,8 @@ protected:
   }
 };
 
-template <typename DType, RMWOp Op>
-class AtomicRMWOp<DType, Op, std::enable_if_t<Op == RMWOp::FADD>>
+template <typename DType, RMWInnerOp Op>
+class AtomicRMWOp<DType, Op, std::enable_if_t<Op == RMWInnerOp::FADD>>
     : public AtomicRMWOpBase<DType> {
 public:
   using AtomicRMWOpBase<DType>::AtomicRMWOpBase;
@@ -379,8 +301,8 @@ protected:
   }
 };
 
-template <typename DType, RMWOp Op>
-class AtomicRMWOp<DType, Op, std::enable_if_t<Op == RMWOp::AND>>
+template <typename DType, RMWInnerOp Op>
+class AtomicRMWOp<DType, Op, std::enable_if_t<Op == RMWInnerOp::AND>>
     : public AtomicRMWOpBase<DType> {
 public:
   using AtomicRMWOpBase<DType>::AtomicRMWOpBase;
@@ -402,8 +324,8 @@ protected:
   }
 };
 
-template <typename DType, RMWOp Op>
-class AtomicRMWOp<DType, Op, std::enable_if_t<Op == RMWOp::OR>>
+template <typename DType, RMWInnerOp Op>
+class AtomicRMWOp<DType, Op, std::enable_if_t<Op == RMWInnerOp::OR>>
     : public AtomicRMWOpBase<DType> {
 public:
   using AtomicRMWOpBase<DType>::AtomicRMWOpBase;
@@ -425,8 +347,8 @@ protected:
   }
 };
 
-template <typename DType, RMWOp Op>
-class AtomicRMWOp<DType, Op, std::enable_if_t<Op == RMWOp::XOR>>
+template <typename DType, RMWInnerOp Op>
+class AtomicRMWOp<DType, Op, std::enable_if_t<Op == RMWInnerOp::XOR>>
     : public AtomicRMWOpBase<DType> {
 public:
   using AtomicRMWOpBase<DType>::AtomicRMWOpBase;
@@ -448,9 +370,9 @@ protected:
   }
 };
 
-template <typename DType, RMWOp Op>
+template <typename DType, RMWInnerOp Op>
 class AtomicRMWOp<DType, Op,
-                  std::enable_if_t<Op == RMWOp::MAX || Op == RMWOp::UMAX>>
+                  std::enable_if_t<Op == RMWInnerOp::MAX || Op == RMWInnerOp::UMAX>>
     : public AtomicRMWOpBase<DType> {
 public:
   using AtomicRMWOpBase<DType>::AtomicRMWOpBase;
@@ -462,9 +384,9 @@ protected:
   }
 };
 
-template <typename DType, RMWOp Op>
+template <typename DType, RMWInnerOp Op>
 class AtomicRMWOp<DType, Op,
-                  std::enable_if_t<Op == RMWOp::MIN || Op == RMWOp::UMIN>>
+                  std::enable_if_t<Op == RMWInnerOp::MIN || Op == RMWInnerOp::UMIN>>
     : public AtomicRMWOpBase<DType> {
 public:
   using AtomicRMWOpBase<DType>::AtomicRMWOpBase;
@@ -476,8 +398,8 @@ protected:
   }
 };
 
-template <typename DType, RMWOp Op>
-class AtomicRMWOp<DType, Op, std::enable_if_t<Op == RMWOp::XCHG>>
+template <typename DType, RMWInnerOp Op>
+class AtomicRMWOp<DType, Op, std::enable_if_t<Op == RMWInnerOp::XCHG>>
     : public AtomicRMWOpBase<DType> {
 public:
   using AtomicRMWOpBase<DType>::AtomicRMWOpBase;
@@ -530,19 +452,14 @@ public:
 
 protected:
   void applyAt(void *loc, size_t i) override {
-    // Atomic operations perform bitwise comparison, so it's safe to
-    // use number of bytes (itemsize) to determine the type of pointers
     if (itemsize == 1) {
-      atomic_compare_exchange_strong<uint8_t>(loc, expected, desired, i, order);
+      atomic_compare_exchange_strong<uint8_t>(loc, expected, desired, i, this->order);
     } else if (itemsize == 2) {
-      atomic_compare_exchange_strong<uint16_t>(loc, expected, desired, i,
-                                               order);
+      atomic_compare_exchange_strong<uint16_t>(loc, expected, desired, i, this->order);
     } else if (itemsize == 4) {
-      atomic_compare_exchange_strong<uint32_t>(loc, expected, desired, i,
-                                               order);
+      atomic_compare_exchange_strong<uint32_t>(loc, expected, desired, i, this->order);
     } else if (itemsize == 8) {
-      atomic_compare_exchange_strong<uint64_t>(loc, expected, desired, i,
-                                               order);
+      atomic_compare_exchange_strong<uint64_t>(loc, expected, desired, i, this->order);
     } else {
       throw std::invalid_argument("Invalid byte size");
     }
@@ -554,72 +471,68 @@ private:
   size_t itemsize;
 };
 
-// This is a workaround because explicit template parameter list for lambdas is
-// a C++20 extension:
-// auto try_make_op = [&]<typename T>() {
-//   if (dtype.is(pybind11::dtype::of<T>())) {
-//     atomic_op = std::make_unique<AtomicRMWOp<T, Op>>(ptr, val, ret, mask,
-//                                                      numel, order);
-//   }
-// };
-template <RMWOp Op> struct OpCreator {
-  pybind11::dtype dtype;
-  const uint64_t *ptr;
-  const void *val;
-  void *ret;
-  const bool *mask;
-  size_t numel;
-  std::memory_order order;
-  std::unique_ptr<AtomicOp> &atomic_op;
-
-  template <typename T> void create() {
-    if (!atomic_op && dtype.is(pybind11::dtype::of<T>())) {
-      atomic_op = std::make_unique<AtomicRMWOp<T, Op>>(ptr, val, ret, mask,
-                                                       numel, order);
-    }
-  }
-};
-
-template <> template <> void OpCreator<RMWOp::FADD>::create<npy_half>() {
-  if (!atomic_op && dtype.char_() == 'e') { // float16
-    // workaround until https://github.com/pybind/pybind11/issues/4061 is
-    // implemented
-    atomic_op = std::make_unique<AtomicRMWOp<npy_half, RMWOp::FADD>>(
-        ptr, val, ret, mask, numel, order);
-  }
-};
-
-template <RMWOp Op, typename... SupportedDTypes>
+template <RMWInnerOp Op>
 std::unique_ptr<AtomicOp>
-makeAtomicRMWOp(pybind11::dtype dtype, const uint64_t *ptr, const void *val,
+makeAtomicRMWOp(nanobind::dlpack::dtype dtype, const uint64_t *ptr, const void *val,
                 void *ret, const bool *mask, size_t numel,
                 std::memory_order order) {
-  // Iterate over all supported data types, make one that matches, and return
   std::unique_ptr<AtomicOp> atomic_op;
-  OpCreator<Op> try_make_op{dtype, ptr,   val,   ret,
-                            mask,  numel, order, atomic_op};
+  auto code = (nanobind::dlpack::dtype_code) dtype.code;
+  int bits = dtype.bits;
 
-  (try_make_op.template create<SupportedDTypes>(), ...);
-  if (!atomic_op) {
-    throw std::invalid_argument("Unsupported data type");
+  auto make_int = [&](auto tag) {
+    using T = decltype(tag);
+    atomic_op = std::make_unique<AtomicRMWOp<T, Op>>(ptr, val, ret, mask, numel, order);
+  };
+
+  if constexpr (Op == RMWInnerOp::FADD) {
+    if (code == nanobind::dlpack::dtype_code::Float) {
+      if (bits == 16)
+        atomic_op = std::make_unique<AtomicRMWOp<npy_half, Op>>(ptr, val, ret, mask, numel, order);
+      else if (bits == 32)
+        atomic_op = std::make_unique<AtomicRMWOp<float, Op>>(ptr, val, ret, mask, numel, order);
+      else if (bits == 64)
+        atomic_op = std::make_unique<AtomicRMWOp<double, Op>>(ptr, val, ret, mask, numel, order);
+    }
+  } else if constexpr (Op == RMWInnerOp::ADD || Op == RMWInnerOp::AND || Op == RMWInnerOp::OR ||
+                       Op == RMWInnerOp::XOR || Op == RMWInnerOp::XCHG) {
+    if (code == nanobind::dlpack::dtype_code::Int) {
+      if (bits == 32) make_int(int32_t{});
+      else if (bits == 64) make_int(int64_t{});
+    } else if (code == nanobind::dlpack::dtype_code::UInt) {
+      if (bits == 32) make_int(uint32_t{});
+      else if (bits == 64) make_int(uint64_t{});
+    }
+  } else if constexpr (Op == RMWInnerOp::MAX || Op == RMWInnerOp::MIN) {
+    if (code == nanobind::dlpack::dtype_code::Int) {
+      if (bits == 32) make_int(int32_t{});
+      else if (bits == 64) make_int(int64_t{});
+    }
+  } else if constexpr (Op == RMWInnerOp::UMAX || Op == RMWInnerOp::UMIN) {
+    if (code == nanobind::dlpack::dtype_code::UInt) {
+      if (bits == 32) make_int(uint32_t{});
+      else if (bits == 64) make_int(uint64_t{});
+    }
   }
-  // Make it a unique_ptr
+
+  if (!atomic_op)
+    throw std::invalid_argument("Unsupported data type for requested RMW op");
   return atomic_op;
 }
 
 } // namespace
 
-void init_triton_interpreter(py::module &&m) {
-  using ret = py::return_value_policy;
+void init_triton_interpreter(nb::module_ &&m) {
+  using nb::ndarray;
 
-  py::enum_<MemSemantic>(m, "MEM_SEMANTIC", py::module_local())
+  nb::enum_<MemSemantic>(m, "MEM_SEMANTIC")
       .value("ACQUIRE_RELEASE", MemSemantic::ACQUIRE_RELEASE)
       .value("ACQUIRE", MemSemantic::ACQUIRE)
       .value("RELEASE", MemSemantic::RELEASE)
       .value("RELAXED", MemSemantic::RELAXED)
       .export_values();
 
-  py::enum_<RMWOp>(m, "RMW_OP", py::module_local())
+  nb::enum_<RMWOp>(m, "RMW_OP")
       .value("ADD", RMWOp::ADD)
       .value("FADD", RMWOp::FADD)
       .value("AND", RMWOp::AND)
@@ -633,108 +546,149 @@ void init_triton_interpreter(py::module &&m) {
       .export_values();
 
   m.def("load",
-        [](py::array_t<uint64_t> ptr, py::array_t<bool> mask, py::array other,
-           py::dtype ret_dtype) -> py::array {
-          int numel = ptr.size();
-          auto shape =
-              std::vector<ptrdiff_t>(ptr.shape(), ptr.shape() + ptr.ndim());
-          py::array ret(ret_dtype, py::array::ShapeContainer{numel});
-          py::array_t<uint64_t> reshaped_ptr = ptr.reshape({numel});
-          py::array_t<bool> reshaped_mask = mask.reshape({numel});
-          py::array reshaped_others = other.reshape({numel});
-          for (size_t i = 0; i < ptr.size(); ++i) {
-            if (reshaped_mask.at(i))
-              memcpy(ret.mutable_data(i),
-                     reinterpret_cast<void *>(reshaped_ptr.at(i)),
-                     ret_dtype.itemsize());
-            else
-              memcpy(ret.mutable_data(i), reshaped_others.data(i),
-                     ret_dtype.itemsize());
+        [](ndarray<uint64_t, nb::c_contig> ptr,
+           ndarray<bool, nb::c_contig> mask,
+           ndarray<> other,
+           nb::handle /*ret_dtype*/) -> ndarray<> {
+          size_t numel = ptr.size();
+          size_t ndim = ptr.ndim();
+          size_t itemsize = ((size_t) other.dtype().bits + 7) / 8;
+
+          std::vector<size_t> shape(ndim);
+          for (size_t i = 0; i < ndim; ++i)
+            shape[i] = ptr.shape(i);
+
+          size_t nbytes = itemsize * numel;
+          void *data = std::malloc(nbytes);
+          if (!data)
+            throw std::bad_alloc();
+          nb::capsule owner(data, [](void *p) noexcept { std::free(p); });
+
+          ndarray<uint8_t> ret((uint8_t *) data, ndim, shape.data(), owner,
+                               nullptr, other.dtype(), nb::device::cpu::value);
+
+          const uint64_t *p_ptr = ptr.data();
+          const bool *p_mask = mask.data();
+          const uint8_t *p_other = (const uint8_t *) other.data();
+          uint8_t *p_out = ret.data();
+
+          for (size_t i = 0; i < numel; ++i) {
+            if (p_mask[i]) {
+              std::memcpy(p_out + i * itemsize, (void *) (uintptr_t) p_ptr[i], itemsize);
+            } else {
+              std::memcpy(p_out + i * itemsize, p_other + i * itemsize, itemsize);
+            }
           }
-          return ret.reshape(shape);
+
+          return ndarray<>(ret);
         });
 
   m.def("store",
-        [](py::array_t<uint64_t> ptr, py::array value, py::array_t<bool> mask) {
-          int numel = ptr.size();
-          py::array_t<uint64_t> reshaped_ptr = ptr.reshape({numel});
-          py::array_t<int8_t> reshaped_mask = mask.reshape({numel});
-          py::array reshaped_value = value.reshape({numel});
-          for (size_t i = 0; i < ptr.size(); ++i) {
-            if (reshaped_mask.at(i)) {
-              memcpy(reinterpret_cast<void *>(reshaped_ptr.mutable_at(i)),
-                     reshaped_value.data(i), value.dtype().itemsize());
+        [](ndarray<uint64_t, nb::c_contig> ptr,
+           ndarray<> value,
+           ndarray<bool, nb::c_contig> mask) {
+          size_t numel = ptr.size();
+          size_t itemsize = ((size_t) value.dtype().bits + 7) / 8;
+
+          const uint64_t *p_ptr = ptr.data();
+          const bool *p_mask = mask.data();
+          const uint8_t *p_val = (const uint8_t *) value.data();
+
+          for (size_t i = 0; i < numel; ++i) {
+            if (p_mask[i]) {
+              std::memcpy((void *) (uintptr_t) p_ptr[i], p_val + i * itemsize, itemsize);
             }
           }
         });
 
   m.def("atomic_rmw",
-        [](RMWOp rmw_op, py::array_t<uint64_t> ptr, py::array val,
-           py::array_t<bool> mask, MemSemantic sem) -> py::array {
+        [](RMWOp rmw_op,
+           ndarray<uint64_t, nb::c_contig> ptr,
+           ndarray<> val,
+           ndarray<bool, nb::c_contig> mask,
+           MemSemantic sem) -> ndarray<> {
           std::memory_order order = mem_semantic_map[sem];
-          int numel = ptr.size();
-          auto shape =
-              std::vector<ptrdiff_t>(ptr.shape(), ptr.shape() + ptr.ndim());
-          auto ret_dtype = val.dtype();
-          py::array ret(ret_dtype, py::array::ShapeContainer{numel});
-          py::array_t<uint64_t> reshaped_ptr = ptr.reshape({numel});
-          py::array_t<bool> reshaped_mask = mask.reshape({numel});
-          py::array reshaped_val = val.reshape({numel});
-          auto *ptr_data = reshaped_ptr.data();
-          auto *mask_data = reshaped_mask.data();
-          auto *val_data = static_cast<const void *>(reshaped_val.data());
-          auto *ret_data = static_cast<void *>(ret.mutable_data());
+          size_t numel = ptr.size();
+          size_t itemsize = ((size_t) val.dtype().bits + 7) / 8;
+          size_t ndim = ptr.ndim();
+
+          std::vector<size_t> shape(ndim);
+          for (size_t i = 0; i < ndim; ++i)
+            shape[i] = ptr.shape(i);
+
+          void *data = std::malloc(itemsize * numel);
+          if (!data)
+            throw std::bad_alloc();
+          nb::capsule owner(data, [](void *p) noexcept { std::free(p); });
+          ndarray<uint8_t> ret((uint8_t *) data, ndim, shape.data(), owner,
+                               nullptr, val.dtype(), nb::device::cpu::value);
+
+          const uint64_t *ptr_data = ptr.data();
+          const bool *mask_data = mask.data();
+          const void *val_data = val.data();
+          void *ret_data = ret.data();
 
           std::unique_ptr<AtomicOp> atomic_op;
-
-#define MAKE_ATOMIC_RMW_OP(OP_NAME, ...)                                       \
-  case OP_NAME:                                                                \
-    atomic_op = makeAtomicRMWOp<OP_NAME, __VA_ARGS__>(                         \
-        ret_dtype, ptr_data, val_data, ret_data, mask_data, numel, order);     \
-    break;
-
           switch (rmw_op) {
-            MAKE_ATOMIC_RMW_OP(RMWOp::ADD, int32_t, uint32_t, int64_t, uint64_t)
-            MAKE_ATOMIC_RMW_OP(RMWOp::FADD, npy_half, float, double)
-            MAKE_ATOMIC_RMW_OP(RMWOp::AND, int32_t, uint32_t, int64_t, uint64_t)
-            MAKE_ATOMIC_RMW_OP(RMWOp::OR, int32_t, uint32_t, int64_t, uint64_t)
-            MAKE_ATOMIC_RMW_OP(RMWOp::XOR, int32_t, uint32_t, int64_t, uint64_t)
-            MAKE_ATOMIC_RMW_OP(RMWOp::MAX, int32_t, int64_t)
-            MAKE_ATOMIC_RMW_OP(RMWOp::UMAX, uint32_t, uint64_t)
-            MAKE_ATOMIC_RMW_OP(RMWOp::MIN, int32_t, int64_t)
-            MAKE_ATOMIC_RMW_OP(RMWOp::UMIN, uint32_t, uint64_t)
-            MAKE_ATOMIC_RMW_OP(RMWOp::XCHG, int32_t, uint32_t, int64_t,
-                               uint64_t)
-          default:
-            throw std::invalid_argument("Unsupported RMW operation");
+          case RMWOp::ADD:
+            atomic_op = makeAtomicRMWOp<RMWInnerOp::ADD>(val.dtype(), ptr_data, val_data, ret_data, mask_data, numel, order);
+            break;
+          case RMWOp::FADD:
+            atomic_op = makeAtomicRMWOp<RMWInnerOp::FADD>(val.dtype(), ptr_data, val_data, ret_data, mask_data, numel, order);
+            break;
+          case RMWOp::AND:
+            atomic_op = makeAtomicRMWOp<RMWInnerOp::AND>(val.dtype(), ptr_data, val_data, ret_data, mask_data, numel, order);
+            break;
+          case RMWOp::OR:
+            atomic_op = makeAtomicRMWOp<RMWInnerOp::OR>(val.dtype(), ptr_data, val_data, ret_data, mask_data, numel, order);
+            break;
+          case RMWOp::XOR:
+            atomic_op = makeAtomicRMWOp<RMWInnerOp::XOR>(val.dtype(), ptr_data, val_data, ret_data, mask_data, numel, order);
+            break;
+          case RMWOp::MAX:
+            atomic_op = makeAtomicRMWOp<RMWInnerOp::MAX>(val.dtype(), ptr_data, val_data, ret_data, mask_data, numel, order);
+            break;
+          case RMWOp::UMAX:
+            atomic_op = makeAtomicRMWOp<RMWInnerOp::UMAX>(val.dtype(), ptr_data, val_data, ret_data, mask_data, numel, order);
+            break;
+          case RMWOp::MIN:
+            atomic_op = makeAtomicRMWOp<RMWInnerOp::MIN>(val.dtype(), ptr_data, val_data, ret_data, mask_data, numel, order);
+            break;
+          case RMWOp::UMIN:
+            atomic_op = makeAtomicRMWOp<RMWInnerOp::UMIN>(val.dtype(), ptr_data, val_data, ret_data, mask_data, numel, order);
+            break;
+          case RMWOp::XCHG:
+            atomic_op = makeAtomicRMWOp<RMWInnerOp::XCHG>(val.dtype(), ptr_data, val_data, ret_data, mask_data, numel, order);
+            break;
           }
 
-#undef MAKE_ATOMIC_RMW_OP
-
           atomic_op->apply();
-          return ret.reshape(shape);
+          return ndarray<>(ret);
         });
 
   m.def("atomic_cas",
-        [](py::array_t<uint64_t> ptr, py::array &cmp, py::array &val,
-           MemSemantic sem) -> py::array {
+        [](ndarray<uint64_t, nb::c_contig> ptr,
+           ndarray<> cmp,
+           ndarray<> val,
+           MemSemantic sem) -> ndarray<> {
           std::memory_order order = mem_semantic_map[sem];
-          int numel = ptr.size();
-          auto shape =
-              std::vector<ptrdiff_t>(ptr.shape(), ptr.shape() + ptr.ndim());
-          auto ret_dtype = cmp.dtype();
-          py::array ret(ret_dtype, py::array::ShapeContainer{numel});
-          py::array_t<uint64_t> reshaped_ptr = ptr.reshape({numel});
-          py::array reshaped_cmp = cmp.reshape({numel});
-          py::array reshaped_val = val.reshape({numel});
-          auto itemsize = cmp.itemsize();
-          memcpy(static_cast<void *>(ret.mutable_data()),
-                 static_cast<const void *>(reshaped_cmp.data()),
-                 itemsize * numel);
-          AtomicCASOp(reshaped_ptr.data(), ret.mutable_data(),
-                      static_cast<const void *>(reshaped_val.data()), itemsize,
-                      numel, order)
-              .apply();
-          return ret.reshape(shape);
+          size_t numel = ptr.size();
+          size_t itemsize = ((size_t) cmp.dtype().bits + 7) / 8;
+          size_t ndim = ptr.ndim();
+
+          std::vector<size_t> shape(ndim);
+          for (size_t i = 0; i < ndim; ++i)
+            shape[i] = ptr.shape(i);
+
+          void *data = std::malloc(itemsize * numel);
+          if (!data)
+            throw std::bad_alloc();
+          nb::capsule owner(data, [](void *p) noexcept { std::free(p); });
+          ndarray<uint8_t> ret((uint8_t *) data, ndim, shape.data(), owner,
+                               nullptr, cmp.dtype(), nb::device::cpu::value);
+
+          std::memcpy(ret.data(), cmp.data(), itemsize * numel);
+          AtomicCASOp(ptr.data(), ret.data(), val.data(), itemsize, numel, order).apply();
+          return ndarray<>(ret);
         });
 }

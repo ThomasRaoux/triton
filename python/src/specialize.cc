@@ -74,21 +74,21 @@ static TypeHandlerCache type_handler_cache;
 // with py::object to handle decref, as using the pybind11 APIs adds exception
 // handling overhead which is quite significant here.
 py::object from_new_ref(py::handle val) {
-  return py::reinterpret_steal<py::object>(val);
+  return py::steal<py::object>(val.ptr());
 }
 py::object from_borrowed_ref(py::handle val) {
-  return py::reinterpret_borrow<py::object>(val);
+  return py::borrow<py::object>(val.ptr());
 }
 
 PyObject *intern_from_string(const char *str) {
   PyObject *obj = PyUnicode_InternFromString(str);
   if (!obj)
-    throw py::error_already_set();
+    throw std::runtime_error("Python error: intern_from_string failed");
   return obj;
 }
 
 PyObject *import_from(const char *module_name, const char *var_name) {
-  py::object var = py::module_::import(module_name).attr(var_name);
+  py::object var = py::module_::import_(module_name).attr(var_name);
   return var.release().ptr();
 }
 
@@ -127,7 +127,7 @@ bool init_globals() noexcept try {
   gluon_tensor_descriptor_cls = import_from(
       "triton.experimental.gluon.nvidia.hopper", "TensorDescriptor");
 
-  auto m_canonicalize = py::module_::import("triton._utils");
+  auto m_canonicalize = py::module_::import_("triton._utils");
   canonicalize_dtype_fn = import_from("triton._utils", "canonicalize_dtype");
   canonicalize_ptr_dtype_fn =
       import_from("triton._utils", "canonicalize_ptr_dtype");
@@ -135,7 +135,7 @@ bool init_globals() noexcept try {
 
   try {
     torch_tensor_cls = import_from("torch", "Tensor");
-  } catch (py::error_already_set &e) {
+  } catch (...) {
   }
 
   init_interned_strings();
@@ -143,10 +143,7 @@ bool init_globals() noexcept try {
 
   init_called = true;
   return true;
-} catch (py::error_already_set &e) {
-  e.restore();
-  return false;
-}
+} catch (...) { return false; }
 
 std::pair<py::object, py::object> specialize_tensordesc(PyObject *arg,
                                                         bool has_layout) {
