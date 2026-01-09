@@ -117,6 +117,76 @@ struct ClipAsyncCopySizePerThread
   }
 };
 
+struct CoalesceAsyncCopyGlobalToLocal
+    : public OpRewritePattern<AsyncCopyGlobalToLocalOp> {
+  ModuleAxisInfoAnalysis &axisInfoAnalysis;
+  using OpRewritePattern::OpRewritePattern;
+  CoalesceAsyncCopyGlobalToLocal(ModuleAxisInfoAnalysis &axisInfoAnalysis,
+                             MLIRContext *context)
+      : OpRewritePattern(context), axisInfoAnalysis(axisInfoAnalysis) {}
+
+  LogicalResult matchAndRewrite(AsyncCopyGlobalToLocalOp copyOp,
+                                PatternRewriter &rewriter) const override {
+    Value src = copyOp.getSrc();
+    Value mask = copyOp.getMask();
+    Value other = copyOp.getOther();
+    auto srcTy = cast<RankedTensorType>(src.getType());
+    auto dstTy = cast<MemDescType>(copyOp.getResult().getType());
+    auto sharedEnc = dyn_cast<SwizzledSharedEncodingAttr>(dstTy.getEncoding());
+    if (!sharedEnc)
+      return failure();
+    auto sharedVec = sharedEnc.getVec();
+
+    // obtain max contiguous copy size
+    // Note this can be further optimized, as copyContigSize can be even
+    // smaller when lowering, depending on contiguity and mask alignment
+    // (see AsyncCopyGlobalToLocalOpConversion)
+    LinearLayout regLayout = triton::gpu::toLinearLayout(srcTy);
+    LinearLayout sharedLayout = triton::gpu::toLinearLayout(dstTy);
+
+    // obtain new blockedEnc based on clipped sizePerThread
+    auto mod = copyOp->getParentOfType<ModuleOp>();
+    int numWarps = lookupNumWarps(copyOp);
+    int threadsPerWarp = TritonGPUDialect::getThreadsPerWarp(mod);
+    auto defaultEnc = getDefaultBlockedEncoding(
+      getContext(),
+      srcTy.getShape(),
+      numWarps, threadsPerWarp, 1);
+    if (defaultEnc == srcTy.getEncoding())
+      return failure();
+
+    // insert cvt's after src, mask, and other
+    auto convertBlockLayout = [&](Value src, BlockedEncodingAttr enc) {
+      auto ty = cast<RankedTensorType>(src.getType());
+      auto newTy = ty.cloneWithEncoding(enc);
+      auto cvt =
+          ConvertLayoutOp::create(rewriter, copyOp->getLoc(), newTy, src);
+      return cvt.getResult();
+    };
+    src = convertBlockLayout(src, defaultEnc);
+    if (mask)
+      mask = convertBlockLayout(mask, defaultEnc);
+    if (other)
+      other = convertBlockLayout(other, defaultEnc);
+
+    unsigned contiguity = axisInfoAnalysis.getContiguity(src);
+    if (mask)
+      contiguity = std::min<unsigned>(contiguity,
+                                      axisInfoAnalysis.getMaskAlignment(mask));
+
+    rewriter.modifyOpInPlace(copyOp, [&]() {
+      copyOp.getSrcMutable().assign(src);
+      if (mask)
+        copyOp.getMaskMutable().assign(mask);
+      if (other)
+        copyOp.getOtherMutable().assign(other);
+      copyOp.setContiguity(contiguity);
+    });
+
+    return success();
+  }
+};
+
 struct CoalesceAsyncCopyPass
     : impl::TritonGPUCoalesceAsyncCopyBase<CoalesceAsyncCopyPass> {
   using Base::Base;
@@ -128,6 +198,7 @@ struct CoalesceAsyncCopyPass
 
     mlir::RewritePatternSet patterns(context);
     patterns.add<ClipAsyncCopySizePerThread>(axisInfoAnalysis, context);
+    patterns.add<CoalesceAsyncCopyGlobalToLocal>(axisInfoAnalysis, context);
 
     if (failed(applyPatternsGreedily(m, std::move(patterns))))
       signalPassFailure();

@@ -1,3 +1,4 @@
+#include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -8,8 +9,11 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
+#include <cstdint>
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 namespace mlir {
 namespace triton {
@@ -723,79 +727,48 @@ LogicalResult UnsplatOp::inferReturnTypes(
 }
 
 //-- ExpandDimsOp --
-LogicalResult ExpandDimsOp::inferReturnTypes(
-    MLIRContext *context, std::optional<Location> loc, ValueRange operands,
-    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
-    SmallVectorImpl<Type> &inferredReturnTypes) {
-  // infer shape
-  auto arg = operands[0];
-  auto argTy = cast<RankedTensorType>(arg.getType());
-  auto retShape = argTy.getShape().vec();
-  Properties *prop = properties.as<Properties *>();
-  int axis = prop->axis.getInt();
-  retShape.insert(retShape.begin() + axis, 1);
-  // infer encoding
-  Attribute argEncoding = argTy.getEncoding();
-  Attribute retEncoding;
-  if (argEncoding) {
-    Dialect &dialect = argEncoding.getDialect();
-    auto inferLayoutInterface = cast<DialectInferLayoutInterface>(&dialect);
-    if (failed(inferLayoutInterface->inferExpandDimsOpEncoding(
-            argEncoding, axis, retEncoding, loc)))
-      return emitOptionalError(loc, "failed to infer layout for ExpandDimsOp");
+static Attribute inferReshapeOpDstEncoding(ArrayRef<int64_t> srcShape,
+                                           Attribute srcEnc,
+                                           ArrayRef<int64_t> dstShape,
+                                           bool allowReorder) {
+  // We don't do anything smart to allow-reorder reshapes here.  They are
+  // handled in OptimizeThreadLocality.
+  if (allowReorder)
+    return {};
+
+  Attribute dstEnc;
+  auto result =
+      srcEnc.getDialect()
+          .getRegisteredInterface<triton::DialectInferLayoutInterface>()
+          ->inferReshapeOpEncoding(srcShape, srcEnc, dstShape, dstEnc,
+                                   /*loc=*/std::nullopt);
+  assert(succeeded(result));
+  return dstEnc;
+}
+
+static Attribute inferDstEncoding(int axis, Attribute encoding, SmallVector<int64_t>& srcShape, SmallVector<int64_t>& dstShape) {
+  auto sliceEncoding = mlir::dyn_cast<triton::gpu::SliceEncodingAttr>(encoding);
+  if (!sliceEncoding || axis != sliceEncoding.getDim()) {
+    return inferReshapeOpDstEncoding(srcShape, encoding, dstShape, false);
   }
-  // create type
-  auto argEltTy = argTy.getElementType();
-  inferredReturnTypes.push_back(
-      RankedTensorType::get(retShape, argEltTy, retEncoding));
-  return success();
+  return sliceEncoding.getParent();
+}
+
+void ExpandDimsOp::build(OpBuilder &builder, OperationState &state, Value src,
+                         int axis) {
+  auto srcTy = cast<RankedTensorType>(src.getType());
+  SmallVector<int64_t> dstShape = SmallVector<int64_t>(srcTy.getShape());
+  dstShape.insert(dstShape.begin() + axis, 1);
+  SmallVector<int64_t> srcShape = SmallVector<int64_t>(srcTy.getShape());
+  Attribute dstEnc;
+  if (auto srcEnc = srcTy.getEncoding()) 
+    dstEnc = inferDstEncoding(axis, srcEnc, srcShape, dstShape);
+  auto dstTy = RankedTensorType::get(dstShape, srcTy.getElementType(), dstEnc);
+  build(builder, state, dstTy, src, axis);
 }
 
 LogicalResult ExpandDimsOp::canonicalize(ExpandDimsOp op,
                                          PatternRewriter &rewriter) {
-  auto definingOp = op.getSrc().getDefiningOp();
-  if (!definingOp) {
-    return failure();
-  }
-  // expand_dims(splat) -> splat
-  if (auto splat = dyn_cast<SplatOp>(definingOp)) {
-    rewriter.replaceOpWithNewOp<SplatOp>(op, op.getType(), splat.getSrc());
-    return success();
-  }
-  // expand_dims(broadcast(x)) -> broadcast(expand_dims(x))
-  //
-  // On its own this doesn't do much, but consider
-  //    broadcast(expand_dims(broadcast))
-  // -> broadcast(broadcast(expand_dims))
-  // -> broadcast(expand_dims)
-  if (auto broadcast = dyn_cast<BroadcastOp>(definingOp)) {
-    auto src = broadcast.getSrc();
-    auto srcTy = src.getType();
-    SmallVector<int64_t> newExpandShape(srcTy.getShape());
-    newExpandShape.insert(newExpandShape.begin() + op.getAxis(), 1);
-
-    // Infer the encoding of the new expand op, if encodings are present.
-    Attribute newExpandEnc;
-    if (auto srcEnc = srcTy.getEncoding()) {
-      Dialect &dialect = srcEnc.getDialect();
-      auto inferLayoutInterface = cast<DialectInferLayoutInterface>(&dialect);
-      if (failed(inferLayoutInterface->inferExpandDimsOpEncoding(
-              srcEnc, op.getAxis(), newExpandEnc, op.getLoc()))) {
-        return emitOptionalError(op.getLoc(),
-                                 "failed to infer layout for ExpandDimsOp");
-      }
-    }
-
-    auto newExpandTy = RankedTensorType::get(
-        newExpandShape, srcTy.getElementType(), newExpandEnc);
-    auto newExpand = ExpandDimsOp::create(rewriter, op.getLoc(), newExpandTy,
-                                          src, op.getAxis());
-    auto newBroadcast = BroadcastOp::create(
-        rewriter, broadcast.getLoc(), op.getType(), newExpand.getResult());
-    rewriter.replaceOp(op, {newBroadcast.getResult()});
-    return success();
-  }
-
   return failure();
 }
 

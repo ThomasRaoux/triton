@@ -320,12 +320,32 @@ static Attribute inferDstEncoding(triton::ReduceOp op, Attribute encoding) {
       cast<ttg::DistributedEncodingTrait>(encoding));
 }
 
+static Attribute inferReshapeOpDstEncoding(ArrayRef<int64_t> srcShape,
+                                           Attribute srcEnc,
+                                           ArrayRef<int64_t> dstShape,
+                                           bool allowReorder) {
+  // We don't do anything smart to allow-reorder reshapes here.  They are
+  // handled in OptimizeThreadLocality.
+  if (allowReorder)
+    return {};
+
+  Attribute dstEnc;
+  auto result =
+      srcEnc.getDialect()
+          .getRegisteredInterface<triton::DialectInferLayoutInterface>()
+          ->inferReshapeOpEncoding(srcShape, srcEnc, dstShape, dstEnc,
+                                   /*loc=*/std::nullopt);
+  assert(succeeded(result));
+  return dstEnc;
+}
+
 static Attribute inferDstEncoding(triton::ExpandDimsOp op, Attribute encoding) {
   auto sliceEncoding = mlir::dyn_cast<triton::gpu::SliceEncodingAttr>(encoding);
-  if (!sliceEncoding)
-    return {};
-  if (op.getAxis() != sliceEncoding.getDim())
-    return {};
+  if (!sliceEncoding || op.getAxis() != sliceEncoding.getDim()) {
+    SmallVector<int64_t> srcShape = SmallVector<int64_t>(op.getSrc().getType().getShape());
+    SmallVector<int64_t> dstShape = SmallVector<int64_t>(op.getType().getShape());
+    return inferReshapeOpDstEncoding(srcShape, encoding, dstShape, false);
+  }
   return sliceEncoding.getParent();
 }
 
@@ -462,24 +482,7 @@ static Attribute inferSrcEncoding(triton::TransposeOpInterface op,
                                  triton::inversePermutation(op.getOrder()));
 }
 
-static Attribute inferReshapeOpDstEncoding(ArrayRef<int64_t> srcShape,
-                                           Attribute srcEnc,
-                                           ArrayRef<int64_t> dstShape,
-                                           bool allowReorder) {
-  // We don't do anything smart to allow-reorder reshapes here.  They are
-  // handled in OptimizeThreadLocality.
-  if (allowReorder)
-    return {};
 
-  Attribute dstEnc;
-  auto result =
-      srcEnc.getDialect()
-          .getRegisteredInterface<triton::DialectInferLayoutInterface>()
-          ->inferReshapeOpEncoding(srcShape, srcEnc, dstShape, dstEnc,
-                                   /*loc=*/std::nullopt);
-  assert(succeeded(result));
-  return dstEnc;
-}
 
 static Attribute inferDstEncoding(triton::ReshapeOp op, Attribute encoding) {
   return inferReshapeOpDstEncoding(op.getSrc().getType().getShape(), encoding,
