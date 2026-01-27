@@ -907,6 +907,10 @@ class TritonSemantic(Generic[TensorTy]):
 
         assert False, f'cannot cast {input} to {dst_ty}'
 
+    def tf32_round(self, input: TensorTy) -> TensorTy:
+        ret_ty = input.type
+        return self.tensor(self.builder.create_tf32_round(input.handle), ret_ty)
+
 # ===----------------------------------------------------------------------===//
 #                               Memory Operators
 # ===----------------------------------------------------------------------===//

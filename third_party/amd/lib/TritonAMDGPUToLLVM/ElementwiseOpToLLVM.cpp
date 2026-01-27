@@ -1991,6 +1991,31 @@ private:
   AMD::ISAFamily isaFamily;
 };
 
+struct TF32RoundOpConversion
+    : public ElementwiseOpConversionBase<triton::TF32RoundOp,
+                                         TF32RoundOpConversion> {
+  using Base =
+      ElementwiseOpConversionBase<triton::TF32RoundOp, TF32RoundOpConversion>;
+  using Base::Base;
+  using Adaptor = typename Base::OpAdaptor;
+
+  explicit TF32RoundOpConversion(LLVMTypeConverter &typeConverter,
+                                 ModuleAxisInfoAnalysis &axisInfoAnalysis,
+                                 PatternBenefit benefit = patternBenefitDefault)
+      : Base(typeConverter, axisInfoAnalysis, benefit) {}
+
+  SmallVector<Value> createDestOps(triton::TF32RoundOp op, OpAdaptor adaptor,
+                                   ConversionPatternRewriter &rewriter,
+                                   Type elemTy, MultipleOperandsRange operands,
+                                   Location loc) const {
+    SmallVector<Value> outVals;
+    outVals.reserve(operands[0].size());
+    for (Value v : operands[0])
+      outVals.push_back(triton::gpu::roundF32ToTF32(loc, rewriter, v));
+    return outVals;
+  }
+};
+
 template <typename OP>
 Value EmitDualBF16ElementwiseOp(Location loc,
                                 ConversionPatternRewriter &rewriter,
@@ -2472,6 +2497,7 @@ void populateElementwiseOpToLLVMPatterns(
   patterns.add<SIToFPOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<FpToFpOpConversion>(typeConverter, axisInfoAnalysis,
                                    targetInfo.getISAFamily(), benefit);
+  patterns.add<TF32RoundOpConversion>(typeConverter, axisInfoAnalysis, benefit);
 
   // ExpOpConversionApprox will try using __ocml_exp2_f32 if the input type is
   // FP32. For other input types, ExpOpConversionApprox will return failure and

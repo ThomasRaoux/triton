@@ -1188,6 +1188,10 @@ void init_triton_ir(py::module &&m) {
              else
                return self.create<FpToFpOp>(dstType, src);
            })
+      .def("create_tf32_round",
+           [](TritonOpBuilder &self, Value &src) -> Value {
+             return self.create<TF32RoundOp>(src.getType(), src);
+           })
       // Conversions for standard LLVM builtin types
       .def("create_bitcast",
            [](TritonOpBuilder &self, Value &src, Type &dstType) -> Value {

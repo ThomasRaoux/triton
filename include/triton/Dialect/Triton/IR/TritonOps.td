@@ -104,6 +104,25 @@ def TT_FpToFpOp : TT_Op<"fp_to_fp", [Elementwise,
     let hasFolder = 1;
 }
 
+def TT_TF32RoundOp : TT_Op<"tf32_round", [Elementwise,
+                                         SameOperandsAndResultShape,
+                                         SameOperandsAndResultEncoding,
+                                         Pure]> {
+    let summary = "Round f32 to tf32 using RNE, keeping f32 type";
+
+    let description = [{
+        Apply TF32 round-to-nearest-even to f32 values while keeping f32 type.
+    }];
+
+    let arguments = (ins TT_FloatLike:$src);
+
+    let results = (outs TT_FloatLike:$result);
+
+    let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
+
+    let hasVerifier = 1;
+}
+
 //
 // Arithmetic Ops
 //

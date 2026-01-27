@@ -338,6 +338,20 @@ static ConverterT makeConverterFromPtx(const std::string &ptxAsm, Type inType,
   return converter;
 }
 
+static Value convertFp32ToTF32(Location loc,
+                               ConversionPatternRewriter &rewriter,
+                               const Value &v, int computeCapability) {
+  if (computeCapability >= 80) {
+    PTXBuilder builder;
+    auto &cvt = *builder.create("cvt.rna.tf32.f32");
+    auto res = builder.newOperand("=f");
+    auto operand = builder.newOperand(v, "f");
+    cvt(res, operand);
+    return builder.launch(rewriter, loc, f32_ty, false);
+  }
+  return triton::gpu::roundF32ToTF32(loc, rewriter, v);
+}
+
 // Attempts to use vectorized conversions via inline PTX when possible.
 struct FpToFpOpConversion
     : public ElementwiseOpConversionBase<FpToFpOp, FpToFpOpConversion> {
@@ -542,6 +556,36 @@ struct FpToFpOpConversion
       for (Value &v : outVals)
         v = convertFp16ToFp32(loc, rewriter, v);
     // Pack values
+    return outVals;
+  }
+
+private:
+  int computeCapability;
+};
+
+struct TF32RoundOpConversion
+    : public ElementwiseOpConversionBase<triton::TF32RoundOp,
+                                         TF32RoundOpConversion> {
+  using Base =
+      ElementwiseOpConversionBase<triton::TF32RoundOp, TF32RoundOpConversion>;
+  using Base::Base;
+  using Adaptor = typename Base::OpAdaptor;
+
+  explicit TF32RoundOpConversion(LLVMTypeConverter &typeConverter,
+                                 ModuleAxisInfoAnalysis &axisAnalysisPass,
+                                 int computeCapability,
+                                 PatternBenefit benefit = patternBenefitDefault)
+      : Base(typeConverter, axisAnalysisPass, benefit),
+        computeCapability(computeCapability) {}
+
+  SmallVector<Value> createDestOps(triton::TF32RoundOp op, OpAdaptor adaptor,
+                                   ConversionPatternRewriter &rewriter,
+                                   Type elemTy, MultipleOperandsRange operands,
+                                   Location loc) const {
+    SmallVector<Value> outVals;
+    outVals.reserve(operands[0].size());
+    for (Value v : operands[0])
+      outVals.push_back(convertFp32ToTF32(loc, rewriter, v, computeCapability));
     return outVals;
   }
 
@@ -830,6 +874,8 @@ void mlir::triton::NVIDIA::populateElementwiseOpToLLVMPatterns(
                                    computeCapability, benefit);
   patterns.add<FpToFpOpConversion>(typeConverter, axisInfoAnalysis,
                                    computeCapability, benefit);
+  patterns.add<TF32RoundOpConversion>(typeConverter, axisInfoAnalysis,
+                                      computeCapability, benefit);
 
   // ExpOpConversionApprox will try using ex2.approx if the input type is
   // FP32. For other input types, ExpOpConversionApprox will return failure and

@@ -2001,6 +2001,14 @@ def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcas
     return _semantic.cast(input, dtype, fp_downcast_rounding)
 
 
+@builtin
+def tf32_round(input, _semantic=None):
+    """
+    Apply TF32 RNE rounding to f32 values while keeping f32 type.
+    """
+    return _semantic.tf32_round(input)
+
+
 # -----------------------
 # Linear Algebra
 # -----------------------

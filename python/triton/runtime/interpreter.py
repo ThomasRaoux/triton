@@ -483,6 +483,18 @@ class InterpreterBuilder:
         data = _convert_float(src.data, src_element_type, dst_element_type, rounding_mode).view(_get_np_dtype(dst_type))
         return TensorHandle(data, dst_type.scalar)
 
+    def create_tf32_round(self, src):
+        if src.dtype.scalar != tl.float32:
+            raise ValueError("tf32_round only supports float32 input")
+        bits = src.data.view(np.uint32)
+        exp_mask = np.uint32(0x7F800000)
+        is_special = (bits & exp_mask) == exp_mask
+        round_bias = ((bits >> np.uint32(13)) & np.uint32(1)) + np.uint32(0x00000FFF)
+        rounded = (bits + round_bias) & np.uint32(0xFFFFE000)
+        out_bits = np.where(is_special, bits, rounded)
+        data = out_bits.view(np.float32)
+        return TensorHandle(data, tl.float32)
+
     def create_bitcast(self, src, dst_type):
         return TensorHandle(src.data.view(_get_np_dtype(dst_type)), dst_type.scalar)
 

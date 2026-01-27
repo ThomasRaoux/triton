@@ -75,6 +75,20 @@ getSrcDstTiles(const TargetInfoBase &targetInfo, int bitwidth) {
   return {std::move(src), std::move(dst)};
 }
 
+Value roundF32ToTF32(Location loc, RewriterBase &rewriter, Value v) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  auto i32Ty = rewriter.getIntegerType(32);
+  auto bits = b.bitcast(v, i32Ty);
+  auto expMask = b.i32_val(0x7F800000);
+  auto exp = b.and_(bits, expMask);
+  auto isSpecial = b.icmp_eq(exp, expMask);
+  auto lsb = b.and_(b.lshr(bits, b.i32_val(13)), b.i32_val(1));
+  auto roundBias = b.add(lsb, b.i32_val(0x00000FFF));
+  auto rounded = b.and_(b.add(bits, roundBias), b.i32_val(0xFFFFE000));
+  auto outBits = b.select(isSpecial, bits, rounded);
+  return b.bitcast(outBits, rewriter.getF32Type());
+}
+
 Type getFunctionType(Type resultType, ValueRange operands) {
   SmallVector<Type> operandTypes(operands.getTypes());
   return LLVM::LLVMFunctionType::get(resultType, operandTypes);

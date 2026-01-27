@@ -4,6 +4,7 @@ from ._core import (
     block_type,
     broadcast,
     cast,
+    tf32_round,
     constexpr,
     dtype,
     void,

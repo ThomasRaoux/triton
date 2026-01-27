@@ -952,6 +952,19 @@ LogicalResult FpToFpOp::verify() {
   return success();
 }
 
+LogicalResult TF32RoundOp::verify() {
+  auto dstType = getType();
+  auto srcType = getSrc().getType();
+  if (auto dstTensorType = dyn_cast<RankedTensorType>(dstType))
+    dstType = dstTensorType.getElementType();
+  if (auto srcTensorType = dyn_cast<RankedTensorType>(srcType))
+    srcType = srcTensorType.getElementType();
+  if (!dstType.isF32() || !srcType.isF32()) {
+    return emitError("tf32_round only supports f32 operands and results");
+  }
+  return success();
+}
+
 //-- BitcastOp --
 LogicalResult BitcastOp::verify() {
   // Bitcast only allows conversion between types with the same bit width.

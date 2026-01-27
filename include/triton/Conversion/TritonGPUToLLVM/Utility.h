@@ -333,6 +333,8 @@ namespace gpu {
 std::pair<SmallVector<LocalMemOpTile>, SmallVector<LocalMemOpTile>>
 getSrcDstTiles(const TargetInfoBase &targetInfo, int bitwidth);
 
+Value roundF32ToTF32(Location loc, RewriterBase &rewriter, Value v);
+
 Type getFunctionType(Type resultType, ValueRange operands);
 
 LLVM::LLVMFuncOp appendOrGetExternFuncOp(RewriterBase &rewriter, Operation *op,
