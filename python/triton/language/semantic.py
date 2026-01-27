@@ -808,6 +808,10 @@ class TritonSemantic(Generic[TensorTy]):
             return input
         if src_ty.is_block():
             dst_ty = src_ty.with_element_ty(dst_sca_ty)
+        if dst_sca_ty.is_tf32() and not src_sca_ty.is_fp32():
+            return self.cast(self.cast(input, tl.float32), dst_sca_ty)
+        if src_sca_ty.is_tf32() and not dst_sca_ty.is_fp32():
+            return self.cast(self.cast(input, tl.float32), dst_sca_ty)
 
         # For fp downcasting default rounding mode should be RTNE, for all other conversions it should
         # not be set
@@ -827,6 +831,12 @@ class TritonSemantic(Generic[TensorTy]):
             assert self.builder.codegen_fns.get(
                 "convert_custom_types") is not None, "target doesn't provide conversion for this type."
             return self.builder.codegen_fns["convert_custom_types"](input, dst_ty, fp_downcast_rounding, _semantic=self)
+        if (src_sca_ty.is_tf32() and dst_sca_ty.is_fp32()) or (src_sca_ty.is_fp32() and dst_sca_ty.is_tf32()):
+            if src_sca_ty.is_fp32() and dst_sca_ty.is_tf32():
+                if fp_downcast_rounding is None:
+                    fp_downcast_rounding = ir.ROUNDING_MODE.RTNE
+            return self.tensor(
+                self.builder.create_fp_to_fp(input.handle, dst_ty.to_ir(self.builder), fp_downcast_rounding), dst_ty)
         # Casting with customized floating types involved: fp8 <=> bf16, fp16, fp32, fp64
         # and non-default rounding modes for downcasting
         if (src_sca_ty.is_fp8() and dst_sca_ty.is_floating()) or \

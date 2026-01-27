@@ -132,6 +132,34 @@ def check_type_supported(dtype, device):
             pytest.skip("bfloat16 is not supported in the interpreter")
 
 
+def test_cast_fp32_to_tf32(device):
+    @triton.jit
+    def kernel(x_ptr, y_ptr):
+        offs = tl.arange(0, 16)
+        x = tl.load(x_ptr + offs)
+        x_tf32 = x.to(tl.tf32)
+        y = x_tf32.to(tl.float32)
+        tl.store(y_ptr + offs, y)
+
+    def round_to_tf32(x: torch.Tensor) -> torch.Tensor:
+        bits = x.view(torch.int32)
+        bits_i64 = bits.to(torch.int64) & 0xFFFFFFFF
+        exp_mask = 0x7F800000
+        is_special = (bits_i64 & exp_mask) == exp_mask
+        round_bias = ((bits_i64 >> 13) & 1) + 0x00000FFF
+        rounded = (bits_i64 + round_bias) & 0xFFFFE000
+        out_bits = torch.where(is_special, bits_i64, rounded)
+        return (out_bits & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
+
+    torch.manual_seed(17)
+    x = torch.randn((16,), device=device, dtype=torch.float32)
+    y = torch.empty_like(x)
+    kernel[(1,)](x, y)
+
+    expected = round_to_tf32(x)
+    torch.testing.assert_close(y, expected, rtol=0, atol=0)
+
+
 def get_src_element_ty_size(dtype_str):
     if dtype_str in ["int8", "uint8", "float8e4b15"]:
         return 1

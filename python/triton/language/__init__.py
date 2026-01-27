@@ -69,6 +69,7 @@ from .core import (
     expand_dims,
     float16,
     float32,
+    tf32,
     float64,
     float8e4b15,
     float8e4nv,

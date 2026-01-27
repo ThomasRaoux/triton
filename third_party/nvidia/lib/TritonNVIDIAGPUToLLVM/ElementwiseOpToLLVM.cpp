@@ -405,6 +405,20 @@ struct FpToFpOpConversion
     return builder.launch(rewriter, loc, f16_ty, false);
   }
 
+  static Value convertFp32ToTF32(Location loc,
+                                 ConversionPatternRewriter &rewriter,
+                                 const Value &v, int computeCapability) {
+    if (computeCapability >= 80) {
+      PTXBuilder builder;
+      auto &cvt = *builder.create("cvt.rna.tf32.f32");
+      auto res = builder.newOperand("=f");
+      auto operand = builder.newOperand(v, "f");
+      cvt(res, operand);
+      return builder.launch(rewriter, loc, f32_ty, false);
+    }
+    return triton::gpu::roundF32ToTF32(loc, rewriter, v);
+  }
+
   std::pair<ConverterT, size_t>
   getConversionFunc(Type srcTy, Type dstTy,
                     std::optional<RoundingMode> roundingMode) const {
@@ -474,14 +488,34 @@ struct FpToFpOpConversion
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     auto srcElementType = getElementType(op.getSrc());
     auto dstElementType = getElementType(op.getResult());
+    bool srcIsTF32 = llvm::isa<FloatTF32Type>(srcElementType);
+    bool dstIsTF32 = llvm::isa<FloatTF32Type>(dstElementType);
+
+    if (dstIsTF32 && srcElementType.isF32()) {
+      SmallVector<Value> outVals;
+      outVals.reserve(operands[0].size());
+      for (Value v : operands[0])
+        outVals.push_back(convertFp32ToTF32(loc, rewriter, v, computeCapability));
+      return outVals;
+    }
+    if (srcIsTF32 && dstElementType.isF32()) {
+      return llvm::to_vector(operands[0]);
+    }
+
+    Type srcElementTypeForConvert = srcElementType;
+    Type dstElementTypeForConvert = dstElementType;
+    if (srcIsTF32)
+      srcElementTypeForConvert = rewriter.getF32Type();
+    if (dstIsTF32)
+      dstElementTypeForConvert = rewriter.getF32Type();
     auto roundingMode = op.getRounding();
 
-    if (llvm::isa<Float8E5M2Type, Float8E4M3FNType>(dstElementType)) {
+    if (llvm::isa<Float8E5M2Type, Float8E4M3FNType>(dstElementTypeForConvert)) {
       assert(roundingMode.has_value() &&
              "Rounding mode must be specified for convertsions to fp8");
 
       // For now only RTNE is supported for conversions from fp16 to fp8
-      if (!srcElementType.isF32() &&
+      if (!srcElementTypeForConvert.isF32() &&
           roundingMode.value() != RoundingMode::RTNE) {
         llvm::report_fatal_error(
             "Unsupported rounding mode for conversion to fp8: " +
@@ -489,13 +523,13 @@ struct FpToFpOpConversion
       }
     }
 
-    if (srcElementType.isF16() && dstElementType.isF32()) {
+    if (srcElementTypeForConvert.isF16() && dstElementTypeForConvert.isF32()) {
       return llvm::to_vector(llvm::map_range(operands[0], [&](Value v) {
         return convertFp16ToFp32(loc, rewriter, v);
       }));
     }
 
-    if (srcElementType.isF32() && dstElementType.isF16()) {
+    if (srcElementTypeForConvert.isF32() && dstElementTypeForConvert.isF16()) {
       assert(roundingMode.has_value() &&
              "rounding mode must be specified for fp32->fp16 conversion");
       SmallVector<Value> outVals;
@@ -506,7 +540,7 @@ struct FpToFpOpConversion
       return outVals;
     }
 
-    if (srcElementType.isF32() && dstElementType.isBF16()) {
+    if (srcElementTypeForConvert.isF32() && dstElementTypeForConvert.isBF16()) {
       assert(roundingMode.has_value() &&
              "rounding mode must be specified for fp32->bf16 conversion");
       SmallVector<Value> outVals;
@@ -518,13 +552,13 @@ struct FpToFpOpConversion
     }
 
     bool useFP16IntermediateSrc =
-        srcElementType.isF32() &&
+        srcElementTypeForConvert.isF32() &&
         (!(computeCapability >= 90 &&
-           (llvm::isa<Float8E4M3FNType, Float8E5M2Type>(dstElementType))) ||
+           (llvm::isa<Float8E4M3FNType, Float8E5M2Type>(dstElementTypeForConvert))) ||
          roundingMode.value() == RoundingMode::RTZ);
-    bool isDstFP32 = dstElementType.isF32();
-    Type srcType = useFP16IntermediateSrc ? f16_ty : srcElementType;
-    Type dstType = isDstFP32 ? f16_ty : dstElementType;
+    bool isDstFP32 = dstElementTypeForConvert.isF32();
+    Type srcType = useFP16IntermediateSrc ? f16_ty : srcElementTypeForConvert;
+    Type dstType = isDstFP32 ? f16_ty : dstElementTypeForConvert;
     auto [cvtFunc, numElements] =
         getConversionFunc(srcType, dstType, roundingMode);
     SmallVector<Value> inVals;

@@ -24,6 +24,7 @@ from ._core import (
     float16,
     bfloat16,
     float32,
+    tf32,
     float64,
     pointer_type,
     shared_memory_descriptor,

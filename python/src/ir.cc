@@ -1037,6 +1037,10 @@ void init_triton_ir(py::module &&m) {
            [](TritonOpBuilder &self) -> Type {
              return self.getBuilder().getF32Type();
            })
+      .def("get_tf32_ty",
+           [](TritonOpBuilder &self) -> Type {
+             return self.getBuilder().getType<FloatTF32Type>();
+           })
       .def("get_double_ty",
            [](TritonOpBuilder &self) -> Type {
              return self.getBuilder().getF64Type();

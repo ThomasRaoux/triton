@@ -383,7 +383,7 @@ def check_bit_width(value, shift_value):
 class dtype(base_type):
     SINT_TYPES = ['int8', 'int16', 'int32', 'int64']
     UINT_TYPES = ['int1', 'uint8', 'uint16', 'uint32', 'uint64']
-    FP_TYPES = ['fp8e4b15', 'fp8e4nv', 'fp8e4b8', 'fp8e5', 'fp8e5b16', 'fp16', 'bf16', 'fp32', 'fp64']
+    FP_TYPES = ['fp8e4b15', 'fp8e4nv', 'fp8e4b8', 'fp8e5', 'fp8e5b16', 'fp16', 'bf16', 'fp32', 'tf32', 'fp64']
     STANDARD_FP_TYPES = ['fp16', 'bf16', 'fp32', 'fp64']
     OTHER_TYPES = ['void']
 
@@ -433,6 +433,9 @@ class dtype(base_type):
             elif name == 'fp32':
                 self.fp_mantissa_width = 23
                 self.exponent_bias = 127
+            elif name == 'tf32':
+                self.fp_mantissa_width = 10
+                self.exponent_bias = 127
             elif name == 'fp64':
                 self.fp_mantissa_width = 52
                 self.exponent_bias = 1023
@@ -465,6 +468,9 @@ class dtype(base_type):
 
     def is_fp32(self):
         return self.name == 'fp32'
+
+    def is_tf32(self):
+        return self.name == 'tf32'
 
     def is_fp64(self):
         return self.name == 'fp64'
@@ -608,6 +614,8 @@ class dtype(base_type):
             return builder.get_bf16_ty()
         elif self.name == 'fp32':
             return builder.get_float_ty()
+        elif self.name == 'tf32':
+            return builder.get_tf32_ty()
         elif self.name == 'fp64':
             return builder.get_double_ty()
         raise ValueError(f'fail to convert {self} to ir type')
@@ -815,6 +823,7 @@ float8e4b15 = dtype('fp8e4b15')
 float16 = dtype('fp16')
 bfloat16 = dtype('bf16')
 float32 = dtype('fp32')
+tf32 = dtype('tf32')
 float64 = dtype('fp64')
 # pointer types
 pi32_t = pointer_type(int32)

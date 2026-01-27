@@ -94,6 +94,7 @@ type_canonicalisation_dict = {
     "bfloat16": "bf16",
     "float": "fp32",
     "float32": "fp32",
+    "tf32": "tf32",
     "double": "fp64",
     "float64": "fp64",
     # signed integers:
@@ -133,6 +134,7 @@ BITWIDTH_DICT: Dict[str, int] = {
     **{f"fp8{suffix}": 8
        for suffix in ("e4nv", "e4b15", "e4b8", "e5", "e5b16")},
     "bf16": 16,
+    "tf32": 32,
     "void": 0,
 }
 

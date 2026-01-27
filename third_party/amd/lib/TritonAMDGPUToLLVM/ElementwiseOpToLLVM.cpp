@@ -1847,18 +1847,40 @@ struct FpToFpOpConversion
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     auto srcElementType = getElementType(op.getSrc());
     auto dstElementType = getElementType(op.getResult());
+    bool srcIsTF32 = llvm::isa<FloatTF32Type>(srcElementType);
+    bool dstIsTF32 = llvm::isa<FloatTF32Type>(dstElementType);
+
+    if (dstIsTF32 && srcElementType.isF32()) {
+      SmallVector<Value> outVals;
+      outVals.reserve(operands[0].size());
+      for (Value v : operands[0])
+        outVals.push_back(triton::gpu::roundF32ToTF32(loc, rewriter, v));
+      return outVals;
+    }
+    if (srcIsTF32 && dstElementType.isF32()) {
+      return llvm::to_vector(operands[0]);
+    }
+
+    Type srcElementTypeForConvert = srcElementType;
+    Type dstElementTypeForConvert = dstElementType;
+    if (srcIsTF32)
+      srcElementTypeForConvert = rewriter.getF32Type();
+    if (dstIsTF32)
+      dstElementTypeForConvert = rewriter.getF32Type();
 
     auto roundingMode = op.getRounding();
-    if (srcElementType.isF32() &&
-        (dstElementType.isF16() || dstElementType.isBF16())) {
+    if (srcElementTypeForConvert.isF32() &&
+        (dstElementTypeForConvert.isF16() ||
+         dstElementTypeForConvert.isBF16())) {
       assert(roundingMode.has_value() &&
              "rounding mode must be specified for fp32->fp16/bf16 conversion");
       if (roundingMode.value() == RoundingMode::RTNE) {
-        return Fp32_to_F16_RTNE(loc, rewriter, srcElementType, dstElementType,
-                                operands, isaFamily);
+        return Fp32_to_F16_RTNE(loc, rewriter, srcElementTypeForConvert,
+                                dstElementTypeForConvert, operands, isaFamily);
       }
     }
-    if (srcElementType.isF32() && dstElementType.isBF16()) {
+    if (srcElementTypeForConvert.isF32() &&
+        dstElementTypeForConvert.isBF16()) {
       return {
           convertFp32ToBf16(loc, rewriter, operands[0][0], RoundingMode::RTZ)};
     }
@@ -1868,14 +1890,15 @@ struct FpToFpOpConversion
     // fp32 -> fp16 with RTZ
     // fp32/fp16 -> nanoo fp8/bf8 on non-CDNA3
     // nanoo fp8 -> bf16 on CDNA4
-    if ((llvm::isa<Float32Type>(srcElementType) &&
-         llvm::isa<Float16Type>(dstElementType) &&
+    if ((llvm::isa<Float32Type>(srcElementTypeForConvert) &&
+         llvm::isa<Float16Type>(dstElementTypeForConvert) &&
          roundingMode == RoundingMode::RTZ) ||
-        (llvm::isa<Float32Type, Float16Type>(srcElementType) &&
-         llvm::isa<Float8E4M3FNUZType, Float8E5M2FNUZType>(dstElementType) &&
+        (llvm::isa<Float32Type, Float16Type>(srcElementTypeForConvert) &&
+         llvm::isa<Float8E4M3FNUZType, Float8E5M2FNUZType>(
+             dstElementTypeForConvert) &&
          isaFamily != AMD::ISAFamily::CDNA3) ||
-        (llvm::isa<Float8E4M3FNUZType>(srcElementType) &&
-         dstElementType.isBF16() && isCDNA4(isaFamily)))
+        (llvm::isa<Float8E4M3FNUZType>(srcElementTypeForConvert) &&
+         dstElementTypeForConvert.isBF16() && isCDNA4(isaFamily)))
       numElements = 2;
 
     // fp32 -> fp8 with rtne can be done in two steps:
@@ -1886,22 +1909,23 @@ struct FpToFpOpConversion
     // 2. fp32 -> nanoo fp8/bf8 on CDNA3: has hardware support
     // 3. fp32 -> ocp fp8/bf8 on non-CDNA4: has software support
     bool useFP16IntermediateSrc =
-        srcElementType.isF32() && !dstElementType.isF16() &&
+        srcElementTypeForConvert.isF32() && !dstElementTypeForConvert.isF16() &&
         !(isCDNA4(isaFamily) &&
           (llvm::isa<Float8E4M3FNType, Float8E4M3FNUZType, Float8E5M2Type,
-                     Float8E5M2FNUZType>(dstElementType))) &&
+                     Float8E5M2FNUZType>(dstElementTypeForConvert))) &&
         !(isaFamily == AMD::ISAFamily::CDNA3 &&
           (llvm::isa<Float8E4M3FNUZType, Float8E5M2FNUZType>(
-              dstElementType))) &&
+              dstElementTypeForConvert))) &&
         !(!isCDNA4(isaFamily) &&
-          (llvm::isa<Float8E5M2Type, Float8E4M3FNType>(dstElementType)));
+          (llvm::isa<Float8E5M2Type, Float8E4M3FNType>(
+              dstElementTypeForConvert)));
 
     if ((isaFamily == AMD::ISAFamily::GFX1250) &&
-        ((llvm::isa<Float32Type>(srcElementType)) ||
-         (llvm::isa<Float16Type>(srcElementType)) ||
-         (llvm::isa<BFloat16Type>(srcElementType))) &&
-        ((llvm::isa<Float8E4M3FNType>(dstElementType)) ||
-         (llvm::isa<Float8E5M2Type>(dstElementType))) &&
+        ((llvm::isa<Float32Type>(srcElementTypeForConvert)) ||
+         (llvm::isa<Float16Type>(srcElementTypeForConvert)) ||
+         (llvm::isa<BFloat16Type>(srcElementTypeForConvert))) &&
+        ((llvm::isa<Float8E4M3FNType>(dstElementTypeForConvert)) ||
+         (llvm::isa<Float8E5M2Type>(dstElementTypeForConvert))) &&
         ((roundingMode.has_value()) && (*roundingMode != RoundingMode::RTZ))) {
       numElements = 8;
       useFP16IntermediateSrc = false;
@@ -1909,24 +1933,25 @@ struct FpToFpOpConversion
 
     // fp8/bf8->f32, if neither nanoo fp8/bf8 on CDNA3 nor ocp fp8/bf8 on CDNA4,
     // is done in two steps: fp8/bf8->fp16 and fp16->fp32
-    bool isDstFP32 = dstElementType.isF32();
+    bool isDstFP32 = dstElementTypeForConvert.isF32();
     bool useFP16IntermediateDst =
         (isDstFP32 &&
          !(isCDNA4(isaFamily) &&
-           (llvm::isa<Float8E4M3FNType, Float8E5M2Type>(srcElementType))) &&
+           (llvm::isa<Float8E4M3FNType, Float8E5M2Type>(
+               srcElementTypeForConvert))) &&
          !(isaFamily == AMD::ISAFamily::CDNA3 &&
            (llvm::isa<Float8E4M3FNUZType, Float8E5M2FNUZType>(
-               srcElementType))));
+               srcElementTypeForConvert))));
 
-    Type srcType = useFP16IntermediateSrc ? f16_ty : srcElementType;
-    Type dstType = useFP16IntermediateDst ? f16_ty : dstElementType;
+    Type srcType = useFP16IntermediateSrc ? f16_ty : srcElementTypeForConvert;
+    Type dstType = useFP16IntermediateDst ? f16_ty : dstElementTypeForConvert;
     SmallVector<Value> inVals;
     inVals.reserve(std::min(numElements, operands.size()));
     for (unsigned i = 0; i < std::min(numElements, operands.size()); i++) {
       inVals.push_back(operands[i][0]);
     }
-    bool isSrcFP16 = srcElementType.isF16();
-    bool isSrcBF16 = srcElementType.isBF16();
+    bool isSrcFP16 = srcElementTypeForConvert.isF16();
+    bool isSrcBF16 = srcElementTypeForConvert.isBF16();
 
     if ((isSrcFP16 || isSrcBF16) && isDstFP32) {
       SmallVector<Value> outVals;

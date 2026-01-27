@@ -1,6 +1,7 @@
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
 
 #include "mlir/Support/LLVM.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
 using namespace mlir;
@@ -33,6 +34,9 @@ TritonGPUToLLVMTypeConverter::TritonGPUToLLVMTypeConverter(
   });
   addConversion([&](triton::gpu::AsyncTokenType type) -> std::optional<Type> {
     return convertAsyncTokenType(type);
+  });
+  addConversion([ctx](FloatTF32Type type) -> std::optional<Type> {
+    return Float32Type::get(ctx);
   });
 
   convertFP8Type<mlir::Float8E4M3FNUZType, mlir::Float8E4M3FNType,
