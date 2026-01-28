@@ -312,7 +312,6 @@ def make_tensordesc_arg(arg, kernel_metadata, tensordesc_metadata):
             *arg.shape,
             *arg.strides,
             arg.padding == "nan",
-            arg.round_f32_to_tf32,
             *arg.shape,
             *arg.strides,
         ]

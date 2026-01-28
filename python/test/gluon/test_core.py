@@ -119,6 +119,10 @@ def tma_round_f32_to_tf32_kernel(in_desc, out_desc):
     tma.async_copy_global_to_shared(in_desc, [0, 0], bar, smem)
     mbarrier.wait(bar, phase=0, deps=[smem])
     mbarrier.invalidate(bar)
+    block_layout: ttgl.constexpr = ttgl.BlockedLayout([1, 2], [4, 8], [4, 1], [1, 0])
+    val = smem.load(block_layout)
+    val = ttgl.tf32_round(val)
+    smem.store(val)
     tma.async_copy_shared_to_global(out_desc, [0, 0], smem)
     tma.store_wait(0)
     smem._keep_alive()
@@ -148,7 +152,7 @@ def test_gluon_tma_round_f32_to_tf32():
         transposed=False,
         fp4_padded=False,
     )
-    in_desc = gluon.nvidia.hopper.TensorDescriptor.from_tensor(inp, [16, 16], layout, round_f32_to_tf32=True)
+    in_desc = gluon.nvidia.hopper.TensorDescriptor.from_tensor(inp, [16, 16], layout)
     out_desc = gluon.nvidia.hopper.TensorDescriptor.from_tensor(out, [16, 16], layout)
 
     tma_round_f32_to_tf32_kernel[(1, )](in_desc, out_desc)
