@@ -241,7 +241,7 @@ def make_tensordesc_arg(arg, metadata):
     else:
         expanded_shape = shape
 
-    if arg.round_f32_to_tf32:
+    if elem_type == TMA_TF32 or arg.round_f32_to_tf32:
         elem_type = TMA_TF32
 
     cu_tensor_map = triton.runtime.driver.active.utils.fill_tma_descriptor(

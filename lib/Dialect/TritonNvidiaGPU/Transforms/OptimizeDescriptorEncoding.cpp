@@ -1,3 +1,5 @@
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Pass/PassManager.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
@@ -25,6 +27,9 @@ struct UseInfo {
   Attribute desiredSharedEncoding;
   SmallVector<int64_t> shape;
   ttg::CGAEncodingAttr cgaLayout;
+  Type desiredElementType;
+  bool forbidTF32ElementType = false;
+  SmallVector<Operation *> tf32RoundUsers;
 };
 
 static bool isTMACompatibleEncoding(Attribute enc) {
@@ -58,7 +63,18 @@ SmallVector<int64_t> expandToRank(ArrayRef<int64_t> shape, int rank) {
   return result;
 }
 
-std::optional<UseInfo> getUseInfo(Operation *op) {
+static bool allUsersAreTF32Round(Operation *op,
+                                 SmallVectorImpl<Operation *> &roundUsers) {
+  for (Operation *user : op->getUsers()) {
+    if (!isa<TF32RoundOp>(user))
+      return false;
+    roundUsers.push_back(user);
+  }
+  return !roundUsers.empty();
+}
+
+std::optional<UseInfo> getUseInfo(Operation *op,
+                                  SmallVectorImpl<UseInfo> &tf32Candidates) {
   UseInfo info;
   info.use = op;
   if (auto load = dyn_cast<DescriptorLoadOp>(op)) {
@@ -70,6 +86,13 @@ std::optional<UseInfo> getUseInfo(Operation *op) {
     auto shape = load.getResult().getType().getShape();
     auto rank = load.getDesc().getType().getBlockType().getRank();
     info.shape = expandToRank(shape, rank);
+    auto descElemTy = load.getDesc().getType().getBlockType().getElementType();
+    auto resultElemTy = load.getType().getElementType();
+    if (descElemTy.isF32() && resultElemTy.isF32() &&
+        allUsersAreTF32Round(op, info.tf32RoundUsers)) {
+      info.desiredElementType = FloatTF32Type::get(op->getContext());
+      tf32Candidates.push_back(info);
+    }
     return info;
   }
   if (auto gather = dyn_cast<DescriptorGatherOp>(op)) {
@@ -81,6 +104,14 @@ std::optional<UseInfo> getUseInfo(Operation *op) {
     auto shape = gather.getResult().getType().getShape();
     auto rank = gather.getDesc().getType().getBlockType().getRank();
     info.shape = expandToRank(shape, rank);
+    auto descElemTy =
+        gather.getDesc().getType().getBlockType().getElementType();
+    auto resultElemTy = gather.getType().getElementType();
+    if (descElemTy.isF32() && resultElemTy.isF32() &&
+        allUsersAreTF32Round(op, info.tf32RoundUsers)) {
+      info.desiredElementType = FloatTF32Type::get(op->getContext());
+      tf32Candidates.push_back(info);
+    }
     return info;
   }
   if (auto store = dyn_cast<DescriptorStoreLikeOpInterface>(op)) {
@@ -90,6 +121,8 @@ std::optional<UseInfo> getUseInfo(Operation *op) {
     auto shape = store.getSrc().getType().getShape();
     auto rank = store.getDesc().getType().getBlockType().getRank();
     info.shape = expandToRank(shape, rank);
+    if (store.getDesc().getType().getBlockType().getElementType().isF32())
+      info.forbidTF32ElementType = true;
     return info;
   }
   return std::nullopt;
@@ -102,11 +135,16 @@ struct EncodingInfo {
   // use case
   SmallVector<int64_t> shape;
   bool forcedToDefault = false;
+  Type desiredElementType;
+  bool forbidTF32ElementType = false;
 
   bool operator==(const EncodingInfo &other) const {
     return desiredEncoding == other.desiredEncoding &&
            cgaLayout == other.cgaLayout &&
-           forcedToDefault == other.forcedToDefault && shape == other.shape;
+           forcedToDefault == other.forcedToDefault &&
+           desiredElementType == other.desiredElementType &&
+           forbidTF32ElementType == other.forbidTF32ElementType &&
+           shape == other.shape;
   }
 };
 
@@ -115,7 +153,8 @@ struct EncodingInfo {
 template <> struct std::hash<EncodingInfo> {
   size_t operator()(const EncodingInfo &einfo) const {
     return llvm::hash_combine(einfo.desiredEncoding, einfo.cgaLayout,
-                              einfo.forcedToDefault,
+                              einfo.forcedToDefault, einfo.desiredElementType,
+                              einfo.forbidTF32ElementType,
                               ArrayRef<int64_t>(einfo.shape));
   }
 };
@@ -139,6 +178,8 @@ EncodingInfo combineEncodings(const EncodingInfo &lhs, const EncodingInfo &rhs,
   EncodingInfo result;
   // Always propagate forcedToDefault
   result.forcedToDefault = lhs.forcedToDefault || rhs.forcedToDefault;
+  result.forbidTF32ElementType =
+      lhs.forbidTF32ElementType || rhs.forbidTF32ElementType;
 
   if (result.forcedToDefault)
     return result;
@@ -206,6 +247,17 @@ EncodingInfo combineEncodings(const EncodingInfo &lhs, const EncodingInfo &rhs,
   default:
     break;
   }
+
+  if (!result.forbidTF32ElementType) {
+    if (lhs.desiredElementType && rhs.desiredElementType &&
+        lhs.desiredElementType != rhs.desiredElementType) {
+      result.desiredElementType = {};
+    } else if (lhs.desiredElementType) {
+      result.desiredElementType = lhs.desiredElementType;
+    } else {
+      result.desiredElementType = rhs.desiredElementType;
+    }
+  }
   return result;
 }
 
@@ -236,10 +288,14 @@ Attribute getFallbackSharedEncoding(RankedTensorType tensorType,
 
 TensorDescType getTensorDescTypeWithEncoding(Operation *op,
                                              RankedTensorType existingTy,
-                                             Attribute encoding) {
+                                             Attribute encoding,
+                                             Type elementType = {}) {
+  if (elementType)
+    existingTy = RankedTensorType::get(existingTy.getShape(), elementType);
   auto sharedEnc = cast<triton::gpu::SharedEncodingTrait>(encoding);
   encoding = updateEncodingForShape(op, sharedEnc, existingTy);
-  auto blockTy = existingTy.cloneWithEncoding(encoding);
+  auto blockTy = RankedTensorType::get(existingTy.getShape(),
+                                       existingTy.getElementType(), encoding);
   return TensorDescType::get(existingTy.getContext(), blockTy);
 }
 
@@ -248,6 +304,7 @@ void assignMemoryLayouts(FuncOp &func) {
   llvm::MapVector<TypedValue<TensorDescType>, const EncodingInfo *>
       valueToEncodingInfo;
   llvm::PriorityWorklist<TypedValue<triton::TensorDescType>> worklist;
+  SmallVector<UseInfo> tf32Candidates;
 
   auto updateEncoding = [&](ArrayRef<Value> descValues, EncodingInfo info) {
     for (auto value : descValues) {
@@ -280,10 +337,12 @@ void assignMemoryLayouts(FuncOp &func) {
                      EncodingInfo{{}, {}, {}, /*forcedToDefault=*/!isKernel});
 
   func.walk([&](Operation *op) {
-    if (auto info = getUseInfo(op)) {
-      updateEncoding(info->descriptor,
-                     EncodingInfo{info->desiredSharedEncoding, info->cgaLayout,
-                                  info->shape});
+    if (auto info = getUseInfo(op, tf32Candidates)) {
+      updateEncoding(
+          info->descriptor,
+          EncodingInfo{info->desiredSharedEncoding, info->cgaLayout,
+                       info->shape, /*forcedToDefault=*/false,
+                       info->desiredElementType, info->forbidTF32ElementType});
     } else {
       bool forcedToDefault = isa<CallOp, ReturnOp, ReinterpretTensorDescOp>(op);
       auto einfo =
@@ -339,22 +398,41 @@ void assignMemoryLayouts(FuncOp &func) {
     }
   }
 
-  // 3. Transfer propagated encodings into the graph
+  // 3. Fold tf32_round(load(desc)) into load(desc_tf32) when the descriptor
+  // was proven to be TF32-only.
   auto ctx = func.getContext();
+  IRRewriter rewriter(ctx);
+  for (const UseInfo &candidate : tf32Candidates) {
+    auto it = valueToEncodingInfo.find(candidate.descriptor);
+    if (it == valueToEncodingInfo.end())
+      continue;
+    const EncodingInfo *einfo = it->second;
+    if (einfo->forbidTF32ElementType ||
+        !isa_and_nonnull<FloatTF32Type>(einfo->desiredElementType))
+      continue;
+    for (Operation *roundOp : candidate.tf32RoundUsers)
+      rewriter.replaceOp(roundOp, candidate.use->getResult(0));
+  }
+
+  // 4. Transfer propagated encodings into the graph
   auto numCTAs = gpu::lookupNumCTAs(func);
   for (auto &[desc, einfo] : valueToEncodingInfo) {
     auto existingTy = desc.getType().getBlockType();
+    Type elementType = existingTy.getElementType();
+    if (!einfo->forbidTF32ElementType && einfo->desiredElementType)
+      elementType = einfo->desiredElementType;
+    auto elementTy = RankedTensorType::get(existingTy.getShape(), elementType);
     Attribute newEncoding;
     if (einfo->desiredEncoding) {
       newEncoding = einfo->desiredEncoding;
     } else if (einfo->forcedToDefault) {
-      newEncoding = getFallbackSharedEncoding(existingTy, {}, {}, numCTAs);
+      newEncoding = getFallbackSharedEncoding(elementTy, {}, {}, numCTAs);
     } else {
-      newEncoding = getFallbackSharedEncoding(existingTy, einfo->cgaLayout,
+      newEncoding = getFallbackSharedEncoding(elementTy, einfo->cgaLayout,
                                               einfo->shape, numCTAs);
     }
-    desc.setType(getTensorDescTypeWithEncoding(desc.getDefiningOp(), existingTy,
-                                               newEncoding));
+    desc.setType(getTensorDescTypeWithEncoding(desc.getDefiningOp(), elementTy,
+                                               newEncoding, elementType));
   }
 
   SmallVector<Type> argTys(func.getBlocks().front().getArgumentTypes());

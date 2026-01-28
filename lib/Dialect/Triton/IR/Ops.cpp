@@ -1458,10 +1458,20 @@ LogicalResult DescriptorScatterOp::verify() {
 }
 
 // -- DescriptorLoadOp --
+static bool descriptorTensorElemTypesCompatible(Type descElemType,
+                                                Type tensorElemType) {
+  if (descElemType == tensorElemType)
+    return true;
+  // Allow TF32 descriptors to be used with f32 tensors; the hardware performs
+  // the TF32 rounding on load/store in that case.
+  return isa<FloatTF32Type>(descElemType) && tensorElemType.isF32();
+}
+
 LogicalResult verifyDescriptorLoadStoreOp(Operation *op, TensorDescType desc,
                                           ShapedType tensor) {
   RankedTensorType block = desc.getSignlessBlockType();
-  if (block.getElementType() != tensor.getElementType()) {
+  if (!descriptorTensorElemTypesCompatible(block.getElementType(),
+                                           tensor.getElementType())) {
     return op->emitOpError("descriptor block and tensor element types must "
                            "match, but got descriptor element type ")
            << block.getElementType() << " and tensor element type "

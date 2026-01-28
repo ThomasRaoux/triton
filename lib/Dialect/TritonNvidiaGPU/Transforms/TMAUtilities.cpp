@@ -1,3 +1,4 @@
+#include "mlir/IR/BuiltinTypes.h"
 #include <triton/Dialect/TritonNvidiaGPU/IR/Dialect.h>
 #include <triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h>
 #include <triton/Tools/LayoutUtils.h>
@@ -169,6 +170,9 @@ FailureOr<int> getTMAElementType(Location loc, TensorDescType ty) {
     return TMA_B4X16_P64;
 
   auto elemTy = ty.getBlockType().getElementType();
+  if (isa<FloatTF32Type>(elemTy)) {
+    return TMA_TF32;
+  }
   if (elemTy.isBF16()) {
     return TMA_BF16;
   } else if (elemTy.isF16()) {

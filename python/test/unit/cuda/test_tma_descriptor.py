@@ -117,7 +117,7 @@ def test_tma_descriptor_round_f32_to_tf32():
 
     @triton.jit
     def kernel(desc, out_ptr):
-        block = desc.load([0, 0])
+        block = tl.tf32_round(desc.load([0, 0]))
         idx = tl.arange(0, 16)[None, :]
         tl.store(out_ptr + idx, block)
 
@@ -135,7 +135,7 @@ def test_tma_descriptor_round_f32_to_tf32():
     torch.manual_seed(17)
     inp = torch.randn((1, 16), device=device, dtype=torch.float32)
     out = torch.empty_like(inp)
-    desc = TensorDescriptor.from_tensor(inp, [1, 16], round_f32_to_tf32=True)
+    desc = TensorDescriptor.from_tensor(inp, [1, 16])
     kernel[(1, )](desc, out)
 
     expected = round_to_tf32(inp)
