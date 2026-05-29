@@ -81,8 +81,13 @@ void init_triton_passes_ttgpuir(py::module &&m) {
                      createTritonGPURemoveLayoutConversions);
   ADD_PASS_WRAPPER_0("add_reduce_data_duplication",
                      createTritonGPUReduceDataDuplication);
-  ADD_PASS_WRAPPER_0("add_allocate_warp_groups",
-                     createTritonGPUAllocateWarpGroups);
+  m.def("add_allocate_warp_groups",
+        [](PassManager &pm, const std::string &instrumentationMode) {
+          TritonGPUAllocateWarpGroupsOptions options;
+          options.instrumentationMode = instrumentationMode;
+          pm.addPass(createTritonGPUAllocateWarpGroups(options));
+        },
+        py::arg("pm"), py::arg("instrumentation_mode") = "");
   ADD_PASS_WRAPPER_0("add_allocate_shared_memory", createAllocateSharedMemory);
   ADD_PASS_WRAPPER_0("add_allocate_global_scratch_memory",
                      createTritonGPUGlobalScratchAllocationPass);

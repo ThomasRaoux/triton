@@ -1,6 +1,8 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "llvm/ADT/StringRef.h"
 
 namespace mlir::triton::gpu {
 #define GEN_PASS_DEF_TRITONGPUALLOCATEWARPGROUPS
@@ -10,6 +12,53 @@ namespace mlir::triton::gpu {
 using namespace mlir;
 using namespace mlir::triton;
 using namespace mlir::triton::gpu;
+
+constexpr int32_t kMinRegistersForAssertOrPrint = 32;
+
+static bool regionUsesAssertOrPrint(Region &region) {
+  return region
+      .walk([](Operation *op) {
+        return isa<AssertOp, PrintOp>(op) ? WalkResult::interrupt()
+                                          : WalkResult::advance();
+      })
+      .wasInterrupted();
+}
+
+static bool regionNeedsMinRegisters(Region &region, bool willRunConSan) {
+  return willRunConSan || regionUsesAssertOrPrint(region);
+}
+
+static void ensureMinRegistersForAssertOrPrint(ModuleOp mod,
+                                               bool willRunConSan) {
+  if (willRunConSan || regionUsesAssertOrPrint(mod.getBodyRegion())) {
+    if (auto maxnreg = mod->getAttrOfType<IntegerAttr>(AttrMaxRegistersName);
+        maxnreg && maxnreg.getInt() < kMinRegistersForAssertOrPrint) {
+      mod->setAttr(AttrMaxRegistersName,
+                   Builder(mod.getContext())
+                       .getI32IntegerAttr(kMinRegistersForAssertOrPrint));
+    }
+  }
+
+  mod.walk([&](WarpSpecializeOp op) {
+    auto requestedRegisters = op.getRequestedRegisters();
+    if (!requestedRegisters)
+      return;
+
+    SmallVector<int32_t> registers(*requestedRegisters);
+    bool changed = false;
+    for (Region *region : op.getPartitionRegions()) {
+      unsigned registerIdx = region->getRegionNumber();
+      if (!regionNeedsMinRegisters(*region, willRunConSan) ||
+          registers[registerIdx] >= kMinRegistersForAssertOrPrint)
+        continue;
+      registers[registerIdx] = kMinRegistersForAssertOrPrint;
+      changed = true;
+    }
+
+    if (changed)
+      op.setRequestedRegisters(registers);
+  });
+}
 
 // Given a `ttg.warp_specialize` with a certain number of existing warps, pad it
 // with extra warps until it has the same number of full warp groups as the
@@ -65,8 +114,13 @@ namespace {
 struct AllocateWarpGroups
     : public mlir::triton::gpu::impl::TritonGPUAllocateWarpGroupsBase<
           AllocateWarpGroups> {
+  using TritonGPUAllocateWarpGroupsBase::TritonGPUAllocateWarpGroupsBase;
+
   void runOnOperation() override {
     ModuleOp mod = getOperation();
+    bool willRunConSan =
+        llvm::StringRef(instrumentationMode.getValue()).contains("consan");
+    ensureMinRegistersForAssertOrPrint(mod, willRunConSan);
 
     // First determine the maximum number of extra warps.
     int maxExtraWarps = 0;
@@ -192,7 +246,11 @@ struct AllocateWarpGroups
       int leftover = registerBudget / (baseNumWarps * threadsPerWarp);
       // Round down to the nearest multiple of 8.
       leftover = leftover / 8 * 8;
-      if (leftover < 24)
+      int minDefaultRegs =
+          regionNeedsMinRegisters(op.getDefaultRegion(), willRunConSan)
+              ? kMinRegistersForAssertOrPrint
+              : 24;
+      if (leftover < minDefaultRegs)
         return; // too few registers
 
       // Generate setmaxnreg in each partition according to its warp group.

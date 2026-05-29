@@ -1,4 +1,5 @@
 // RUN: triton-opt %s -split-input-file --tritongpu-allocate-warp-groups | FileCheck %s
+// RUN: triton-opt %s -split-input-file --tritongpu-allocate-warp-groups="instrumentation-mode=consan" | FileCheck %s --check-prefix=CONSAN
 
 // CHECK: module attributes {"ttg.num-warps" = 4 : i32, "ttg.total-num-warps" = 4 : i32}
 module attributes {"ttg.num-warps" = 4 : i32} {
@@ -105,6 +106,63 @@ tt.func @steal_from_default() {
     ttg.warp_yield
   }
   partition0() num_warps(8) {
+    ttg.warp_return
+  } : () -> ()
+  tt.return
+}
+
+}
+
+// -----
+
+// CHECK: module attributes {ttg.maxnreg = 40 : i32
+module attributes {"ttg.num-warps" = 4 : i32, ttg.maxnreg = 40 : i32} {
+
+tt.func @assert_and_print_min_registers() {
+  // CHECK: actualRegisters = array<i32: 48, 32>
+  // CHECK: requestedRegisters = array<i32: 32>
+  ttg.warp_specialize() attributes {requestedRegisters = array<i32: 24>}
+  default {
+    %zero = arith.constant 0 : i32
+    tt.print "zero: " {hex = false, isSigned = array<i32: 1>} : %zero : i32
+    ttg.warp_yield
+  }
+  partition0() num_warps(4) {
+    %true = arith.constant true
+    tt.assert %true, "assert text" : i1
+    ttg.warp_return
+  } : () -> ()
+  tt.return
+}
+
+}
+
+// -----
+
+// CHECK: module attributes {ttg.maxnreg = 32 : i32
+module attributes {"ttg.num-warps" = 4 : i32, ttg.maxnreg = 24 : i32} {
+
+tt.func @assert_min_module_max_registers() {
+  %true = arith.constant true
+  tt.assert %true, "assert text" : i1
+  tt.return
+}
+
+}
+
+// -----
+
+// CONSAN: module attributes {consan.test, ttg.maxnreg = 32 : i32
+module attributes {"consan.test", "ttg.num-warps" = 4 : i32, ttg.maxnreg = 24 : i32} {
+
+tt.func @consan_min_registers() {
+  // CONSAN: actualRegisters = array<i32: 32, 32>
+  // CONSAN: requestedRegisters = array<i32: 32>
+  ttg.warp_specialize() attributes {requestedRegisters = array<i32: 16>}
+  default {
+    ttg.warp_yield
+  }
+  partition0() num_warps(4) {
     ttg.warp_return
   } : () -> ()
   tt.return
