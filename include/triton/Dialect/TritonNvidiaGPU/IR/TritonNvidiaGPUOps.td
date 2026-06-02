@@ -616,7 +616,7 @@ def TTNG_AsyncTMAScatterOp : TTNG_Op<"async_tma_scatter", [
 
 def TTNG_TMAStoreWaitOp : TTNG_Op<"async_tma_store_wait", [MemWaitOpTrait]> {
   let summary = "wait until all the inputs are read.";
-  let arguments = (ins I32Attr:$pendings);
+  let arguments = (ins I32Attr:$pendings, DefaultValuedAttr<BoolAttr, "false">:$read_only);
   let description = [{
     Wait until all the read operations are done from the associated store operations.
     This is needed before the shared memory can be written to.

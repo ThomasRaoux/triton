@@ -207,7 +207,7 @@ def tma_kernel(desc):
     value = ttgl.full(desc.block_shape, 0, desc.dtype, layout)
     alloc = ttgl.allocate_shared_memory(desc.dtype, desc.block_shape, desc.layout, value)
     tma.async_copy_shared_to_global(desc, [0, 0], alloc)
-    tma.store_wait(0)
+    tma.store_wait(0, read_only=True)
     alloc._keep_alive()
 
 
@@ -237,7 +237,7 @@ def tma_im2col_kernel(in_desc, out_desc):
     mbarrier.wait(bar, phase=0)
     mbarrier.invalidate(bar)
     tma.async_copy_shared_to_global(out_desc, [0, 0], smem)
-    tma.store_wait(pendings=0)
+    tma.store_wait(pendings=0, read_only=True)
 
 
 @pytest.mark.skipif(not is_hopper_or_newer(), reason="Requires Hopper")
@@ -288,7 +288,7 @@ def tma_round_f32_to_tf32_kernel(in_desc, out_desc):
     mbarrier.wait(bar, phase=0, deps=[smem])
     mbarrier.invalidate(bar)
     tma.async_copy_shared_to_global(out_desc, [0, 0], smem)
-    tma.store_wait(0)
+    tma.store_wait(0, read_only=True)
     smem._keep_alive()
 
 
@@ -337,7 +337,7 @@ def tma_multicast_copy_kernel(in_desc, out_desc):
     mbarrier.wait(bar, phase=0, deps=[smem])
 
     tma.async_copy_shared_to_global(out_desc, [0, 0], smem)
-    tma.store_wait(0)
+    tma.store_wait(0, read_only=True)
 
     mbarrier.invalidate(bar)
     smem._keep_alive()
@@ -394,7 +394,7 @@ def tma_gather_scatter_kernel(in_desc, gather_out_desc, scatter_out_desc, gather
     scatter_offsets = ttgl.load(scatter_idx_ptr + ttgl.arange(0, BLOCK_M, layout=x_offsets_layout))
     tma.async_copy_shared_to_global(gather_out_desc, [0, 0], smem)
     blackwell_tma.async_scatter(scatter_out_desc, scatter_offsets, 0, smem)
-    tma.store_wait(0)
+    tma.store_wait(0, read_only=True)
 
     smem._keep_alive()
 
@@ -800,7 +800,7 @@ def test_device_tma_store():
             layout=smem_layout,
         )
         tma.async_copy_shared_to_global(out_desc, [0, 0], alloc)
-        tma.store_wait(0)
+        tma.store_wait(0, read_only=True)
         alloc._keep_alive()
 
     XBLOCK = 16
@@ -1032,7 +1032,7 @@ def tma_mma_shared_inputs_kernel(a_desc, b_desc, out_ptr, out_desc, gather_idx_p
         scatter_offsets = ttgl.load(scatter_idx_ptr + ttgl.arange(0, BLOCK_M, layout=scatter_offsets_layout))
         acc_smem = ttgl.allocate_shared_memory(out_desc.dtype, [BLOCK_M, BLOCK_N], out_desc.layout, acc)
         blackwell_tma.async_scatter(out_desc, scatter_offsets, 0, acc_smem)
-        tma.store_wait(0)
+        tma.store_wait(0, read_only=True)
         acc_smem._keep_alive()
     else:
         offs_m = ttgl.arange(0, BLOCK_M)[:, None]
@@ -1996,7 +1996,7 @@ def test_tma_slice():
         smem_slice0.store(ttgl.zeros((XBLOCK, YBLOCK), dtype=ttgl.float32, layout=blocked))
 
         tma.async_copy_shared_to_global(out_desc, [0, 0], smem_slice1)
-        tma.store_wait(0)
+        tma.store_wait(0, read_only=True)
 
     input = torch.rand((XBLOCK, YBLOCK), dtype=torch.float32, device="cuda")
     output = torch.empty_like(input)
@@ -4446,7 +4446,7 @@ def mma_scaled_tcgen05_copy_kernel(a_desc, b_desc, c_desc, a_scale_desc, b_scale
     acc_smem = ttgl.allocate_shared_memory(c_desc.dtype, c_desc.block_type.shape, c_desc.layout)
     acc_smem.store(acc)
     tma.async_copy_shared_to_global(c_desc, [off_m, off_n], acc_smem)
-    tma.store_wait(0)
+    tma.store_wait(0, read_only=True)
 
 
 def mma_scaled_tcgen05_copy(A, B, A_scale, B_scale, VEC_SIZE, BLOCK_M, BLOCK_N, BLOCK_K, ctas_per_cga, multicast,

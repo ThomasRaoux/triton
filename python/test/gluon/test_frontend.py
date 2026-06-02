@@ -879,7 +879,7 @@ def async_tma_kernel(input_desc, XBLOCK: ttgl.constexpr):
     mbarrier.invalidate(bar)
 
     tma.async_copy_shared_to_global(input_desc, [0, 0], smem)
-    tma.store_wait(0)
+    tma.store_wait(0, read_only=True)
 
 
 @pytest.mark.parametrize("target", [HOPPER_TARGET, BLACKWELL_TARGET])
@@ -939,7 +939,7 @@ def async_tma_blackwell_kernel(input_desc, XBLOCK: ttgl.constexpr):
     mbarrier.invalidate(bar)
 
     tma.async_scatter(input_desc, x_offsets, 0, smem)
-    tma.store_wait(0)
+    tma.store_wait(0, read_only=True)
 
 
 def test_async_tma_blackwell():
@@ -4196,7 +4196,7 @@ def test_nv_tma_descriptor_store_kernel(target):
         )
         smem = ttgl.allocate_shared_memory(ttgl.float32, [XBLOCK, XBLOCK], smem_layout)
         tma.async_copy_shared_to_global(input_desc, [0, 0], smem)
-        tma.store_wait(0)
+        tma.store_wait(0, read_only=True)
 
     ptr = MockTensor(ttgl.float32)
     module = run_parser(nv_tma_descriptor_store_kernel, *make_args(ptr), target)
@@ -4257,7 +4257,7 @@ def test_nv_tma_descriptor_reduce_kernel(target, op_name, kind):
             tma.async_atomic_or(input_desc, [0, 0], smem)
         elif OP_NAME == "async_atomic_xor":
             tma.async_atomic_xor(input_desc, [0, 0], smem)
-        tma.store_wait(0)
+        tma.store_wait(0, read_only=True)
 
     ptr = MockTensor(ttgl.int32)
     module = run_parser(nv_tma_descriptor_reduce_kernel, *make_args(ptr, op_name), target)

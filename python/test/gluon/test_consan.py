@@ -741,7 +741,7 @@ def test_tma_interleave_kernel(FAILURE, device, run_wrapper, monkeypatch, num_ct
         mbarrier.invalidate(bar.index(1))
 
         tma.async_copy_shared_to_global(input_desc, [0, 0], smem.index(0))
-        tma.store_wait(0)
+        tma.store_wait(0, read_only=True)
 
     block_m = XBLOCK.value * num_ctas
     input = torch.randn((block_m, XBLOCK.value), device=device, dtype=torch.float16)
@@ -946,10 +946,10 @@ def test_tma_store(FAILURE, device, run_wrapper, monkeypatch, num_ctas):
         val = ttgl.full([block_m, XBLOCK], 42, ttgl.float16, blocked_layout)
         tma.async_copy_shared_to_global(output_desc, [0, 0], smem.index(0))
         tma.async_copy_shared_to_global(output_desc, [0, 0], smem.index(1))
-        tma.store_wait(pendings=1)
+        tma.store_wait(pendings=1, read_only=True)
         smem.index(0).store(val)
         if not FAILURE:
-            tma.store_wait(pendings=0)
+            tma.store_wait(pendings=0, read_only=True)
         smem.index(1).store(val)
 
     block_m = XBLOCK.value * num_ctas
@@ -1042,7 +1042,7 @@ def test_tcgen5_mma(FAILURE, MEM_ACCESS_KIND, TWO_CTAS, device, run_wrapper, mon
                 ttgl.NVMMASharedLayout.get_default_for([block_m, block_n], input_desc.dtype,
                                                        cga_layout=acc_layout.cga_layout), res.to(input_desc.dtype))
             tma.async_copy_shared_to_global(output_desc, [0, 0], smemAcc)
-            tma.store_wait(0)
+            tma.store_wait(0, read_only=True)
         elif MEM_ACCESS_KIND == "tmem_store":
             acc.store(ttgl.full([block_m, block_n], 42, ttgl.float32, acc_blocked_layout))
 
