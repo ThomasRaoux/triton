@@ -858,25 +858,26 @@ void workaroundForLoopScheduler(triton::FuncOp funcOp) {
     ifOp.thenYield().setOperand(pos, poisonToken);
     ifOp.elseYield().setOperand(pos, poisonToken);
 
-    // patch loop.stage=1
+    // Preserve stage annotations from the moved aref ops.
     enterIf->setAttrs(ifOp->getAttrs());
     exitIf->setAttrs(ifOp->getAttrs());
     assignStage(b, enterIf, getStageCluster(putEnterOp));
     assignStage(b, exitIf, getStageCluster(putExitOp));
 
-    SetVector<int> enterExitIds, middleIds;
-    enterExitIds.insert(1);
-    middleIds.insert(0);
-    setPartition(enterIf, enterExitIds);
-    setPartition(exitIf, enterExitIds);
+    auto enterIds = getPartitionIds(putEnterOp);
+    auto exitIds = getPartitionIds(putExitOp);
+    auto middleIds = getPartitionIds(ifOp);
+    for (auto id : enterIds)
+      middleIds.remove(id);
+    for (auto id : exitIds)
+      middleIds.remove(id);
+    setPartition(enterIf, enterIds);
+    setPartition(exitIf, exitIds);
     setPartition(ifOp, middleIds);
 
-    SetVector<int> p0array, p1array;
-    p0array.insert(0);
-    p1array.insert(1);
     setPartitionOutputs(exitIf, {});
-    setPartitionOutputs(enterIf, {p1array});
-    SmallVector<SetVector<int>> outputs(ifOp->getNumResults(), p0array);
+    setPartitionOutputs(enterIf, {enterIds});
+    SmallVector<SetVector<int>> outputs(ifOp->getNumResults(), middleIds);
     setPartitionOutputs(ifOp, outputs);
   }
 }
