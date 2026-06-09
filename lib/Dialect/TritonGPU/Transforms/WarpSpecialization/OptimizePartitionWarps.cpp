@@ -6,6 +6,7 @@
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
+#include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/ADT/ScopeExit.h"
 
@@ -107,6 +108,25 @@ static LogicalResult relayoutWarps(ModuleAxisInfoAnalysis &axisInfo,
     return mlir::emitError(mod.getLoc(), "module missing target specification");
   int threadsPerWarp = TritonGPUDialect::getThreadsPerWarp(mod);
   int numCTAs = TritonGPUDialect::getNumCTAs(mod);
+
+  // Existing TTG ops are already legal to convert-triton-to-tritongpu, so that
+  // pass will not restore layouts on their tensor results after the reset
+  // above. Seed those values with the new default layout before rerunning
+  // layout assignment.
+  TritonGPUTypeConverter typeConverter(container->getContext(), newNumWarps,
+                                       threadsPerWarp, numCTAs,
+                                       /*enableSourceRemat=*/false);
+  container->walk([&](Operation *op) {
+    Dialect *dialect = op->getDialect();
+    if (!dialect || !isa<TritonGPUDialect>(dialect))
+      return;
+    for (OpResult result : op->getResults()) {
+      auto type = dyn_cast<RankedTensorType>(result.getType());
+      if (!type)
+        continue;
+      result.setType(typeConverter.convertType(type));
+    }
+  });
 
   // Enable `convert-triton-to-tritongpu` to rematerialize source layouts for
   // TTG dialect operations. They will get cleared later.
