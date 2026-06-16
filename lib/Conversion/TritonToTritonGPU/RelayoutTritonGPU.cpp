@@ -83,6 +83,19 @@ struct TMEMAllocOpPattern : public OpConversionPattern<ttng::TMEMAllocOp> {
   }
 };
 
+struct LocalLoadOpPattern : public OpConversionPattern<LocalLoadOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(LocalLoadOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto type =
+        cast<RankedTensorType>(getTypeConverter()->convertType(op.getType()));
+    rewriter.modifyOpInPlace(op, [&] { op.getResult().setType(type); });
+    return success();
+  }
+};
+
 class RelayoutTritonGPU
     : public triton::impl::RelayoutTritonGPUBase<RelayoutTritonGPU> {
 public:
@@ -105,6 +118,11 @@ public:
           return TritonGPUConversionTarget::isDynamicallyLegal(op,
                                                                typeConverter);
         });
+    // TritonGPUConversionTarget treats TTG ops as legal by default. Relayout
+    // local_load results after OptimizePartitionWarps clears tensor encodings.
+    target.addDynamicallyLegalOp<LocalLoadOp>([&](Operation *op) {
+      return TritonGPUConversionTarget::isDynamicallyLegal(op, typeConverter);
+    });
 
     // rewrite patterns
     RewritePatternSet patterns(context);
@@ -113,6 +131,7 @@ public:
         // clang-format off
         GatherScatterOpPattern<ttng::AsyncTMAGatherOp>,
         GatherScatterOpPattern<ttng::AsyncTMAScatterOp>,
+        LocalLoadOpPattern,
         TMEMLoadOpPattern,
         TMEMStoreOpPattern,
         TMEMAllocOpPattern
