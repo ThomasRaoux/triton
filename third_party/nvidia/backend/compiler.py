@@ -119,6 +119,8 @@ class CUDAOptions:
     ir_override: Optional[str] = None  # filename of a user-defined IR (*.{ttir|ttgir|llir|ptx})
     enable_fp_fusion: bool = True
     sched4reg: bool = False
+    # Disable LLVM loop strength reduction for this kernel's code generation.
+    disable_lsr: bool = False
     enable_reflect_ftz: bool = True  # ftz in libdevice
     launch_cooperative_grid: bool = False
     launch_pdl: bool = False
@@ -537,7 +539,7 @@ class CUDABackend(BaseBackend):
         flags = ["nvptx-mad-wide-opt"]
         enable_fpsan = "fpsan" in opt.instrumentation_mode
         ret = llvm.translate_to_asm(src, triple, proc, features, flags, opt.enable_fp_fusion, False, enable_fpsan,
-                                    sched4reg=opt.sched4reg, enable_fpsan=enable_fpsan)
+                                    sched4reg=opt.sched4reg, enable_fpsan=enable_fpsan, disable_lsr=opt.disable_lsr)
         # Find kernel names (there should only be one)
         names = re.findall(r".visible .entry ([a-zA-Z_][a-zA-Z0-9_]*)", ret)
         assert len(names) == 1
