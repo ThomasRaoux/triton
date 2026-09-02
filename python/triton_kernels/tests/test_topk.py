@@ -3,11 +3,13 @@ from types import SimpleNamespace
 import pytest
 import torch
 import triton
+from triton.runtime.jit import JITFunction
 import triton.profiler as proton
 from triton.testing import cuda_graph_without_gc
 from triton_kernels.topk import topk, topk_torch
 from triton_kernels.testing import assert_equal, assert_close
 from triton_kernels.distributed import SymmetricMemoryPool
+from triton_kernels.target_info import is_cuda
 import torch.distributed as dist
 
 
@@ -115,6 +117,50 @@ def test_topk_fpsan_masks_padded_experts(fresh_knobs, n_experts, k, apply_softma
 
     expected_indices = torch.arange(k, dtype=torch.int16, device="cuda").expand(n_rows, k)
     assert_equal(sparse_logits.indx, expected_indices)
+
+
+@pytest.mark.parametrize("disable_lsr", [None, False, True])
+@pytest.mark.parametrize("apply_softmax", [False, True])
+@pytest.mark.parametrize("use_provided_indices", [False, True])
+def test_topk_lsr_option(disable_lsr, apply_softmax, use_provided_indices, monkeypatch):
+    if not is_cuda():
+        pytest.skip("The LSR option requires CUDA")
+    torch.manual_seed(0)
+    x = torch.randn((7, 67), device="cuda", requires_grad=True)
+    provided_indices = None
+    if use_provided_indices:
+        provided_indices = torch.argsort(x.detach(), dim=1, descending=True)[:, :7].to(torch.int16)
+    original = JITFunction.run
+    kernels = []
+
+    def capture(self, *args, **kwargs):
+        kernel = original(self, *args, **kwargs)
+        if self.fn.__name__ == "_topk_forward" and kernel is not None:
+            kernels.append((kernel, kwargs))
+        return kernel
+
+    monkeypatch.setattr(JITFunction, "run", capture)
+    baseline = topk(x, 7, apply_softmax=apply_softmax, y_indx=provided_indices)
+    actual = topk(x, 7, apply_softmax=apply_softmax, y_indx=provided_indices, disable_lsr=disable_lsr)
+    restored = topk(x, 7, apply_softmax=apply_softmax, y_indx=provided_indices)
+    expected = topk_torch(x, 7, apply_softmax=apply_softmax, y_indx=provided_indices)
+    for result in (actual, restored):
+        torch.testing.assert_close(result.vals, baseline.vals, rtol=0, atol=0)
+        assert_equal(result.indx, baseline.indx)
+        assert_equal(result.mask.storage.data, baseline.mask.storage.data)
+    assert_close(actual.vals, expected.vals)
+    gradient = torch.randn_like(actual.vals)
+    actual_grad, = torch.autograd.grad(actual.vals, x, gradient, retain_graph=True)
+    expected_grad, = torch.autograd.grad(expected.vals, x, gradient)
+    assert_close(actual_grad, expected_grad)
+    assert len(kernels) == 3
+    assert kernels[0][0].hash == kernels[2][0].hash
+    assert "disable_lsr" not in kernels[0][1] and "disable_lsr" not in kernels[2][1]
+    if disable_lsr is None:
+        assert "disable_lsr" not in kernels[1][1]
+    else:
+        assert kernels[1][1]["disable_lsr"] == disable_lsr
+        assert kernels[1][0].metadata.disable_lsr == disable_lsr
 
 
 def bench_topk(n_rows, n_cols, k, apply_softmax, all_gather=False):

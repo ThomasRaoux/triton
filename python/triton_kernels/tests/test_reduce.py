@@ -7,6 +7,7 @@ from triton_kernels.numerics_details.mxfp import upcast_from_mxfp_torch, downcas
 from triton_kernels.numerics import InFlexData, OutFlexData
 from triton_kernels.target_info import is_cuda, is_hip, is_hip_cdna3, is_hip_cdna4
 import triton
+from triton.runtime.jit import JITFunction
 import triton.language as tl
 
 
@@ -204,3 +205,38 @@ def bench_reduce(B: int = 4, M: int = 4096, N: int = 4096, *, dim: int = 0, dtyp
 # bench_reduce(B=65536, M=4, N=8192, dim=1, dtype=torch.float16, mask_mode="broadcast_n")
 # bench_reduce(B=8192, M=4, N=8192, dim=1, dtype=torch.float16, mask_mode="broadcast_m")
 # bench_reduce(B=8192, M=4, N=8192, dim=1, dtype=torch.float16, mask_mode="broadcast_b")
+
+
+@pytest.mark.parametrize('shape', [(3, 64, 4096), (4, 513, 127)])
+@pytest.mark.parametrize('options', [{}, {'maxnreg': 64, 'sched4reg': False}, {'maxnreg': 64, 'sched4reg': True}])
+def test_reduce_scoped_launch_options(shape, options, monkeypatch):
+    if not is_cuda():
+        pytest.skip('NVIDIA launch options require CUDA')
+    torch.manual_seed(1)
+    x = torch.randint(-8, 9, shape, device='cuda').to(torch.float32) * 0.125
+    original = JITFunction.run
+    kernels = []
+
+    def capture(self, *args, **kwargs):
+        kernel = original(self, *args, **kwargs)
+        if self.fn.__name__ == '_reduce_forward' and kernel is not None:
+            kernels.append((kernel, kwargs))
+        return kernel
+
+    monkeypatch.setattr(JITFunction, 'run', capture)
+    baseline, _ = reduce(x, dim=0)
+    with scoped_opt_flags_constraints(options):
+        actual, _ = reduce(x, dim=0)
+    restored, _ = reduce(x, dim=0)
+    torch.testing.assert_close(actual, baseline, rtol=0, atol=0)
+    torch.testing.assert_close(restored, baseline, rtol=0, atol=0)
+    torch.testing.assert_close(actual, x.sum(dim=0), rtol=0, atol=0)
+    assert len(kernels) == 3
+    assert kernels[0][0].hash == kernels[2][0].hash
+    for key in ('maxnreg', 'sched4reg'):
+        assert key not in kernels[0][1] and key not in kernels[2][1]
+        if key in options:
+            assert kernels[1][1][key] == options[key]
+            assert getattr(kernels[1][0].metadata, key) == options[key]
+        else:
+            assert key not in kernels[1][1]
