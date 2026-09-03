@@ -664,6 +664,9 @@ def download_and_copy_dependencies(helper_args: BuildHelperArgs):
             url_func=lambda system, arch, version, package=package: package.archive(system, arch).url,
             helper_args=helper_args,
         )
+    # Use the same assembler, including any custom Blackwell build override.
+    nvidia_bin = Path(get_base_dir()) / "third_party" / "nvidia" / "backend" / "bin"
+    shutil.copy(nvidia_bin / "ptxas-blackwell", nvidia_bin / "ptxas")
 
 
 def add_common_args(parser: argparse.ArgumentParser):
